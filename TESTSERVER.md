@@ -231,6 +231,48 @@ docker compose logs -f app
 
 **„Cannot connect to the Docker daemon"** – Docker Desktop ist nicht gestartet.
 
+### Docker Desktop startet gar nicht erst
+
+Unter Windows fast immer eine von fünf Ursachen. In dieser Reihenfolge prüfen:
+
+**1. Virtualisierung ist im BIOS abgeschaltet.** Die häufigste Ursache.
+Task-Manager öffnen (Strg+Umschalt+Esc) → *Leistung* → *CPU*. Rechts unten
+steht *Virtualisierung*. Steht dort **Deaktiviert**, muss sie im BIOS/UEFI
+eingeschaltet werden – bei Intel heißt sie *VT-x* oder *Intel Virtualization
+Technology*, bei AMD *SVM Mode*.
+
+**2. WSL 2 fehlt oder ist veraltet.** In der PowerShell **als Administrator**:
+
+```powershell
+wsl --install
+wsl --update
+wsl --status
+```
+
+Danach den Rechner neu starten. Das ist kein optionaler Schritt – ohne
+Neustart bleibt es beim selben Fehler.
+
+**3. Windows-Features fehlen.** *Windows-Features aktivieren oder deaktivieren*
+öffnen. Diese beiden müssen angehakt sein:
+
+- *Windows-Subsystem für Linux*
+- *Plattform für virtuelle Computer* (englisch: *Virtual Machine Platform*)
+
+Danach neu starten.
+
+**4. Sie haben keine Administratorrechte.** Docker Desktop braucht sie zur
+Installation und richtet einen Systemdienst ein. Auf einem verwalteten
+Firmenrechner ist das oft gesperrt – dann hilft nur die eigene IT, oder Sie
+nehmen den Weg ohne Docker (siehe unten).
+
+**5. Ein anderer Hypervisor ist im Weg.** VirtualBox oder VMware Workstation
+in älteren Fassungen vertragen sich nicht mit der Windows-Hypervisor-Plattform.
+Beenden und noch einmal versuchen.
+
+> **Kommt Docker nicht zum Laufen, ist das kein Beinbruch.** Der Weg ohne
+> Docker weiter unten führt zum selben Ergebnis und braucht keine
+> Virtualisierung – nur zwei gewöhnliche Installationsprogramme.
+
 **Anmeldung schlägt fehl** – Passwort ist `Willkommen-2026-Demo`, mit großem W
 und dem Bindestrich. Wenn keines der Konten geht, sind vermutlich die
 Demo-Daten nicht eingespielt worden:
