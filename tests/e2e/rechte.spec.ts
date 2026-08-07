@@ -84,6 +84,25 @@ test.describe("Zugriff über die Adresszeile", () => {
     expect(antwort?.status()).toBeGreaterThanOrEqual(400);
   });
 
+  test("führt nach dem Abmelden zurück auf die Anmeldeseite", async ({ page }) => {
+    // Im fertigen Bau lauscht der Server auf 0.0.0.0. Ohne eine ausdrücklich
+    // gesetzte öffentliche Adresse baut Auth.js seine Weiterleitungen aus
+    // genau dieser Bindeadresse – und `http://0.0.0.0:3000/anmelden` lässt
+    // sich nicht aufrufen. Wer sich abmeldet, landete dann auf einer
+    // Fehlerseite des Browsers statt bei der Anmeldung.
+    await anmelden(page, KONTEN.melderin);
+
+    await page.getByRole("button", { name: /Menü für/ }).click();
+    await page.getByRole("menuitem", { name: "Abmelden" }).click();
+
+    await page.waitForURL(/\/anmelden/, { timeout: 20_000 });
+    expect(page.url()).not.toContain("0.0.0.0");
+
+    // Und die Sitzung ist tatsächlich beendet.
+    await page.goto("/dashboard");
+    await expect(page).toHaveURL(/\/anmelden/);
+  });
+
   test("führt ohne Anmeldung auf die Anmeldeseite", async ({ page }) => {
     await page.context().clearCookies();
     await page.goto("/dashboard");

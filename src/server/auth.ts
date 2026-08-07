@@ -41,6 +41,27 @@ declare module "next-auth" {
   }
 }
 
+/**
+ * Auth.js sagen, unter welcher Adresse die Anwendung erreichbar ist.
+ *
+ * Ohne diese Angabe baut Auth.js seine Adressen aus der Anfrage – und die
+ * trägt im fertigen Bau die *Bindeadresse* des Servers, nicht die Adresse aus
+ * der Adresszeile des Browsers. Der Server lauscht auf 0.0.0.0 (also auf allen
+ * Netzwerkkarten), und so entstand nach dem Abmelden eine Weiterleitung auf
+ * `http://0.0.0.0:3000/anmelden`. Diese Adresse lässt sich nicht aufrufen: Der
+ * Browser zeigt ERR_ADDRESS_INVALID, und wer sich abmeldet, landet auf einer
+ * Fehlerseite statt bei der Anmeldung.
+ *
+ * Betroffen waren alle von Auth.js erzeugten Adressen, nicht nur die
+ * Abmeldung – beim Anmelden fiel es bloß nicht auf, weil die Oberfläche
+ * danach selbst weiterschaltet.
+ *
+ * `APP_URL` ist ohnehin schon die öffentliche Adresse der Anwendung; sie steht
+ * auch unter jedem Link in den Benachrichtigungen. Beide aus derselben Quelle
+ * zu speisen hält sie zusammen.
+ */
+process.env.AUTH_URL ??= process.env.APP_URL;
+
 const credentialsSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),

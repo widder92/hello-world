@@ -55,6 +55,10 @@ services:
     environment:
       DATABASE_URL: postgresql://ticket:ticket@postgres:5432/ticketsystem?schema=public
       UPLOAD_DIR: /app/uploads
+      # Im Container lauscht der Server auf allen Netzwerkkarten. Ohne diese
+      # Angabe baute Auth.js seine Weiterleitungen aus der Bindeadresse und
+      # schickte nach dem Abmelden auf http://0.0.0.0:3000.
+      APP_URL: http://localhost:3000
       # Ausgehende Post geht an den Mailfänger unten, nicht nach draußen.
       MAIL_TRANSPORT: smtp
       SMTP_HOST: mailpit
