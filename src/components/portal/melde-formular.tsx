@@ -16,6 +16,7 @@ import {
 import { teamIcon } from "@/components/layout/icon";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Dateianhang, type AnhangEintrag } from "@/components/ui/dateianhang";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import {
   meldungAufgebenAction,
@@ -99,6 +100,7 @@ export function MeldeFormular({
   const [standortId, setStandortId] = useState(eigenerStandortId ?? "");
   const [raum, setRaum] = useState("");
   const [dringlichkeit, setDringlichkeit] = useState<Urgency>(Urgency.NORMAL);
+  const [anhaenge, setAnhaenge] = useState<AnhangEintrag[]>([]);
   const [zusatz, setZusatz] = useState<Record<string, string | boolean>>({});
   const [fehler, setFehler] = useState<string | null>(null);
   const [vorschlaege, setVorschlaege] = useState<
@@ -187,6 +189,7 @@ export function MeldeFormular({
           roomOrArea: raum || undefined,
           urgency: einfacheAnsicht ? undefined : dringlichkeit,
           formData: Object.keys(zusatz).length ? zusatz : undefined,
+          anhangIds: anhaenge.map((a) => a.id),
         });
         router.push(`/meldung-aufgegeben?nummer=${ergebnis.nummer}`);
       } catch (err) {
@@ -360,6 +363,23 @@ export function MeldeFormular({
                 className={gross ? "text-lg" : undefined}
               />
             </Field>
+
+            <div>
+              <p
+                className={cn(
+                  "mb-1.5 font-medium text-fg",
+                  gross ? "text-base" : "text-sm",
+                )}
+              >
+                Foto oder Datei anhängen
+              </p>
+              <Dateianhang
+                anhaenge={anhaenge}
+                onChange={setAnhaenge}
+                gross={gross}
+                label={gross ? "Datei auswählen" : "Dateien anhängen"}
+              />
+            </div>
 
             {/* Hilfeartikel, die vielleicht schon reichen. */}
             {vorschlaege.length > 0 && (

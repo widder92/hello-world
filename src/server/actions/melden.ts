@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { db } from "@/server/db";
 import { requireActor } from "@/server/policy";
+import { ordneAnhaengeZu } from "@/server/services/attachments";
 import { benachrichtige } from "@/server/services/notify";
 import { ticketAnlegen } from "@/server/services/ticket";
 import { suggestPriority } from "@/lib/domain";
@@ -36,6 +37,8 @@ const meldenSchema = z.object({
   impact: z.nativeEnum(Impact).optional(),
   /** Antworten auf die Zusatzfelder der Kategorie. */
   formData: z.record(z.string(), z.union([z.string(), z.boolean()])).optional(),
+  /** Zuvor hochgeladene Anhänge – etwa das Foto vom Schaden. */
+  anhangIds: z.array(z.string()).default([]),
 });
 
 export type MeldenInput = z.infer<typeof meldenSchema>;
@@ -84,6 +87,23 @@ export async function meldungAufgebenAction(input: MeldenInput) {
     formData: daten.formData,
     actor: { id: actor.id, name: actor.name },
   });
+
+  // Die Anhänge wurden beim Ausfüllen hochgeladen und hingen bis hierhin an
+  // keinem Vorgang – jetzt bekommen sie ihre Zuordnung.
+  if (daten.anhangIds.length) {
+    const ersteNachricht = await db.ticketMessage.findFirst({
+      where: { ticketId: ticket.id },
+      orderBy: { createdAt: "asc" },
+      select: { id: true },
+    });
+
+    await ordneAnhaengeZu({
+      attachmentIds: daten.anhangIds,
+      ticketId: ticket.id,
+      messageId: ersteNachricht?.id ?? null,
+      uploadedById: actor.id,
+    });
+  }
 
   await benachrichtige.eingangsbestaetigung(ticket.id);
 

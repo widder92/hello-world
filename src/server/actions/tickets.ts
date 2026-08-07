@@ -215,6 +215,8 @@ const antwortSchema = z.object({
   body: z.string().trim().min(1, "Bitte schreiben Sie einen Text."),
   intern: z.boolean().default(false),
   neuerStatus: z.nativeEnum(TicketStatus).optional(),
+  /** Zuvor hochgeladene Anhänge, die an diese Nachricht gehängt werden. */
+  anhangIds: z.array(z.string()).default([]),
 });
 
 export async function antwortenAction(input: z.infer<typeof antwortSchema>) {
@@ -244,7 +246,7 @@ export async function antwortenAction(input: z.infer<typeof antwortSchema>) {
     }
   }
 
-  await nachrichtHinzufuegen({
+  const nachricht = await nachrichtHinzufuegen({
     ticketId: daten.ticketId,
     body: daten.body,
     type: daten.intern ? MessageType.INTERNAL_NOTE : MessageType.PUBLIC_REPLY,
@@ -252,10 +254,11 @@ export async function antwortenAction(input: z.infer<typeof antwortSchema>) {
     authorName: actor.name,
     authorEmail: actor.email,
     neuerStatus: daten.neuerStatus,
+    anhangIds: daten.anhangIds,
   });
 
   aktualisiere(ticket.number);
-  return { ok: true as const };
+  return { ok: true as const, nachrichtId: nachricht.id };
 }
 
 // ---------------------------------------------------------------------------

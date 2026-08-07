@@ -2151,6 +2151,19 @@ async function main() {
     await ticketAnlegen(t);
   }
 
+  // --- Zählerstände nachziehen --------------------------------------------
+  // Die Demo-Vorgänge oben vergeben ihre Nummern selbst. Ohne diesen Schritt
+  // stünde der Zähler in der Datenbank weiterhin auf 0, und die erste echte
+  // Meldung nach dem Seed liefe in eine Nummernkollision.
+  for (const [schluessel, stand] of zaehler) {
+    const [teamId, jahrText] = schluessel.split(":");
+    await db.ticketCounter.upsert({
+      where: { teamId_year: { teamId, year: Number(jahrText) } },
+      create: { teamId, year: Number(jahrText), value: stand },
+      update: { value: stand },
+    });
+  }
+
   // --- Gespeicherte Ansichten für die Voll-Bereiche -----------------------
   await db.savedView.createMany({
     data: [

@@ -9,6 +9,7 @@ import {
 } from "@prisma/client";
 
 import { db } from "@/server/db";
+import { ordneAnhaengeZu } from "@/server/services/attachments";
 import { logEvent, touchTicket } from "@/server/services/events";
 import { nextTicketNumber } from "@/server/services/number";
 import { resolveQueue } from "@/server/services/routing";
@@ -502,6 +503,8 @@ export interface NachrichtInput {
   viaEmailCommand?: boolean;
   /** Status, auf den der Vorgang nach der Nachricht gesetzt wird. */
   neuerStatus?: TicketStatus;
+  /** Zuvor hochgeladene Anhänge, die an diese Nachricht gehängt werden. */
+  anhangIds?: string[];
 }
 
 export async function nachrichtHinzufuegen(input: NachrichtInput) {
@@ -574,6 +577,17 @@ export async function nachrichtHinzufuegen(input: NachrichtInput) {
 
     return m;
   });
+
+  // Anhänge erst jetzt zuordnen: Sie wurden beim Schreiben hochgeladen und
+  // hingen bis hierhin an keinem Vorgang.
+  if (input.anhangIds?.length && input.authorId) {
+    await ordneAnhaengeZu({
+      attachmentIds: input.anhangIds,
+      ticketId: input.ticketId,
+      messageId: message.id,
+      uploadedById: input.authorId,
+    });
+  }
 
   if (istOeffentlich) {
     await benachrichtige.neueAntwort(input.ticketId, message.id, input.authorId ?? null);

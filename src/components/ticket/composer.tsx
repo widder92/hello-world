@@ -5,6 +5,7 @@ import { TicketStatus } from "@prisma/client";
 import { AlertCircle, Lock, MessageSquare, Send } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Dateianhang, type AnhangEintrag } from "@/components/ui/dateianhang";
 import { Textarea } from "@/components/ui/input";
 import { antwortenAction } from "@/server/actions/tickets";
 import { cn } from "@/lib/utils";
@@ -41,13 +42,16 @@ export function Composer({
 }) {
   const [intern, setIntern] = useState(false);
   const [text, setText] = useState("");
+  const [anhaenge, setAnhaenge] = useState<AnhangEintrag[]>([]);
   const [fehler, setFehler] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const feldRef = useRef<HTMLTextAreaElement>(null);
 
   function senden(neuerStatus?: TicketStatus) {
-    if (!text.trim()) {
-      setFehler("Bitte schreiben Sie einen Text.");
+    // Ein Anhang allein ist eine gültige Antwort – wer ein Foto nachreicht,
+    // muss nicht noch einen Satz dazu schreiben.
+    if (!text.trim() && anhaenge.length === 0) {
+      setFehler("Bitte schreiben Sie einen Text oder hängen Sie eine Datei an.");
       feldRef.current?.focus();
       return;
     }
@@ -57,11 +61,13 @@ export function Composer({
       try {
         await antwortenAction({
           ticketId,
-          body: text,
+          body: text.trim() || "(Datei angehängt)",
           intern,
           neuerStatus,
+          anhangIds: anhaenge.map((a) => a.id),
         });
         setText("");
+        setAnhaenge([]);
         setIntern(false);
       } catch (e) {
         setFehler(
@@ -148,6 +154,15 @@ export function Composer({
             {fehler}
           </p>
         )}
+
+        <div className="mt-3">
+          <Dateianhang
+            ticketId={ticketId}
+            anhaenge={anhaenge}
+            onChange={setAnhaenge}
+            label="Datei anhängen"
+          />
+        </div>
       </div>
 
       {textbausteine.length > 0 && !intern && (
