@@ -22,14 +22,24 @@ Am wenigsten Handgriffe und räumt sich restlos wieder ab.
    selbst ein). Danach Docker Desktop starten und warten, bis unten links
    „Engine running" steht.
 
-2. **Das Projekt herunterladen.** Entweder als ZIP von der GitHub-Seite
-   (grüner Knopf *Code* → *Download ZIP*) und entpacken, oder in der
-   Eingabeaufforderung:
+2. **Das Projekt herunterladen.** Der einfachste Weg – dieser Link lädt
+   direkt das richtige ZIP:
+
+   <https://github.com/widder92/hello-world/archive/refs/heads/claude/enterprise-ticket-system-4inmb4.zip>
+
+   Entpacken, zum Beispiel nach `C:\ticketsystem`.
+
+   > **Achtung:** Nehmen Sie **nicht** den grünen Knopf *Code → Download ZIP*
+   > auf der Startseite des Repositories. Der lädt den Zweig `master`, und
+   > darin liegt das Ticketsystem noch nicht – Sie bekämen einen leeren
+   > Ordner. Entweder den Link oben nehmen oder auf der GitHub-Seite oben
+   > links erst den Zweig `claude/enterprise-ticket-system-4inmb4` auswählen.
+
+   Mit Git geht es auch:
 
    ```
-   git clone https://github.com/widder92/hello-world.git
+   git clone -b claude/enterprise-ticket-system-4inmb4 https://github.com/widder92/hello-world.git
    cd hello-world
-   git checkout claude/enterprise-ticket-system-4inmb4
    ```
 
 3. **Konfigurationsdatei anlegen.** Im Projektordner:
@@ -112,10 +122,12 @@ npm run demo
 ```
 
 `npm run demo` richtet die Datenbank ein, füllt die Demo-Daten, baut die
-Anwendung und startet sie unter <http://localhost:3000>.
+Anwendung und startet sie unter <http://localhost:3000>. Der erste Bau dauert
+ein bis zwei Minuten.
 
-Zum späteren Weiterarbeiten reicht `npm run start`. Beim Entwickeln ist
-`npm run dev` bequemer (übernimmt Änderungen sofort, läuft aber langsamer).
+Zum späteren Weiterstarten reicht `npm run start` – der Bau bleibt erhalten.
+Beim Entwickeln ist `npm run dev` bequemer (übernimmt Änderungen sofort, läuft
+aber langsamer).
 
 E-Mails werden auf diesem Weg nur ins Protokoll geschrieben, nicht verschickt –
 außer Sie tragen in der `.env` einen SMTP-Server ein.
