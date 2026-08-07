@@ -107,7 +107,9 @@ Wenn Sie Node.js und PostgreSQL ohnehin auf dem Rechner haben – oder Docker
 Desktop nicht installieren dürfen.
 
 **Voraussetzungen:** Node.js 20 oder neuer (<https://nodejs.org>, der
-LTS-Knopf) und PostgreSQL 16 (<https://www.postgresql.org/download/>).
+LTS-Knopf) und PostgreSQL 16 oder neuer
+(<https://www.postgresql.org/download/>). Die Download-Seite bietet
+inzwischen Version 18 an – die passt ebenso.
 
 ### PostgreSQL installieren (Windows)
 

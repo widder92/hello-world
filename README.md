@@ -112,7 +112,7 @@ docker compose up -d      # http://localhost:3000
 
 ## Einrichten
 
-Voraussetzungen: Node.js 20 oder neuer und PostgreSQL 16. Mit Docker bringt die
+Voraussetzungen: Node.js 20 oder neuer und PostgreSQL 16 oder neuer. Mit Docker bringt die
 `docker-compose.yml` beides samt Mailfänger mit.
 
 ```bash
@@ -270,5 +270,5 @@ einen Knopf ausblendet, ist Bequemlichkeit – nie der Schutz.
 ## Technik
 
 Next.js 15 (App Router, Server Actions) · React 19 · TypeScript ·
-Tailwind CSS v4 · Prisma 6 auf PostgreSQL 16 · Auth.js v5 mit Entra ID und
+Tailwind CSS v4 · Prisma 6 auf PostgreSQL (16 oder neuer) · Auth.js v5 mit Entra ID und
 lokalen Konten (argon2id) · Radix UI · Vitest · Playwright mit axe
