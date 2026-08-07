@@ -96,6 +96,20 @@ gibt:
 
 ---
 
+## Nur ausprobieren?
+
+Für eine Testumgebung auf dem eigenen Rechner – mit einem Befehl, ohne echte
+Postfächer, restlos wieder entfernbar – gibt es eine eigene Anleitung:
+**[TESTSERVER.md](TESTSERVER.md)**. Sie enthält auch einen Vorschlag für eine
+zwölfminütige Vorführung.
+
+```bash
+cp .env.example .env
+docker compose up -d      # http://localhost:3000
+```
+
+---
+
 ## Einrichten
 
 Voraussetzungen: Node.js 20 oder neuer und PostgreSQL 16. Mit Docker bringt die
@@ -172,6 +186,10 @@ npm run typecheck    # tsc --noEmit
 npm run lint         # ESLint
 npm test             # Vitest
 npm run test:e2e     # Playwright inklusive Prüfung mit axe
+
+npm run vorbereiten  # Migrationen + Demo-Daten, falls die DB leer ist
+npm run demo         # vorbereiten, bauen, starten – für eine Vorführung
+npm run bilder       # Bildschirmfotos der Hauptansichten
 
 npm run import -- --typ=benutzer --datei=benutzer.csv --dry-run
 npm run sla:check    # Fristenprüfung von Hand anstoßen

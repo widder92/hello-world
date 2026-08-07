@@ -21,7 +21,10 @@
     "sla:check": "tsx scripts/sla-check.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "vorbereiten": "tsx scripts/vorbereiten.ts",
+    "demo": "npm run vorbereiten && npm run build && npm run start",
+    "bilder": "tsx scripts/bildschirmfotos.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

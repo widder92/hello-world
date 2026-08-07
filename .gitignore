@@ -16,3 +16,6 @@ playwright-report/
 .DS_Store
 *.log
 .scratch/
+
+# Bildschirmfotos aus scripts/bildschirmfotos.ts
+/bildschirmfotos/

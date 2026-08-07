@@ -1,3 +1,14 @@
+# Testumgebung zum Ausprobieren und Vorführen.
+#
+#   docker compose up -d
+#
+# Danach: Ticketsystem unter http://localhost:3000,
+#         abgefangene E-Mails unter http://localhost:8025
+#
+# Beim ersten Hochfahren legt der Dienst "vorbereiten" das Datenmodell an und
+# füllt die Demo-Daten ein. Bei jedem weiteren Start bleiben die Daten stehen –
+# auch die Vorgänge, die Sie selbst angelegt haben.
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -9,12 +20,28 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      # Nur auf dem eigenen Rechner erreichbar, nicht im Netz.
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ticket -d ticketsystem"]
       interval: 5s
       timeout: 5s
       retries: 20
+
+  # Einmaliger Lauf beim Hochfahren: Datenmodell anlegen, Demo-Daten nur in
+  # eine leere Datenbank. Anwendung und Hintergrunddienst warten darauf.
+  vorbereiten:
+    build:
+      context: .
+      target: worker
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://ticket:ticket@postgres:5432/ticketsystem?schema=public
+    command: ["npx", "tsx", "scripts/vorbereiten.ts"]
 
   app:
     build:
@@ -22,14 +49,19 @@ services:
       target: runner
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
+      vorbereiten:
+        condition: service_completed_successfully
     env_file: .env
     environment:
       DATABASE_URL: postgresql://ticket:ticket@postgres:5432/ticketsystem?schema=public
       UPLOAD_DIR: /app/uploads
+      # Ausgehende Post geht an den Mailfänger unten, nicht nach draußen.
+      MAIL_TRANSPORT: smtp
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_SECURE: "false"
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     volumes:
       - uploads:/app/uploads
 
@@ -39,17 +71,22 @@ services:
       target: worker
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
+      vorbereiten:
+        condition: service_completed_successfully
     env_file: .env
     environment:
       DATABASE_URL: postgresql://ticket:ticket@postgres:5432/ticketsystem?schema=public
       UPLOAD_DIR: /app/uploads
+      MAIL_TRANSPORT: smtp
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_SECURE: "false"
     volumes:
       - uploads:/app/uploads
 
-  # Nur für Entwicklung und Abnahme: fängt allen ausgehenden Mailverkehr ab
-  # und zeigt ihn unter http://localhost:8025 an.
+  # Fängt allen ausgehenden Mailverkehr ab und zeigt ihn im Browser an. So
+  # lässt sich die Benachrichtigung ansehen, ohne dass eine Mail das Haus
+  # verlässt – im Testbetrieb genau richtig.
   mailpit:
     image: axllent/mailpit:latest
     restart: unless-stopped
@@ -57,8 +94,8 @@ services:
       MP_SMTP_AUTH_ACCEPT_ANY: 1
       MP_SMTP_AUTH_ALLOW_INSECURE: 1
     ports:
-      - "1025:1025"
-      - "8025:8025"
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
 
 volumes:
   pgdata:
