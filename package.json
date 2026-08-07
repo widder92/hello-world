@@ -22,7 +22,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "vorbereiten": "prisma generate && tsx scripts/vorbereiten.ts",
+    "vorbereiten": "prisma generate && prisma migrate deploy && tsx scripts/vorbereiten.ts",
     "demo": "npm run vorbereiten && npm run build && npm run start",
     "bilder": "tsx scripts/bildschirmfotos.ts"
   },
