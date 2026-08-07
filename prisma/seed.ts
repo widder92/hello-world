@@ -17,6 +17,7 @@ import {
   LinkType,
   MessageType,
   Priority,
+  type Prisma,
   PrismaClient,
   QueueMode,
   SiteType,
@@ -1188,7 +1189,7 @@ async function main() {
     quelle?: TicketSource;
     erstelltVorMs: number;
     geloestVorMs?: number;
-    formData?: Record<string, unknown>;
+    formData?: Prisma.InputJsonValue;
     nachrichten: NachrichtEingabe[];
     tags?: string[];
     geraetIds?: string[];
