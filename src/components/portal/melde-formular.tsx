@@ -511,7 +511,7 @@ export function MeldeFormular({
           <Card>
             <CardContent className="space-y-5">
               <h2 className="text-sm font-semibold text-fg">
-                Ein paar Angaben zu „{gewaehlteKategorie?.name}"
+                Ein paar Angaben zu „{gewaehlteKategorie?.name}“
               </h2>
               {zusatzfelder.map((f) => (
                 <Zusatzfeld

@@ -253,7 +253,7 @@ function EreignisEintrag({ ereignis: e }: { ereignis: VerlaufEreignis }) {
           </p>
 
           {e.note && (
-            <p className="mt-0.5 text-xs italic text-fg-subtle">„{e.note}"</p>
+            <p className="mt-0.5 text-xs italic text-fg-subtle">„{e.note}“</p>
           )}
 
           <time

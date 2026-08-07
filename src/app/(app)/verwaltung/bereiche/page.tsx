@@ -128,7 +128,7 @@ export default async function BereichePage() {
 
                   {b.portalVisible && b.portalLabel && (
                     <p className="mt-1 text-sm text-fg-subtle">
-                      Im Portal beschriftet als: „{b.portalLabel}"
+                      Im Portal beschriftet als: „{b.portalLabel}“
                     </p>
                   )}
 

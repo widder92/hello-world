@@ -21,8 +21,12 @@
   --surface-3: oklch(0.948 0.005 250);
 
   --fg: oklch(0.22 0.012 255);
-  --fg-muted: oklch(0.5 0.014 255);
-  --fg-subtle: oklch(0.6 0.012 255);
+  /* Die beiden abgeschwächten Textfarben sind so gewählt, dass sie auch auf
+     der hellsten Fläche (surface-3) noch 4.5:1 erreichen – die Schwelle für
+     Fließtext nach WCAG AA. Die zurückhaltendere der beiden stand vorher zu
+     hell und fiel bei der Prüfung mit axe durch. */
+  --fg-muted: oklch(0.44 0.014 255);
+  --fg-subtle: oklch(0.52 0.012 255);
 
   --line: oklch(0.9 0.006 255);
   --line-strong: oklch(0.82 0.01 255);
@@ -67,8 +71,10 @@
   --surface-3: oklch(0.31 0.011 255);
 
   --fg: oklch(0.955 0.004 255);
-  --fg-muted: oklch(0.73 0.01 255);
-  --fg-subtle: oklch(0.63 0.012 255);
+  /* Wie im hellen Thema auf 4.5:1 gegen die hellste Fläche gerechnet – hier
+     also gegen surface-3, die im dunklen Thema die hellste ist. */
+  --fg-muted: oklch(0.79 0.01 255);
+  --fg-subtle: oklch(0.69 0.012 255);
 
   --line: oklch(0.33 0.011 255);
   --line-strong: oklch(0.44 0.014 255);

@@ -108,6 +108,16 @@ export function Dateianhang({
           // Am Handy bietet der Browser damit direkt die Kamera an.
           accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.zip,.msg,.eml"
           className="sr-only"
+          /*
+           * Das Feld ist nur ausgeblendet, nicht entfernt – ein Vorleseprogramm
+           * findet es also. Ohne Beschriftung meldete es sich dort als
+           * namenloses Eingabefeld. Aus der Tabulatorreihenfolge bleibt es
+           * heraus, weil die sichtbare Schaltfläche daneben dasselbe tut und
+           * einen erkennbaren Fokusrahmen hat; zwei Haltepunkte für dieselbe
+           * Handlung wären nur verwirrend.
+           */
+          aria-label={label}
+          tabIndex={-1}
           onChange={(e) => {
             verarbeite(e.target.files);
             // Zurücksetzen, damit dieselbe Datei erneut gewählt werden kann.

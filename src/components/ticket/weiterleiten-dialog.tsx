@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { QueueMode } from "@prisma/client";
 import { AlertCircle, ArrowRight, Check, Forward } from "lucide-react";
@@ -74,10 +74,17 @@ export function WeiterleitenDialog({
 
   const zielBereich = bereiche?.find((b) => b.id === teamId);
   const brauchtStandort = zielBereich?.queueMode === QueueMode.PER_SITE;
-  const verfuegbareStandorte =
-    zielBereich?.queues
-      .map((q) => q.site)
-      .filter((s): s is NonNullable<typeof s> => s !== null) ?? [];
+
+  // Gemerkt, weil die Liste unten in einer Abhängigkeit steht: Ein bei jedem
+  // Rendern neu gebautes Feld ist jedes Mal ein anderes Objekt, und der Effekt
+  // liefe endlos.
+  const verfuegbareStandorte = useMemo(
+    () =>
+      zielBereich?.queues
+        .map((q) => q.site)
+        .filter((s): s is NonNullable<typeof s> => s !== null) ?? [],
+    [zielBereich],
+  );
 
   useEffect(() => {
     if (!brauchtStandort) return;

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ArticleVisibility, Prisma } from "@prisma/client";
+import { ArticleVisibility } from "@prisma/client";
 import { BookOpen, Search, Ticket } from "lucide-react";
 
 import { PageHeader } from "@/components/layout/page-header";
@@ -97,7 +97,7 @@ export default async function SuchePage({
           <Card>
             <div className="px-6 py-12 text-center">
               <p className="text-sm font-medium text-fg">
-                Keine Treffer für „{begriff}"
+                Keine Treffer für „{begriff}“
               </p>
               <p className="mx-auto mt-1 max-w-md text-sm text-fg-muted">
                 Versuchen Sie einen anderen Begriff oder suchen Sie nach der

@@ -140,7 +140,7 @@ export function BenutzerDialog({
           </DialogTitle>
           <DialogDescription>
             In welchen Bereichen diese Person arbeitet, wird anschließend über
-            die Schaltfläche „Bereiche" gesetzt.
+            die Schaltfläche „Bereiche“ gesetzt.
           </DialogDescription>
         </DialogHeader>
 

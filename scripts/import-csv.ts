@@ -28,7 +28,6 @@ import {
   TicketStatus,
 } from "@prisma/client";
 
-import { hashPassword } from "../src/server/password";
 import { formatTicketNumber } from "../src/server/services/number";
 
 const db = new PrismaClient();
@@ -212,7 +211,8 @@ async function importiereStandorte(
     });
 
     if (trocken) {
-      vorhanden ? bericht.aktualisiert++ : bericht.angelegt++;
+      if (vorhanden) bericht.aktualisiert++;
+      else bericht.angelegt++;
       continue;
     }
 
@@ -287,7 +287,8 @@ async function importiereBenutzer(
     });
 
     if (trocken) {
-      vorhanden ? bericht.aktualisiert++ : bericht.angelegt++;
+      if (vorhanden) bericht.aktualisiert++;
+      else bericht.angelegt++;
       continue;
     }
 
@@ -357,7 +358,8 @@ async function importiereGeraete(
     });
 
     if (trocken) {
-      vorhanden ? bericht.aktualisiert++ : bericht.angelegt++;
+      if (vorhanden) bericht.aktualisiert++;
+      else bericht.angelegt++;
       continue;
     }
 

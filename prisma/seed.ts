@@ -799,8 +799,6 @@ async function main() {
     department: "Werkstatt",
   });
 
-  const melder = [anna, thomas, claudia, martin, sonja, lukas, heike, jonas];
-
   // =========================================================================
   // Mitgliedschaften und Eingangs-Freigaben
   // =========================================================================
@@ -1376,7 +1374,7 @@ async function main() {
   }
 
   // --- Der Vorgang aus der Abnahme: Meldung an den Hausmeister -------------
-  const heizung = await ticketAnlegen({
+  await ticketAnlegen({
     team: hausmeister,
     queueId: hausmeisterEingaenge[standorte.wohnheimNord.id],
     betreff: "Heizung im Gruppenraum wird nicht warm",

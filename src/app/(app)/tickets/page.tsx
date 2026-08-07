@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { Priority, TicketStatus } from "@prisma/client";
+import { Priority } from "@prisma/client";
 
 import { FilterLeiste } from "@/components/ticket/filter-leiste";
 import { PageHeader } from "@/components/layout/page-header";

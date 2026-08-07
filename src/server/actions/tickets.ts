@@ -221,7 +221,7 @@ const antwortSchema = z.object({
 
 export async function antwortenAction(input: z.infer<typeof antwortSchema>) {
   const daten = antwortSchema.parse(input);
-  const { actor, ticket, akteur, level } = await fuerAnsicht(daten.ticketId);
+  const { actor, ticket, level } = await fuerAnsicht(daten.ticketId);
 
   // Der Melder darf antworten, aber keine internen Notizen schreiben und den
   // Status nicht setzen – sonst könnte er seinen eigenen Vorgang schließen,

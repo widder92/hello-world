@@ -3,7 +3,6 @@ import { redirect } from "next/navigation";
 import { TeamMode } from "@prisma/client";
 import { AlertTriangle, CheckCircle2, Clock, Inbox } from "lucide-react";
 
-import { teamIcon } from "@/components/layout/icon";
 import { PageHeader } from "@/components/layout/page-header";
 import { Card } from "@/components/ui/card";
 import { Select } from "@/components/ui/input";

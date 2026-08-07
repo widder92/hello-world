@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Priority, QueueMode } from "@prisma/client";
 import { AlertCircle, ArrowUpRight, Check, Split } from "lucide-react";
@@ -101,10 +101,17 @@ export function AbspaltenDialog({
 
   const zielBereich = bereiche?.find((b) => b.id === teamId);
   const brauchtStandort = zielBereich?.queueMode === QueueMode.PER_SITE;
-  const verfuegbareStandorte =
-    zielBereich?.queues
-      .map((q) => q.site)
-      .filter((s): s is NonNullable<typeof s> => s !== null) ?? [];
+
+  // Gemerkt, weil die Liste unten in einer Abhängigkeit steht: Ein bei jedem
+  // Rendern neu gebautes Feld ist jedes Mal ein anderes Objekt, und der Effekt
+  // liefe endlos.
+  const verfuegbareStandorte = useMemo(
+    () =>
+      zielBereich?.queues
+        .map((q) => q.site)
+        .filter((s): s is NonNullable<typeof s> => s !== null) ?? [],
+    [zielBereich],
+  );
 
   // Deckt der Zielbereich den Standort des Vorgangs ab? Wenn nicht, muss
   // bewusst ein anderer gewählt werden.
@@ -136,7 +143,7 @@ export function AbspaltenDialog({
 
     startTransition(async () => {
       try {
-        const ergebnis = await abspaltenAction({
+        await abspaltenAction({
           ticketId,
           zielTeamId: teamId,
           zielSiteId: brauchtStandort ? siteId : null,
@@ -150,7 +157,15 @@ export function AbspaltenDialog({
         });
 
         setOffen(false);
-        router.push(`/tickets/${ergebnis.kindNummer}`);
+        /*
+         * Bewusst hierbleiben statt in den Teilvorgang springen: Der liegt
+         * jetzt beim anderen Bereich, und wer dort nicht arbeitet, bekäme
+         * seine eigene Abspaltung nicht zu sehen – die Rechteprüfung weist ihn
+         * ab, und er landete unmittelbar nach dem Anlegen auf einer
+         * Fehlerseite. Die Verknüpfung samt Nummer steht nach dem Neuladen im
+         * Vorgang; von dort kommt hin, wer hindarf.
+         */
+        router.refresh();
       } catch (e) {
         setFehler(
           e instanceof Error
