@@ -115,6 +115,22 @@ export async function alleEingaengeAbrufen(): Promise<AbrufErgebnis[]> {
   return ergebnisse;
 }
 
+/**
+ * Prüft, ob ein Postfach erreichbar ist.
+ *
+ * Für die Schaltfläche „Verbindung testen" in der Verwaltung. Ohne sie fällt
+ * ein falsches Kennwort erst dadurch auf, dass tagelang keine Vorgänge
+ * ankommen – und dann sucht niemand mehr beim Postfach.
+ */
+export async function pruefeMailkonto(mailAccountId: string): Promise<void> {
+  const konto = await db.mailAccount.findUniqueOrThrow({
+    where: { id: mailAccountId },
+  });
+
+  const quelle = quelleFuer(konto);
+  await quelle.pruefeVerbindung();
+}
+
 /** Ruft ein einzelnes Postfach ab. */
 export async function eingangAbrufen(mailAccountId: string): Promise<AbrufErgebnis> {
   const konto = await db.mailAccount.findUniqueOrThrow({
