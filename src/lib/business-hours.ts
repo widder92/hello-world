@@ -59,9 +59,25 @@ function fensterFuerTag(
     .sort((a, b) => a.von.getTime() - b.von.getTime());
 }
 
-/** Verschiebt einen Zeitpunkt auf den Beginn des nächsten Kalendertags. */
+/**
+ * Verschiebt einen Zeitpunkt auf den Beginn des nächsten Kalendertags.
+ *
+ * Bewusst über die Datumsanteile und nicht über „plus 24 Stunden": An der
+ * Umstellung auf Winterzeit hat der Tag 25 Stunden. Wer 24 Stunden addiert,
+ * landet dann wieder auf demselben Kalendertag – die Schleife käme nicht
+ * voran und die Frist würde falsch berechnet. Das fiele nur einmal im Jahr
+ * auf und wäre dann kaum zu finden.
+ */
 function naechsterTag(date: Date, timezone: string): Date {
-  const key = tagesSchluessel(new Date(date.getTime() + 24 * 60 * MINUTE), timezone);
+  const [jahr, monat, tag] = tagesSchluessel(date, timezone)
+    .split("-")
+    .map(Number);
+
+  // UTC-Arithmetik auf den reinen Datumsanteilen: erledigt Monats- und
+  // Jahreswechsel und kennt keine Zeitumstellung.
+  const naechster = new Date(Date.UTC(jahr, monat - 1, tag + 1));
+  const key = formatInTimeZone(naechster, "UTC", "yyyy-MM-dd");
+
   return fromZonedTime(`${key} 00:00`, timezone);
 }
 
