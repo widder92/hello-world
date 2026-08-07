@@ -106,17 +106,61 @@ Demo-Daten wieder von vorne an.
 Wenn Sie Node.js und PostgreSQL ohnehin auf dem Rechner haben – oder Docker
 Desktop nicht installieren dürfen.
 
-**Voraussetzungen:** Node.js 20 oder neuer (<https://nodejs.org>) und
-PostgreSQL 16 (<https://www.postgresql.org/download/>).
+**Voraussetzungen:** Node.js 20 oder neuer (<https://nodejs.org>, der
+LTS-Knopf) und PostgreSQL 16 (<https://www.postgresql.org/download/>).
 
-```bash
-# Datenbank anlegen (einmalig)
-createdb ticketsystem
+### PostgreSQL installieren (Windows)
 
-cp .env.example .env
-# In der .env die Zeile DATABASE_URL auf Ihre Datenbank anpassen,
-# z. B.: postgresql://postgres:IHRKENNWORT@localhost:5432/ticketsystem
+Beim Installationsprogramm können Sie alles so lassen, wie es vorgeschlagen
+wird. Zwei Stellen sind wichtig:
 
+- **Password** – ein Kennwort für den Benutzer `postgres` vergeben und
+  **merken**. Es wird gleich noch gebraucht.
+- **Advanced Options → Locale** – auf **`DEFAULT`** stehen lassen und weiter.
+  Die Auswahl bestimmt nur die Sortierreihenfolge; für das Ticketsystem
+  ist sie ohne Belang.
+
+Den *Stack Builder* am Ende können Sie abwählen.
+
+### Datenbank anlegen
+
+Aus dem Startmenü **SQL Shell (psql)** öffnen. Fünfmal Enter für die
+Vorgaben, dann das eben vergebene Kennwort eingeben. Dort diese eine Zeile
+eintippen (mit Semikolon am Ende):
+
+```sql
+CREATE DATABASE ticketsystem WITH ENCODING 'UTF8' TEMPLATE template0;
+```
+
+> **Warum so umständlich und nicht einfach `CREATE DATABASE ticketsystem`?**
+> Unter Windows richtet PostgreSQL eine neue Datenbank je nach Locale gern in
+> einem westeuropäischen Zeichensatz statt in UTF-8 ein. Umlaute überleben das
+> noch, Gedankenstriche und typografische Anführungszeichen nicht – und davon
+> ist die Oberfläche voll. Der Einbau würde dann mitten im Lauf abbrechen.
+> Mit `ENCODING 'UTF8' TEMPLATE template0` ist die Frage ein für alle Mal vom
+> Tisch.
+
+Mit `\q` und Enter wieder heraus.
+
+### Einrichten und starten
+
+Im entpackten Projektordner ein Fenster öffnen (im Explorer oben in die
+Adresszeile `cmd` tippen, Enter) und der Reihe nach:
+
+```
+copy .env.example .env
+```
+
+Dann die Datei `.env` mit dem Editor öffnen und die Zeile `DATABASE_URL` auf
+Ihr Kennwort anpassen:
+
+```
+DATABASE_URL="postgresql://postgres:IHRKENNWORT@localhost:5432/ticketsystem?schema=public"
+```
+
+Speichern, schließen, und zurück im Fenster:
+
+```
 npm install
 npm run demo
 ```
