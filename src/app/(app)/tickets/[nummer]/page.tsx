@@ -11,6 +11,7 @@ import { SlaBadge } from "@/components/ticket/badges";
 import { TicketSeitenleiste } from "@/components/ticket/seitenleiste";
 import { Timeline, type VerlaufEintrag } from "@/components/ticket/timeline";
 import { WeiterleitenDialog } from "@/components/ticket/weiterleiten-dialog";
+import { ZusammenfuehrenDialog } from "@/components/ticket/zusammenfuehren-dialog";
 import { Card } from "@/components/ui/card";
 import { statusAuswahlFor } from "@/server/capabilities";
 import { db } from "@/server/db";
@@ -310,6 +311,12 @@ export default async function TicketSeite({
                     ticketBetreff={ticket.subject}
                     aktuellerStandortId={ticket.siteId}
                     nachrichten={nachrichtenZurAuswahl}
+                  />
+                )}
+                {capabilities?.zusammenfuehren && (
+                  <ZusammenfuehrenDialog
+                    ticketId={ticket.id}
+                    ticketNummer={ticket.number}
                   />
                 )}
               </div>

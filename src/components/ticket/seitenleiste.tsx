@@ -5,6 +5,7 @@ import { Building2, Mail, MapPin, Phone, Tag as TagIcon } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { Beobachter } from "@/components/ticket/beobachter";
 import { Checkliste } from "@/components/ticket/checkliste";
 import { PriorityBadge, StatusBadge } from "@/components/ticket/badges";
 import type { TeamCapabilities } from "@/server/capabilities";
@@ -182,22 +183,16 @@ export function TicketSeitenleiste({
             </div>
           </div>
 
-          {istAgent && ticket.watchers.length > 0 && (
+          {istAgent && (
             <div className="mt-3.5 border-t border-line pt-3">
-              <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-fg-subtle">
-                Auf Kopie
-              </h3>
-              <ul className="space-y-1">
-                {ticket.watchers.map((w) => (
-                  <li
-                    key={w.userId}
-                    className="flex items-center gap-1.5 text-xs text-fg-muted"
-                  >
-                    <Avatar name={w.user.name} size="xs" />
-                    {w.user.name}
-                  </li>
-                ))}
-              </ul>
+              <Beobachter
+                ticketId={ticket.id}
+                beobachter={ticket.watchers.map((w) => ({
+                  userId: w.userId,
+                  name: w.user.name,
+                }))}
+                darfAendern
+              />
             </div>
           )}
         </CardContent>

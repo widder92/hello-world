@@ -30,8 +30,15 @@ import {
 } from "@prisma/client";
 import { hashPassword } from "../src/server/password";
 import { formatTicketNumber } from "../src/server/services/number";
+import { berechneFristen } from "../src/server/services/sla";
 
 const db = new PrismaClient();
+
+/** Status, die als abgeschlossen gelten – für die Fristberechnung im Seed. */
+const STATUS_ERLEDIGT_SEED: TicketStatus[] = [
+  TicketStatus.GELOEST,
+  TicketStatus.GESCHLOSSEN,
+];
 
 /** Einheitliches Demo-Passwort. Steht so auch im README. */
 const DEMO_PASSWORT = "Willkommen-2026-Demo";
@@ -1220,6 +1227,25 @@ async function main() {
       (n) => n.typ === MessageType.PUBLIC_REPLY && n.autor?.id !== e.melder.id,
     );
 
+    // Fristen über dieselbe Dienstzeiten-Rechnung wie im Betrieb, damit die
+    // Ampel in den Demo-Daten echte Werte zeigt statt leer zu bleiben.
+    const fristen = slaId
+      ? await berechneFristen({
+          tx: db,
+          teamId: e.team.id,
+          teamMode: e.team.mode,
+          priority: prioritaet,
+          categorySlaPolicyId: null,
+          ab: erstellt,
+        })
+      : { slaPolicyId: null, firstResponseDue: null, resolutionDue: null };
+
+    const nochOffen = !STATUS_ERLEDIGT_SEED.includes(e.status);
+    const ueberschritten =
+      nochOffen &&
+      fristen.resolutionDue !== null &&
+      fristen.resolutionDue < JETZT;
+
     const ticket = await db.ticket.create({
       data: {
         number: formatTicketNumber(e.team.key, jahr, naechste),
@@ -1237,7 +1263,11 @@ async function main() {
         urgency: e.urgency,
         source: e.quelle ?? TicketSource.WEB,
         formData: e.formData ?? undefined,
-        slaPolicyId: slaId,
+        slaPolicyId: fristen.slaPolicyId,
+        firstResponseDue: fristen.firstResponseDue,
+        resolutionDue: fristen.resolutionDue,
+        slaBreached: ueberschritten,
+        slaWarningNotified: ueberschritten,
         firstResponseAt: erstAntwort ? vor(erstAntwort.vorMs) : null,
         resolvedAt:
           e.geloestVorMs !== undefined ? vor(e.geloestVorMs) : null,

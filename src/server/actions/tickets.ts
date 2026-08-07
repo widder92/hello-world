@@ -484,6 +484,33 @@ export async function ladeZuweisbare(ticketId: string) {
   return personen;
 }
 
+/**
+ * Personensuche für die Kopie-Auswahl.
+ *
+ * Nur angemeldete Personen sehen Treffer, und externe Melder erscheinen nicht –
+ * sie können sich nicht anmelden und hätten von einer Kopie nichts.
+ */
+export async function personenSuchen(begriff: string) {
+  await requireActor();
+
+  const suche = begriff.trim();
+  if (suche.length < 3) return [];
+
+  return db.user.findMany({
+    where: {
+      isActive: true,
+      isExternal: false,
+      OR: [
+        { name: { contains: suche, mode: "insensitive" } },
+        { email: { contains: suche, mode: "insensitive" } },
+      ],
+    },
+    select: { id: true, name: true, email: true },
+    orderBy: { name: "asc" },
+    take: 20,
+  });
+}
+
 /** Bereiche, an die weitergeleitet oder abgespalten werden kann. */
 export async function ladeZielBereiche(ticketId: string) {
   const { ticket } = await fuerBearbeitung(ticketId);
