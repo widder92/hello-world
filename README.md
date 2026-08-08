@@ -79,6 +79,11 @@ gibt:
 
 ## Was das System sonst noch kann
 
+- **Vorgang telefonisch aufnehmen.** Wer anruft, statt zu schreiben, bekommt
+  seinen Vorgang trotzdem: Der Bereich nimmt ihn im Namen des Melders auf. Der
+  Vorgang gehört danach dem Melder – er sieht ihn unter seinen Meldungen und
+  kann per Antwortmail mitreden; im Verlauf steht, wer ihn aufgenommen hat.
+  Auch für Personen ohne Konto, etwa eine Handwerksfirma.
 - **E-Mail in beide Richtungen.** Mails an die Adresse eines Eingangs werden zu
   Vorgängen; Antworten auf Benachrichtigungen landen am selben Vorgang. Wer
   sich nie anmeldet, kann per Antwortmail vollständig arbeiten – `#erledigt`,

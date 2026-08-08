@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
-import { LifeBuoy, Menu, PenLine, X } from "lucide-react";
+import { LifeBuoy, Menu, PenLine, Phone, X } from "lucide-react";
 
 import { Sidebar } from "@/components/layout/sidebar";
 import { UserMenu } from "@/components/layout/user-menu";
@@ -114,6 +114,18 @@ export function AppShell({
           </div>
 
           <div className="ml-auto flex items-center gap-1.5">
+            {/* Für den Anruf, bei dem jemand nicht selbst schreibt. Steht
+                bewusst neben „Neue Meldung": Der Unterschied ist nur, für wen
+                der Vorgang ist, und beides gehört an dieselbe Stelle. */}
+            <Button asChild variant="secondary" size="sm">
+              <Link href="/aufnehmen">
+                <Phone aria-hidden="true" />
+                <span className="hidden md:inline">Vorgang aufnehmen</span>
+                <span className="md:hidden sr-only">
+                  Vorgang für jemanden aufnehmen
+                </span>
+              </Link>
+            </Button>
             <Button asChild variant="secondary" size="sm">
               <Link href="/neu">
                 <PenLine aria-hidden="true" />
