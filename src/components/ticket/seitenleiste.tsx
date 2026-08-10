@@ -9,7 +9,7 @@ import { Beobachter } from "@/components/ticket/beobachter";
 import { Checkliste } from "@/components/ticket/checkliste";
 import { PriorityBadge, StatusBadge } from "@/components/ticket/badges";
 import type { TeamCapabilities } from "@/server/capabilities";
-import { ASSET_TYPE, IMPACT, SITE_TYPE, URGENCY } from "@/lib/domain";
+import { IMPACT, SITE_TYPE, URGENCY } from "@/lib/domain";
 import { formatDateTime } from "@/lib/format";
 
 /**
@@ -55,7 +55,12 @@ interface SeitenleistenTicket {
     sortOrder: number;
   }[];
   assets: {
-    asset: { id: string; assetTag: string; name: string; type: string };
+    asset: {
+      id: string;
+      assetTag: string;
+      name: string;
+      kind: { name: string };
+    };
   }[];
   watchers: { userId: string; user: { id: string; name: string } }[];
 }
@@ -237,7 +242,7 @@ export function TicketSeitenleiste({
               {ticket.assets.map(({ asset }) => (
                 <li key={asset.id}>
                   <Link
-                    href={`/verwaltung/geraete?suche=${asset.assetTag}`}
+                    href={`/inventar?q=${encodeURIComponent(asset.assetTag)}`}
                     className="block rounded-md border border-line px-2.5 py-1.5 text-sm transition-colors hover:bg-surface-2"
                   >
                     <span className="font-mono text-xs text-fg-subtle">
@@ -245,7 +250,7 @@ export function TicketSeitenleiste({
                     </span>
                     <span className="block text-fg">{asset.name}</span>
                     <span className="text-xs text-fg-subtle">
-                      {ASSET_TYPE[asset.type as keyof typeof ASSET_TYPE]}
+                      {asset.kind.name}
                     </span>
                   </Link>
                 </li>

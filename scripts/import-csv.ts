@@ -22,11 +22,14 @@ import { readFileSync } from "node:fs";
 
 import { parse } from "csv-parse/sync";
 import {
+  AssetStatus,
   PrismaClient,
   SiteType,
   TicketSource,
   TicketStatus,
 } from "@prisma/client";
+
+import { betragZuCent, macNormalisieren } from "../src/server/services/inventar";
 
 import { formatTicketNumber } from "../src/server/services/number";
 
@@ -308,18 +311,100 @@ async function importiereBenutzer(
   return bericht;
 }
 
+/**
+ * Geräte einlesen.
+ *
+ * Gerätearten und Hersteller werden über den Namen aufgelöst und bei Bedarf
+ * angelegt: Aus einem Altsystem kommt jede erdenkliche Schreibweise, und eine
+ * Übernahme, die an einer unbekannten Geräteart scheitert, ist nutzlos.
+ *
+ * Kostenstellen dagegen werden **nicht** angelegt. Sie sind eine gepflegte
+ * Liste, an der die Auswertung hängt – eine aus einem Tippfehler entstandene
+ * Kostenstelle „4310 " würde dort still danebenstehen und die Summen aufteilen.
+ * Unbekannte Kostenstellen führen deshalb zu einer Fehlermeldung für die Zeile.
+ */
 async function importiereGeraete(
   zeilen: Zeile[],
   trocken: boolean,
 ): Promise<Bericht> {
   const bericht = leererBericht();
 
-  const [standorte, benutzer] = await Promise.all([
-    db.site.findMany({ select: { id: true, name: true } }),
-    db.user.findMany({ select: { id: true, email: true } }),
-  ]);
+  const [standorte, benutzer, bereiche, arten, hersteller, kostenstellen] =
+    await Promise.all([
+      db.site.findMany({ select: { id: true, name: true } }),
+      db.user.findMany({ select: { id: true, email: true } }),
+      db.team.findMany({
+        where: { hasInventory: true, isActive: true },
+        select: { id: true, key: true, name: true },
+        orderBy: { sortOrder: "asc" },
+      }),
+      db.assetKind.findMany({ select: { id: true, key: true, name: true } }),
+      db.manufacturer.findMany({ select: { id: true, name: true } }),
+      db.costCenter.findMany({ select: { id: true, code: true, name: true } }),
+    ]);
+
+  if (bereiche.length === 0) {
+    bericht.fehler.push({
+      zeile: 0,
+      grund:
+        "Kein Bereich führt ein Inventar. Bitte in der Verwaltung unter " +
+        "Bereiche das Inventar für den zuständigen Bereich einschalten.",
+    });
+    return bericht;
+  }
+
   const standortMap = new Map(standorte.map((s) => [s.name.toLowerCase(), s.id]));
   const benutzerMap = new Map(benutzer.map((u) => [u.email.toLowerCase(), u.id]));
+  const bereichMap = new Map<string, string>();
+  for (const b of bereiche) {
+    bereichMap.set(b.key.toLowerCase(), b.id);
+    bereichMap.set(b.name.toLowerCase(), b.id);
+  }
+  const artMap = new Map<string, string>();
+  for (const a of arten) {
+    artMap.set(a.key.toLowerCase(), a.id);
+    artMap.set(a.name.toLowerCase(), a.id);
+  }
+  const herstellerMap = new Map(hersteller.map((h) => [h.name.toLowerCase(), h.id]));
+  const kostenMap = new Map<string, string>();
+  for (const k of kostenstellen) {
+    kostenMap.set(k.code.toLowerCase(), k.id);
+    kostenMap.set(k.name.toLowerCase(), k.id);
+  }
+
+  /** Geräteart holen oder anlegen. Das Kurzzeichen wird aus dem Namen gebildet. */
+  async function artFinden(bezeichnung: string): Promise<string> {
+    const treffer = artMap.get(bezeichnung.toLowerCase());
+    if (treffer) return treffer;
+
+    const key = bezeichnung
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "")
+      .slice(0, 4) || "SON";
+
+    const angelegt = await db.assetKind.upsert({
+      where: { name: bezeichnung },
+      update: {},
+      create: { key, name: bezeichnung, sortOrder: 500 },
+      select: { id: true },
+    });
+    artMap.set(bezeichnung.toLowerCase(), angelegt.id);
+    return angelegt.id;
+  }
+
+  async function herstellerFinden(name: string): Promise<string> {
+    const treffer = herstellerMap.get(name.toLowerCase());
+    if (treffer) return treffer;
+
+    const angelegt = await db.manufacturer.upsert({
+      where: { name },
+      update: {},
+      create: { name },
+      select: { id: true },
+    });
+    herstellerMap.set(name.toLowerCase(), angelegt.id);
+    return angelegt.id;
+  }
 
   for (const [i, zeile] of zeilen.entries()) {
     bericht.gelesen++;
@@ -337,20 +422,93 @@ async function importiereGeraete(
       continue;
     }
 
-    const standortName = spalte(zeile, "standort", "einrichtung");
-    const zugewiesen = spalte(zeile, "zugewiesen", "nutzer", "benutzer").toLowerCase();
+    // --- Bereich -----------------------------------------------------------
+    const bereichName = spalte(zeile, "bereich", "team");
+    const teamId = bereichName
+      ? bereichMap.get(bereichName.toLowerCase())
+      : bereiche[0].id;
+    if (!teamId) {
+      bericht.fehler.push({
+        zeile: nummer,
+        grund: `Bereich „${bereichName}" führt kein Inventar oder ist unbekannt.`,
+      });
+      continue;
+    }
 
-    const daten = {
-      name,
-      manufacturer: spalte(zeile, "hersteller") || null,
-      model: spalte(zeile, "modell", "typ") || null,
-      serial: spalte(zeile, "seriennummer", "serial", "sn") || null,
-      room: spalte(zeile, "raum") || null,
-      siteId: standortName
-        ? (standortMap.get(standortName.toLowerCase()) ?? null)
-        : null,
-      assignedToId: zugewiesen ? (benutzerMap.get(zugewiesen) ?? null) : null,
-    };
+    // --- Kostenstelle ------------------------------------------------------
+    const kostenstelle = spalte(zeile, "kostenstelle", "kst");
+    let costCenterId: string | null = null;
+    if (kostenstelle) {
+      costCenterId = kostenMap.get(kostenstelle.toLowerCase()) ?? null;
+      if (!costCenterId) {
+        bericht.fehler.push({
+          zeile: nummer,
+          grund:
+            `Kostenstelle „${kostenstelle}" ist nicht angelegt. Bitte erst ` +
+            `in der Verwaltung ergänzen.`,
+        });
+        continue;
+      }
+    }
+
+    // --- Status ------------------------------------------------------------
+    const statusRoh = spalte(zeile, "status", "zustand").toUpperCase();
+    const zugewiesen = spalte(zeile, "zugewiesen", "nutzer", "benutzer").toLowerCase();
+    const assignedToId = zugewiesen ? (benutzerMap.get(zugewiesen) ?? null) : null;
+
+    let status: AssetStatus;
+    if (statusRoh && statusRoh in AssetStatus) {
+      status = statusRoh as AssetStatus;
+    } else if (statusRoh) {
+      bericht.fehler.push({
+        zeile: nummer,
+        grund:
+          `Status „${statusRoh}" ist unbekannt. Möglich sind: ` +
+          Object.keys(AssetStatus).join(", "),
+      });
+      continue;
+    } else {
+      // Ohne Angabe aus der Zuweisung ableiten – das trifft fast immer zu.
+      status = assignedToId ? AssetStatus.HERAUSGEGEBEN : AssetStatus.LAGER;
+    }
+
+    // --- Preis -------------------------------------------------------------
+    let purchasePriceCents: number | null = null;
+    const preisRoh = spalte(zeile, "preis", "anschaffungspreis", "kaufpreis");
+    if (preisRoh) {
+      try {
+        purchasePriceCents = betragZuCent(preisRoh);
+      } catch (fehler) {
+        bericht.fehler.push({
+          zeile: nummer,
+          grund: fehler instanceof Error ? fehler.message : String(fehler),
+        });
+        continue;
+      }
+    }
+
+    // --- MAC-Adressen ------------------------------------------------------
+    // Mehrere durch Komma oder Semikolon getrennt.
+    const macRoh = spalte(zeile, "mac", "macadresse", "mac-adresse");
+    const macs: string[] = [];
+    let macFehler: string | null = null;
+    for (const teil of macRoh.split(/[;,]/)) {
+      if (!teil.trim()) continue;
+      try {
+        macs.push(macNormalisieren(teil));
+      } catch (fehler) {
+        macFehler = fehler instanceof Error ? fehler.message : String(fehler);
+        break;
+      }
+    }
+    if (macFehler) {
+      bericht.fehler.push({ zeile: nummer, grund: macFehler });
+      continue;
+    }
+
+    const standortName = spalte(zeile, "standort", "einrichtung");
+    const artName = spalte(zeile, "art", "geraeteart", "geräteart") || "Sonstiges";
+    const herstellerName = spalte(zeile, "hersteller");
 
     const vorhanden = await db.asset.findUnique({
       where: { assetTag },
@@ -363,13 +521,55 @@ async function importiereGeraete(
       continue;
     }
 
-    if (vorhanden) {
-      await db.asset.update({ where: { id: vorhanden.id }, data: daten });
-      bericht.aktualisiert++;
-    } else {
-      await db.asset.create({ data: { assetTag, ...daten } });
-      bericht.angelegt++;
+    const daten = {
+      name,
+      kindId: await artFinden(artName),
+      teamId,
+      status,
+      manufacturerId: herstellerName ? await herstellerFinden(herstellerName) : null,
+      model: spalte(zeile, "modell", "typ") || null,
+      serial: spalte(zeile, "seriennummer", "serial", "sn") || null,
+      imei: spalte(zeile, "imei") || null,
+      room: spalte(zeile, "raum") || null,
+      siteId: standortName
+        ? (standortMap.get(standortName.toLowerCase()) ?? null)
+        : null,
+      assignedToId,
+      assignedAt: assignedToId ? (leseDatum(spalte(zeile, "uebergeben")) ?? null) : null,
+      costCenterId,
+      purchasedAt: leseDatum(spalte(zeile, "anschaffung", "anschaffungsdatum", "kaufdatum")),
+      warrantyUntil: leseDatum(spalte(zeile, "garantie", "garantiebis")),
+      purchasePriceCents,
+      supplier: spalte(zeile, "lieferant") || null,
+      invoiceNumber: spalte(zeile, "rechnung", "rechnungsnummer") || null,
+      notes: spalte(zeile, "notizen", "bemerkung", "bemerkungen") || null,
+    };
+
+    const geraet = vorhanden
+      ? await db.asset.update({ where: { id: vorhanden.id }, data: daten })
+      : await db.asset.create({ data: { assetTag, ...daten } });
+
+    if (macs.length > 0) {
+      // Bestehende ersetzen: Beim erneuten Einlesen derselben Datei sollen
+      // keine Doppelungen entstehen.
+      await db.assetMac.deleteMany({ where: { assetId: geraet.id } });
+      for (const address of macs) {
+        // Eine MAC kann nur an einem Gerät hängen. Steht sie schon woanders,
+        // wird sie übersprungen statt den ganzen Import abzubrechen.
+        const belegt = await db.assetMac.findUnique({ where: { address } });
+        if (belegt) {
+          bericht.fehler.push({
+            zeile: nummer,
+            grund: `MAC-Adresse ${address} ist bereits einem anderen Gerät zugeordnet.`,
+          });
+          continue;
+        }
+        await db.assetMac.create({ data: { assetId: geraet.id, address } });
+      }
     }
+
+    if (vorhanden) bericht.aktualisiert++;
+    else bericht.angelegt++;
   }
 
   return bericht;

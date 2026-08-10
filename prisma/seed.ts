@@ -10,11 +10,14 @@
  */
 
 import {
-  AssetType,
+  AssetEventType,
+  AssetStatus,
   ArticleVisibility,
   EventType,
+  HandoverDirection,
   Impact,
   LinkType,
+  MacKind,
   MessageType,
   Priority,
   type Prisma,
@@ -69,7 +72,17 @@ async function leeren() {
     db.kbArticle.deleteMany(),
     db.ticketTemplate.deleteMany(),
     db.cannedResponse.deleteMany(),
+    // Inventar von innen nach außen: Chronik und Protokolle hängen am Gerät,
+    // das Gerät an Geräteart und Kostenstelle.
+    db.assetEvent.deleteMany(),
+    db.assetHandover.deleteMany(),
+    db.assetMac.deleteMany(),
     db.asset.deleteMany(),
+    db.assetCounter.deleteMany(),
+    db.handoverCounter.deleteMany(),
+    db.assetKind.deleteMany(),
+    db.manufacturer.deleteMany(),
+    db.costCenter.deleteMany(),
     db.tag.deleteMany(),
     db.category.deleteMany(),
     db.slaPolicy.deleteMany(),
@@ -249,6 +262,8 @@ async function main() {
       portalDescription:
         "Alles rund um PC, Notebook, Anmeldung, Fachprogramme, E-Mail, Telefon und Drucker.",
       autoAssign: "NONE",
+      // Der einzige Bereich, der im Demo-Bestand ein Inventar führt.
+      hasInventory: true,
     },
   });
 
@@ -1087,80 +1102,524 @@ async function main() {
     ],
   });
 
+  // =========================================================================
+  // IT-Inventar
+  // =========================================================================
+  console.log("Lege Inventar-Stammdaten und Geräte an …");
+
+  // --- Kostenstellen -------------------------------------------------------
+  const kostenstellen = {
+    verwaltung: await db.costCenter.create({
+      data: { code: "4100", name: "Verwaltung", sortOrder: 10 },
+    }),
+    schule: await db.costCenter.create({
+      data: { code: "4200", name: "Schule", sortOrder: 20 },
+    }),
+    wohnenNord: await db.costCenter.create({
+      data: { code: "4310", name: "Wohnheim Nord", sortOrder: 30 },
+    }),
+    wohnenSued: await db.costCenter.create({
+      data: { code: "4320", name: "Wohnheim Süd", sortOrder: 40 },
+    }),
+    werkstatt: await db.costCenter.create({
+      data: { code: "4400", name: "Werkstatt", sortOrder: 50 },
+    }),
+    it: await db.costCenter.create({
+      data: {
+        code: "4900",
+        name: "IT allgemein",
+        description:
+          "Geräte ohne feste Zuordnung – Ersatzgeräte, Leihgeräte, Lagerbestand.",
+        sortOrder: 60,
+      },
+    }),
+  };
+
+  // --- Gerätearten ---------------------------------------------------------
+  // Frei pflegbar. „Headset" steht bewusst dabei: Kopfhörer ab einem gewissen
+  // Wert gehören ins Inventar, und genau solche Arten sollen sich ohne
+  // Datenbankänderung ergänzen lassen.
+  const arten = {
+    pc: await db.assetKind.create({
+      data: { key: "PC", name: "PC", icon: "Monitor", sortOrder: 10, requiresMac: true },
+    }),
+    notebook: await db.assetKind.create({
+      data: {
+        key: "NB",
+        name: "Notebook",
+        icon: "Laptop",
+        sortOrder: 20,
+        requiresMac: true,
+        defaultCostCenterId: kostenstellen.it.id,
+      },
+    }),
+    tablet: await db.assetKind.create({
+      data: { key: "TAB", name: "Tablet", icon: "Tablet", sortOrder: 30, requiresMac: true },
+    }),
+    telefon: await db.assetKind.create({
+      data: { key: "TEL", name: "Telefon", icon: "Smartphone", sortOrder: 40 },
+    }),
+    monitor: await db.assetKind.create({
+      data: { key: "MON", name: "Monitor", icon: "Monitor", sortOrder: 50 },
+    }),
+    drucker: await db.assetKind.create({
+      data: { key: "DRU", name: "Drucker", icon: "Printer", sortOrder: 60, requiresMac: true },
+    }),
+    headset: await db.assetKind.create({
+      data: {
+        key: "HS",
+        name: "Headset",
+        icon: "Headphones",
+        sortOrder: 70,
+        requiresSerial: false,
+      },
+    }),
+    netzwerk: await db.assetKind.create({
+      data: { key: "NET", name: "Netzwerk", icon: "Network", sortOrder: 80, requiresMac: true },
+    }),
+    lizenz: await db.assetKind.create({
+      data: {
+        key: "LIZ",
+        name: "Software-Lizenz",
+        icon: "KeyRound",
+        sortOrder: 90,
+        requiresSerial: false,
+      },
+    }),
+    sonstiges: await db.assetKind.create({
+      data: {
+        key: "SON",
+        name: "Sonstiges",
+        icon: "Package",
+        sortOrder: 100,
+        requiresSerial: false,
+      },
+    }),
+  };
+
+  await db.assetCounter.createMany({
+    data: Object.values(arten).map((a) => ({ kindId: a.id, value: 0 })),
+  });
+
+  // --- Hersteller ----------------------------------------------------------
+  const hersteller = {
+    lenovo: await db.manufacturer.create({
+      data: { name: "Lenovo", website: "https://www.lenovo.com", supportPhone: "0800 500 4618" },
+    }),
+    dell: await db.manufacturer.create({
+      data: { name: "Dell", website: "https://www.dell.de", supportPhone: "069 9792 3355" },
+    }),
+    apple: await db.manufacturer.create({
+      data: { name: "Apple", website: "https://www.apple.com/de", supportPhone: "0800 6645 451" },
+    }),
+    samsung: await db.manufacturer.create({ data: { name: "Samsung" } }),
+    kyocera: await db.manufacturer.create({ data: { name: "Kyocera" } }),
+    jabra: await db.manufacturer.create({ data: { name: "Jabra" } }),
+    hp: await db.manufacturer.create({ data: { name: "HP" } }),
+  };
+
+  const euro = (betrag: number) => Math.round(betrag * 100);
+
+  // --- Geräte --------------------------------------------------------------
+  // Die ersten sieben Einträge behalten ihre Reihenfolge: Weiter unten
+  // verweisen drei Tickets über den Feldindex auf sie.
   const geraete = await Promise.all(
     [
       {
-        assetTag: "IT-00101",
+        assetTag: "NB-00101",
         name: "Notebook Wohnbereichsleitung Nord",
-        type: AssetType.NOTEBOOK,
-        manufacturer: "Lenovo",
+        kindId: arten.notebook.id,
+        teamId: it.id,
+        status: AssetStatus.HERAUSGEGEBEN,
+        manufacturerId: hersteller.lenovo.id,
         model: "ThinkPad L14",
         serial: "PF3KL201",
         siteId: standorte.wohnheimNord.id,
         assignedToId: anna.id,
+        assignedAt: vor(tage(420)),
+        costCenterId: kostenstellen.wohnenNord.id,
+        purchasedAt: vor(tage(430)),
+        warrantyUntil: new Date(JETZT.getTime() + tage(665)),
+        purchasePriceCents: euro(989),
+        supplier: "Bechtle AG",
+        invoiceNumber: "RE-2025-04412",
       },
       {
-        assetTag: "IT-00102",
+        assetTag: "PC-00102",
         name: "PC Dienstzimmer Nord",
-        type: AssetType.PC,
-        manufacturer: "Dell",
+        kindId: arten.pc.id,
+        teamId: it.id,
+        status: AssetStatus.LAGER,
+        manufacturerId: hersteller.dell.id,
         model: "OptiPlex 5000",
         serial: "DL9928KK",
         siteId: standorte.wohnheimNord.id,
         room: "Dienstzimmer",
+        costCenterId: kostenstellen.wohnenNord.id,
+        purchasedAt: vor(tage(700)),
+        purchasePriceCents: euro(749),
       },
       {
-        assetTag: "IT-00210",
+        assetTag: "DRU-00210",
         name: "Etagendrucker Wohnheim Nord",
-        type: AssetType.DRUCKER,
-        manufacturer: "Kyocera",
+        kindId: arten.drucker.id,
+        teamId: it.id,
+        status: AssetStatus.LAGER,
+        manufacturerId: hersteller.kyocera.id,
         model: "ECOSYS M3145",
         serial: "KY44120",
         siteId: standorte.wohnheimNord.id,
         room: "Flur 1. OG",
+        costCenterId: kostenstellen.wohnenNord.id,
+        purchasedAt: vor(tage(1100)),
+        purchasePriceCents: euro(612),
       },
       {
-        assetTag: "IT-00211",
+        assetTag: "DRU-00211",
         name: "Kopierer Lehrerzimmer",
-        type: AssetType.DRUCKER,
-        manufacturer: "Kyocera",
+        kindId: arten.drucker.id,
+        teamId: it.id,
+        status: AssetStatus.LAGER,
+        manufacturerId: hersteller.kyocera.id,
         model: "TASKalfa 3554ci",
         serial: "KY77315",
         siteId: standorte.schule.id,
         room: "Lehrerzimmer",
+        costCenterId: kostenstellen.schule.id,
+        purchasedAt: vor(tage(980)),
+        purchasePriceCents: euro(3290),
       },
       {
-        assetTag: "IT-00330",
+        assetTag: "TAB-00330",
         name: "Tablet Klasse 3b",
-        type: AssetType.TABLET,
-        manufacturer: "Apple",
+        kindId: arten.tablet.id,
+        teamId: it.id,
+        status: AssetStatus.HERAUSGEGEBEN,
+        manufacturerId: hersteller.apple.id,
         model: "iPad 10",
         serial: "AP553120",
         siteId: standorte.schule.id,
         assignedToId: claudia.id,
+        assignedAt: vor(tage(200)),
+        costCenterId: kostenstellen.schule.id,
+        purchasedAt: vor(tage(210)),
+        warrantyUntil: new Date(JETZT.getTime() + tage(155)),
+        purchasePriceCents: euro(429),
       },
       {
-        assetTag: "IT-00415",
+        assetTag: "TEL-00415",
         name: "Diensthandy Fahrdienst",
-        type: AssetType.TELEFON,
-        manufacturer: "Samsung",
+        kindId: arten.telefon.id,
+        teamId: it.id,
+        status: AssetStatus.HERAUSGEGEBEN,
+        manufacturerId: hersteller.samsung.id,
         model: "Galaxy A54",
         serial: "SM998210",
+        imei: "356938035643809",
         siteId: standorte.verwaltung.id,
         assignedToId: fdRalf.id,
+        assignedAt: vor(tage(120)),
+        costCenterId: kostenstellen.verwaltung.id,
+        purchasedAt: vor(tage(130)),
+        purchasePriceCents: euro(359),
       },
       {
-        assetTag: "IT-00520",
+        assetTag: "PC-00520",
         name: "PC Gruppenraum Werkstatt",
-        type: AssetType.PC,
-        manufacturer: "Dell",
+        kindId: arten.pc.id,
+        teamId: it.id,
+        status: AssetStatus.HERAUSGEGEBEN,
+        manufacturerId: hersteller.dell.id,
         model: "OptiPlex 3000",
         serial: "DL7712XX",
         siteId: standorte.werkstatt.id,
         assignedToId: sonja.id,
+        assignedAt: vor(tage(300)),
+        costCenterId: kostenstellen.werkstatt.id,
+        purchasedAt: vor(tage(310)),
+        purchasePriceCents: euro(699),
+      },
+
+      // Ab hier neu – damit Liste, Filter und Auswertung etwas zu zeigen haben.
+      {
+        assetTag: "NB-00103",
+        name: "Notebook Leitung IT",
+        kindId: arten.notebook.id,
+        teamId: it.id,
+        status: AssetStatus.HERAUSGEGEBEN,
+        manufacturerId: hersteller.lenovo.id,
+        model: "ThinkPad T14s",
+        serial: "PF4MM880",
+        siteId: standorte.verwaltung.id,
+        assignedToId: admin.id,
+        assignedAt: vor(tage(95)),
+        costCenterId: kostenstellen.it.id,
+        purchasedAt: vor(tage(100)),
+        warrantyUntil: new Date(JETZT.getTime() + tage(995)),
+        purchasePriceCents: euro(1449),
+        supplier: "Bechtle AG",
+      },
+      {
+        assetTag: "NB-00104",
+        name: "Leihnotebook 1",
+        kindId: arten.notebook.id,
+        teamId: it.id,
+        status: AssetStatus.LAGER,
+        manufacturerId: hersteller.lenovo.id,
+        model: "ThinkPad L13",
+        serial: "PF2XY104",
+        storageLocation: "IT-Lager, Schrank 2, Fach C",
+        costCenterId: kostenstellen.it.id,
+        purchasedAt: vor(tage(560)),
+        purchasePriceCents: euro(849),
+        notes: "Wird für Vertretungen und Schulungen herausgegeben.",
+      },
+      {
+        assetTag: "NB-00105",
+        name: "Leihnotebook 2",
+        kindId: arten.notebook.id,
+        teamId: it.id,
+        status: AssetStatus.REPARATUR,
+        manufacturerId: hersteller.lenovo.id,
+        model: "ThinkPad L13",
+        serial: "PF2XY105",
+        costCenterId: kostenstellen.it.id,
+        purchasedAt: vor(tage(560)),
+        purchasePriceCents: euro(849),
+        notes: "Scharnier gebrochen, seit 12 Tagen beim Hersteller.",
+      },
+      {
+        assetTag: "TAB-00331",
+        name: "Tablet Klasse 4a",
+        kindId: arten.tablet.id,
+        teamId: it.id,
+        status: AssetStatus.LAGER,
+        manufacturerId: hersteller.apple.id,
+        model: "iPad 10",
+        serial: "AP553121",
+        siteId: standorte.schule.id,
+        storageLocation: "Medienschrank Schule",
+        costCenterId: kostenstellen.schule.id,
+        purchasedAt: vor(tage(210)),
+        warrantyUntil: new Date(JETZT.getTime() + tage(155)),
+        purchasePriceCents: euro(429),
+      },
+      {
+        assetTag: "TEL-00416",
+        name: "Diensthandy Bereitschaft Hausmeister",
+        kindId: arten.telefon.id,
+        teamId: it.id,
+        status: AssetStatus.HERAUSGEGEBEN,
+        manufacturerId: hersteller.samsung.id,
+        model: "Galaxy A34",
+        serial: "SM771044",
+        imei: "356938035643810",
+        assignedToId: hmFrank.id,
+        assignedAt: vor(tage(60)),
+        costCenterId: kostenstellen.verwaltung.id,
+        purchasedAt: vor(tage(70)),
+        purchasePriceCents: euro(289),
+      },
+      {
+        assetTag: "MON-00610",
+        name: "Bildschirm Verwaltung Buchhaltung",
+        kindId: arten.monitor.id,
+        teamId: it.id,
+        status: AssetStatus.HERAUSGEGEBEN,
+        manufacturerId: hersteller.hp.id,
+        model: "E24 G5",
+        serial: "HP660120",
+        siteId: standorte.verwaltung.id,
+        assignedToId: vwPetra.id,
+        assignedAt: vor(tage(240)),
+        costCenterId: kostenstellen.verwaltung.id,
+        purchasedAt: vor(tage(250)),
+        purchasePriceCents: euro(179),
+      },
+      {
+        assetTag: "MON-00611",
+        name: "Bildschirm Ersatz",
+        kindId: arten.monitor.id,
+        teamId: it.id,
+        status: AssetStatus.LAGER,
+        manufacturerId: hersteller.hp.id,
+        model: "E24 G5",
+        serial: "HP660121",
+        storageLocation: "IT-Lager, Regal A",
+        costCenterId: kostenstellen.it.id,
+        purchasedAt: vor(tage(250)),
+        purchasePriceCents: euro(179),
+      },
+      {
+        assetTag: "HS-00701",
+        name: "Headset Telefonzentrale",
+        kindId: arten.headset.id,
+        teamId: it.id,
+        status: AssetStatus.HERAUSGEGEBEN,
+        manufacturerId: hersteller.jabra.id,
+        model: "Evolve2 65",
+        serial: "JB220417",
+        siteId: standorte.verwaltung.id,
+        assignedToId: vwPetra.id,
+        assignedAt: vor(tage(150)),
+        costCenterId: kostenstellen.verwaltung.id,
+        purchasedAt: vor(tage(160)),
+        // Kopfhörer ab dieser Größenordnung gehören ins Inventar.
+        purchasePriceCents: euro(219),
+      },
+      {
+        assetTag: "NET-00801",
+        name: "Switch Serverraum Verwaltung",
+        kindId: arten.netzwerk.id,
+        teamId: it.id,
+        status: AssetStatus.LAGER,
+        manufacturerId: hersteller.hp.id,
+        model: "Aruba 2930F 24G",
+        serial: "AR445120",
+        siteId: standorte.verwaltung.id,
+        room: "Serverraum",
+        costCenterId: kostenstellen.it.id,
+        purchasedAt: vor(tage(1500)),
+        purchasePriceCents: euro(1290),
+      },
+      {
+        assetTag: "PC-00521",
+        name: "PC Werkstatt Büro (alt)",
+        kindId: arten.pc.id,
+        teamId: it.id,
+        status: AssetStatus.AUSGESONDERT,
+        manufacturerId: hersteller.dell.id,
+        model: "OptiPlex 3050",
+        serial: "DL5510AA",
+        costCenterId: kostenstellen.werkstatt.id,
+        purchasedAt: vor(tage(2600)),
+        purchasePriceCents: euro(629),
+        retiredAt: vor(tage(40)),
+        retiredReason:
+          "Windows 10 ohne Nachfolgefähigkeit, Gerät fachgerecht entsorgt.",
+      },
+      {
+        assetTag: "TEL-00417",
+        name: "Diensthandy Werkstattleitung",
+        kindId: arten.telefon.id,
+        teamId: it.id,
+        status: AssetStatus.VERLUST,
+        manufacturerId: hersteller.samsung.id,
+        model: "Galaxy A33",
+        serial: "SM660901",
+        imei: "356938035643811",
+        costCenterId: kostenstellen.werkstatt.id,
+        purchasedAt: vor(tage(800)),
+        purchasePriceCents: euro(279),
+        notes: "Auf einer Fahrt verloren gegangen, Karte gesperrt.",
+      },
+      {
+        assetTag: "LIZ-00901",
+        name: "Office-Lizenz Verwaltung (25 Plätze)",
+        kindId: arten.lizenz.id,
+        teamId: it.id,
+        status: AssetStatus.LAGER,
+        model: "Microsoft 365 Business Standard",
+        costCenterId: kostenstellen.verwaltung.id,
+        purchasedAt: vor(tage(180)),
+        purchasePriceCents: euro(3735),
+        notes: "Jahreslizenz, Verlängerung rechtzeitig einplanen.",
       },
     ].map((data) => db.asset.create({ data })),
   );
+
+  // --- MAC-Adressen --------------------------------------------------------
+  // Immer klein und mit Doppelpunkten – so legt sie auch die Anwendung ab.
+  await db.assetMac.createMany({
+    data: [
+      { assetId: geraete[0].id, address: "3c:52:82:11:0a:01", kind: MacKind.LAN },
+      { assetId: geraete[0].id, address: "3c:52:82:11:0a:02", kind: MacKind.WLAN },
+      { assetId: geraete[1].id, address: "b0:83:fe:44:12:80", kind: MacKind.LAN },
+      { assetId: geraete[2].id, address: "00:17:c8:31:44:aa", kind: MacKind.LAN },
+      { assetId: geraete[3].id, address: "00:17:c8:77:31:5b", kind: MacKind.LAN },
+      { assetId: geraete[4].id, address: "a4:83:e7:55:31:20", kind: MacKind.WLAN },
+      { assetId: geraete[7].id, address: "3c:52:82:40:88:01", kind: MacKind.LAN },
+      { assetId: geraete[7].id, address: "3c:52:82:48:88:02", kind: MacKind.WLAN },
+      { assetId: geraete[15].id, address: "94:40:c9:80:12:01", kind: MacKind.LAN },
+    ],
+  });
+
+  // --- Chronik und Übergabeprotokolle --------------------------------------
+  // Zwei Protokolle, damit sich die Druckansicht ohne Vorarbeit ansehen lässt.
+  await db.handoverCounter.create({ data: { year: jahr, value: 2 } });
+
+  await db.assetHandover.createMany({
+    data: [
+      {
+        protocolNo: `UP-${jahr}-000001`,
+        assetId: geraete[0].id,
+        userId: anna.id,
+        userName: anna.name,
+        direction: HandoverDirection.AUSGABE,
+        handedOverAt: vor(tage(420)),
+        actorId: itKlaus.id,
+        actorName: itKlaus.name,
+        condition: "Neugerät, unbeschädigt",
+        accessories: "Netzteil 65 W, Notebooktasche, Funkmaus",
+      },
+      {
+        protocolNo: `UP-${jahr}-000002`,
+        assetId: geraete[11].id,
+        userId: hmFrank.id,
+        userName: hmFrank.name,
+        direction: HandoverDirection.AUSGABE,
+        handedOverAt: vor(tage(60)),
+        actorId: itKlaus.id,
+        actorName: itKlaus.name,
+        condition: "Neugerät",
+        accessories: "Ladekabel, Schutzhülle",
+        note: "Für die Rufbereitschaft am Wochenende.",
+      },
+    ],
+  });
+
+  await db.assetEvent.createMany({
+    data: [
+      {
+        assetId: geraete[0].id,
+        type: AssetEventType.ANGELEGT,
+        actorId: itKlaus.id,
+        actorName: itKlaus.name,
+        createdAt: vor(tage(430)),
+      },
+      {
+        assetId: geraete[0].id,
+        type: AssetEventType.HERAUSGEGEBEN,
+        fromStatus: AssetStatus.LAGER,
+        toStatus: AssetStatus.HERAUSGEGEBEN,
+        userId: anna.id,
+        actorId: itKlaus.id,
+        actorName: itKlaus.name,
+        note: "Übergabeprotokoll UP-" + jahr + "-000001",
+        createdAt: vor(tage(420)),
+      },
+      {
+        assetId: geraete[10].id,
+        type: AssetEventType.STATUS,
+        fromStatus: AssetStatus.LAGER,
+        toStatus: AssetStatus.REPARATUR,
+        actorId: itKlaus.id,
+        actorName: itKlaus.name,
+        note: "Scharnier gebrochen, Abholung durch den Hersteller veranlasst.",
+        createdAt: vor(tage(12)),
+      },
+      {
+        assetId: geraete[17].id,
+        type: AssetEventType.STATUS,
+        fromStatus: AssetStatus.LAGER,
+        toStatus: AssetStatus.AUSGESONDERT,
+        actorId: itKlaus.id,
+        actorName: itKlaus.name,
+        note: "Windows 10 ohne Nachfolgefähigkeit, Gerät fachgerecht entsorgt.",
+        createdAt: vor(tage(40)),
+      },
+    ],
+  });
 
   // =========================================================================
   // Tickets

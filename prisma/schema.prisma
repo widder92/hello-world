@@ -169,16 +169,52 @@ enum AssignStrategy {
   ROUND_ROBIN
 }
 
-enum AssetType {
-  PC
-  NOTEBOOK
-  TABLET
-  DRUCKER
-  TELEFON
-  MONITOR
-  NETZWERK
-  SOFTWARE_LIZENZ
-  SONSTIGES
+/// Wo sich ein Gerät gerade befindet.
+///
+/// Die Gerätearten selbst stehen bewusst in einer Tabelle (AssetKind) und nicht
+/// in einem Enum – ein neues Modell soll ohne Datenbankänderung anlegbar sein.
+/// Der Status dagegen gehört hierher: Es sind genau diese sechs Zustände, an
+/// denen die Übergänge und die halbe Auswertung hängen, und ein siebter würde
+/// beides stillschweigend unvollständig machen.
+enum AssetStatus {
+  /// Einsatzbereit im Lager.
+  LAGER
+  /// Für eine Person vorgemerkt, aber noch nicht übergeben.
+  RESERVIERT
+  /// Bei einer Person im Einsatz.
+  HERAUSGEGEBEN
+  /// Beim Hersteller oder in der Werkstatt.
+  REPARATUR
+  /// Ausgemustert, verkauft oder entsorgt.
+  AUSGESONDERT
+  /// Verloren oder gestohlen.
+  VERLUST
+}
+
+/// Art einer Netzwerkadresse. Ein Notebook hat üblicherweise drei.
+enum MacKind {
+  LAN
+  WLAN
+  BLUETOOTH
+  SONSTIGE
+}
+
+/// Richtung einer Übergabe.
+enum HandoverDirection {
+  /// Vom Lager an eine Person.
+  AUSGABE
+  /// Von einer Person zurück.
+  RUECKNAHME
+}
+
+/// Was in der Gerätechronik festgehalten wird.
+enum AssetEventType {
+  ANGELEGT
+  GEAENDERT
+  STATUS
+  HERAUSGEGEBEN
+  ZURUECKGENOMMEN
+  NOTIZ
 }
 
 enum ArticleVisibility {
@@ -252,11 +288,18 @@ model Team {
   portalDescription String?
 
   // --- Verhalten -----------------------------------------------------------
-  autoAssign AssignStrategy @default(NONE)
+  autoAssign                AssignStrategy @default(NONE)
   /// Ob Steuerbefehle in Antwortmails (#erledigt, #intern, …) ausgeführt werden.
-  allowEmailCommands Boolean @default(true)
+  allowEmailCommands        Boolean        @default(true)
   /// Ob der Melder bei einer Weiterleitung automatisch informiert wird.
-  notifyRequesterOnTransfer Boolean @default(true)
+  notifyRequesterOnTransfer Boolean        @default(true)
+
+  /// Ob dieser Bereich ein eigenes Inventar führt.
+  ///
+  /// Bewusst ein eigener Schalter und nicht aus der Ausbaustufe abgeleitet:
+  /// Die IT inventarisiert Geräte, der Hausmeister vielleicht später sein
+  /// Werkzeug – das hat mit VOLL oder EINFACH nichts zu tun.
+  hasInventory Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -270,6 +313,7 @@ model Team {
   templates   TicketTemplate[]
   articles    KbArticle[]
   counters    TicketCounter[]
+  assets      Asset[]
 
   @@index([isActive, sortOrder])
   @@index([portalVisible])
@@ -284,7 +328,7 @@ model Queue {
   siteId String?
   site   Site?   @relation(fields: [siteId], references: [id], onDelete: SetNull)
 
-  name String
+  name         String
   /// Eigene Empfangsadresse, z. B. hausmeister-musterstadt2@example.org
   inboundEmail String? @unique
 
@@ -334,7 +378,7 @@ model User {
 
   /// Barrierefreiheitseinstellungen:
   /// { largeText, highContrast, reduceMotion, simpleMode }
-  a11yPrefs Json @default("{}")
+  a11yPrefs Json   @default("{}")
   /// Oberflächenthema: "light" | "dark" | "system"
   theme     String @default("system")
 
@@ -362,7 +406,14 @@ model User {
   savedViews       SavedView[]
   articles         KbArticle[]
   auditEntries     AuditLog[]
+
+  /// Geräte, die dieser Person zugewiesen sind – die Grundlage für
+  /// „Meine Geräte".
   assets           Asset[]
+  assetEvents      AssetEvent[]    @relation("AssetEreignisPerson")
+  assetEventsActed AssetEvent[]    @relation("AssetEreignisUrheber")
+  handovers        AssetHandover[] @relation("AssetUebergabeEmpfaenger")
+  handoversActed   AssetHandover[] @relation("AssetUebergabeUrheber")
 
   @@index([isActive])
   @@index([siteId])
@@ -386,11 +437,11 @@ model TeamMembership {
 /// bekommt zwei Einträge. Bereichsleitungen (TeamRole.LEAD) sehen alle
 /// Eingänge ihres Bereichs auch ohne Eintrag hier.
 model QueueAccess {
-  id      String  @id @default(cuid())
-  userId  String
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  queueId String
-  queue   Queue   @relation(fields: [queueId], references: [id], onDelete: Cascade)
+  id        String  @id @default(cuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  queueId   String
+  queue     Queue   @relation(fields: [queueId], references: [id], onDelete: Cascade)
   /// Startansicht nach dem Anmelden.
   isDefault Boolean @default(false)
 
@@ -579,9 +630,9 @@ model Ticket {
   roomOrArea String?
 
   requesterId String
-  requester   User   @relation("TicketRequester", fields: [requesterId], references: [id])
+  requester   User    @relation("TicketRequester", fields: [requesterId], references: [id])
   assigneeId  String?
-  assignee    User?  @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  assignee    User?   @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
 
   // --- Zustand ------------------------------------------------------------
   status   TicketStatus @default(NEU)
@@ -594,13 +645,13 @@ model Ticket {
   formData Json?
 
   // --- Fristen ------------------------------------------------------------
-  slaPolicyId       String?
-  slaPolicy         SlaPolicy? @relation(fields: [slaPolicyId], references: [id], onDelete: SetNull)
-  firstResponseDue  DateTime?
-  resolutionDue     DateTime?
-  firstResponseAt   DateTime?
-  slaWarningNotified Boolean   @default(false)
-  slaBreached       Boolean    @default(false)
+  slaPolicyId        String?
+  slaPolicy          SlaPolicy? @relation(fields: [slaPolicyId], references: [id], onDelete: SetNull)
+  firstResponseDue   DateTime?
+  resolutionDue      DateTime?
+  firstResponseAt    DateTime?
+  slaWarningNotified Boolean    @default(false)
+  slaBreached        Boolean    @default(false)
 
   resolvedAt DateTime?
   closedAt   DateTime?
@@ -615,19 +666,19 @@ model Ticket {
   /// Zur Sichtung markiert, weil der Absender unbekannt war.
   quarantined          Boolean @default(false)
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
   lastActivityAt DateTime @default(now())
 
-  messages    TicketMessage[]
-  events      TicketEvent[]
-  attachments Attachment[]
-  watchers    TicketWatcher[]
-  tags        TicketTag[]
-  tasks       TicketTask[]
-  assets      TicketAsset[]
-  linksFrom   TicketLink[]    @relation("LinkFrom")
-  linksTo     TicketLink[]    @relation("LinkTo")
+  messages      TicketMessage[]
+  events        TicketEvent[]
+  attachments   Attachment[]
+  watchers      TicketWatcher[]
+  tags          TicketTag[]
+  tasks         TicketTask[]
+  assets        TicketAsset[]
+  linksFrom     TicketLink[]    @relation("LinkFrom")
+  linksTo       TicketLink[]    @relation("LinkTo")
   notifications Notification[]
 
   @@index([queueId, status])
@@ -658,7 +709,7 @@ model TicketMessage {
   bodyText String @db.Text
 
   // --- E-Mail-Verkettung --------------------------------------------------
-  emailMessageId String? @unique
+  emailMessageId String?   @unique
   emailInReplyTo String?
   /// Ob diese Nachricht bereits per Mail verschickt wurde.
   emailSentAt    DateTime?
@@ -727,11 +778,11 @@ model TicketWatcher {
 }
 
 model TicketTask {
-  id       String  @id @default(cuid())
+  id       String    @id @default(cuid())
   ticketId String
-  ticket   Ticket  @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  ticket   Ticket    @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   title    String
-  done     Boolean @default(false)
+  done     Boolean   @default(false)
   doneAt   DateTime?
 
   assigneeId String?
@@ -769,9 +820,13 @@ model Attachment {
   messageId String?
   message   TicketMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
 
-  filename String
-  mimeType String
-  size     Int
+  /// Gerätefoto, Rechnung oder Lieferschein im Inventar.
+  assetId String?
+  asset   Asset?  @relation("AssetDateien", fields: [assetId], references: [id], onDelete: Cascade)
+
+  filename   String
+  mimeType   String
+  size       Int
   /// Pfad in der Dateiablage, relativ zu UPLOAD_DIR.
   storageKey String
   checksum   String?
@@ -784,8 +839,12 @@ model Attachment {
 
   createdAt DateTime @default(now())
 
+  /// Rückrichtung für Asset.photo – dasselbe Foto, von der Geräteseite aus.
+  fotoVon Asset? @relation("AssetFoto")
+
   @@index([ticketId])
   @@index([messageId])
+  @@index([assetId])
 }
 
 // ===========================================================================
@@ -837,8 +896,8 @@ model KbArticle {
   slug  String @unique
   title String
 
-  body    String            @db.Text
-  summary String?
+  body       String            @db.Text
+  summary    String?
   visibility ArticleVisibility @default(INTERN)
 
   teamId String?
@@ -847,10 +906,10 @@ model KbArticle {
   authorId String?
   author   User?   @relation(fields: [authorId], references: [id], onDelete: SetNull)
 
-  published   Boolean @default(false)
-  viewCount   Int     @default(0)
-  helpfulYes  Int     @default(0)
-  helpfulNo   Int     @default(0)
+  published  Boolean @default(false)
+  viewCount  Int     @default(0)
+  helpfulYes Int     @default(0)
+  helpfulNo  Int     @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -859,35 +918,253 @@ model KbArticle {
   @@index([teamId])
 }
 
-model Asset {
-  id       String    @id @default(cuid())
-  assetTag String    @unique
-  name     String
-  type     AssetType @default(SONSTIGES)
+// ===========================================================================
+// IT-Inventar
+// ===========================================================================
 
-  manufacturer String?
-  model        String?
-  serial       String?
+/// Geräteart – PC, Notebook, Tablet, Smartphone, Headset, …
+///
+/// Eine Tabelle statt eines Enums, weil sich die Liste ändert: Heute sind es
+/// Kopfhörer ab einem gewissen Wert, morgen Konferenzkameras. Eine neue Art
+/// darf keine Datenbankänderung kosten.
+model AssetKind {
+  id   String @id @default(cuid())
+  /// Kurzzeichen, zugleich Präfix der Inventarnummer, z. B. "NB" -> NB-00042.
+  key  String @unique
+  name String @unique
 
-  siteId String?
-  site   Site?   @relation(fields: [siteId], references: [id], onDelete: SetNull)
-  room   String?
+  icon      String  @default("Package") /// Name eines lucide-react-Symbols
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
 
-  assignedToId String?
-  assignedTo   User?   @relation(fields: [assignedToId], references: [id], onDelete: SetNull)
+  /// Ob das Formular eine Seriennummer verlangt. Ein Monitor hat eine,
+  /// ein Softwareschlüssel nicht.
+  requiresSerial Boolean @default(true)
+  /// Ob das Formular mindestens eine MAC-Adresse verlangt.
+  requiresMac    Boolean @default(false)
 
-  purchasedAt   DateTime?
-  warrantyUntil DateTime?
-  notes         String?
-  isActive      Boolean   @default(true)
+  /// Vorbelegung im Formular – die meisten Notebooks laufen auf derselben
+  /// Kostenstelle, und Tippen ist die häufigste Fehlerquelle.
+  defaultCostCenterId String?
+  defaultCostCenter   CostCenter? @relation(fields: [defaultCostCenterId], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tickets TicketAsset[]
+  assets   Asset[]
+  counters AssetCounter[]
+
+  @@index([isActive, sortOrder])
+}
+
+/// Hersteller. Bisher Freitext, dadurch standen "Lenovo", "lenovo" und
+/// "LENOVO" nebeneinander und keine Auswertung stimmte. Die Support-Nummer
+/// steht hier, damit sie im Störungsfall nicht gesucht werden muss.
+model Manufacturer {
+  id   String @id @default(cuid())
+  name String @unique
+
+  website      String?
+  supportPhone String?
+  notes        String?
+  isActive     Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  assets Asset[]
+
+  @@index([isActive, name])
+}
+
+/// Kostenstelle. Gepflegte Liste, damit die Auswertung überhaupt summieren
+/// kann – als Freitextfeld wäre jede Summe geraten.
+model CostCenter {
+  id   String @id @default(cuid())
+  code String @unique /// z. B. "4300"
+  name String
+
+  description String?
+  sortOrder   Int     @default(0)
+  isActive    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  assets Asset[]
+  kinds  AssetKind[]
+
+  @@index([isActive, sortOrder])
+}
+
+/// Laufende Nummer je Geräteart, nach demselben Muster wie TicketCounter.
+model AssetCounter {
+  id     String    @id @default(cuid())
+  kindId String    @unique
+  kind   AssetKind @relation(fields: [kindId], references: [id], onDelete: Cascade)
+  value  Int       @default(0)
+}
+
+model Asset {
+  id       String @id @default(cuid())
+  /// Sprechende Inventarnummer, z. B. "NB-00042".
+  assetTag String @unique
+  name     String
+
+  kindId String
+  kind   AssetKind @relation(fields: [kindId], references: [id], onDelete: Restrict)
+
+  /// Welcher Bereich das Gerät führt. Entscheidet mit darüber, wer es sieht.
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Restrict)
+
+  status AssetStatus @default(LAGER)
+
+  manufacturerId String?
+  manufacturer   Manufacturer? @relation(fields: [manufacturerId], references: [id], onDelete: SetNull)
+  model          String?
+  serial         String?
+  /// Bei Mobilgeräten. Steht auf der Rechnung und beim Mobilfunkanbieter.
+  imei           String?
+
+  siteId          String?
+  site            Site?   @relation(fields: [siteId], references: [id], onDelete: SetNull)
+  room            String?
+  /// Wo im Lager das Gerät liegt, z. B. "Schrank 2, Fach C".
+  storageLocation String?
+
+  assignedToId String?
+  assignedTo   User?     @relation(fields: [assignedToId], references: [id], onDelete: SetNull)
+  assignedAt   DateTime?
+
+  costCenterId String?
+  costCenter   CostCenter? @relation(fields: [costCenterId], references: [id], onDelete: SetNull)
+
+  purchasedAt        DateTime?
+  warrantyUntil      DateTime?
+  /// Anschaffungspreis in Cent. Bewusst ganzzahlig: Ein Gleitkommawert kann
+  /// 12,99 nicht genau darstellen, und eine Kostenstellenauswertung, die um
+  /// Cent danebenliegt, ist wertlos.
+  purchasePriceCents Int?
+  supplier           String?
+  invoiceNumber      String?
+
+  /// Foto des Geräts. Zeigt beim Herausgeben, in welchem Zustand es war.
+  photoId String?     @unique
+  photo   Attachment? @relation("AssetFoto", fields: [photoId], references: [id], onDelete: SetNull)
+
+  notes String?
+
+  retiredAt     DateTime?
+  retiredReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tickets   TicketAsset[]
+  macs      AssetMac[]
+  events    AssetEvent[]
+  handovers AssetHandover[]
+  dateien   Attachment[]    @relation("AssetDateien")
 
   @@index([siteId])
   @@index([assignedToId])
+  @@index([teamId, status])
+  @@index([kindId])
+  @@index([costCenterId])
+  @@index([serial])
+}
+
+/// Netzwerkadresse eines Geräts. Eigene Tabelle, weil ein Notebook LAN, WLAN
+/// und Bluetooth hat – in einem einzelnen Feld ginge das verloren.
+model AssetMac {
+  id      String @id @default(cuid())
+  assetId String
+  asset   Asset  @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  /// Immer normalisiert als "aa:bb:cc:dd:ee:ff" abgelegt, sonst greift weder
+  /// die Eindeutigkeit noch die Suche.
+  address String  @unique
+  kind    MacKind @default(LAN)
+  label   String?
+
+  createdAt DateTime @default(now())
+
+  @@index([assetId])
+}
+
+/// Gerätechronik. Jede Änderung am Status landet hier – dargestellt wird sie
+/// wie der Verlauf eines Vorgangs.
+model AssetEvent {
+  id      String @id @default(cuid())
+  assetId String
+  asset   Asset  @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  type       AssetEventType
+  fromStatus AssetStatus?
+  toStatus   AssetStatus?
+
+  /// Betroffene Person, etwa der Empfänger bei einer Herausgabe.
+  userId String?
+  user   User?   @relation("AssetEreignisPerson", fields: [userId], references: [id], onDelete: SetNull)
+
+  /// Wer gehandelt hat. Der Name bleibt erhalten, auch wenn das Konto
+  /// später gelöscht wird – sonst stünde die Chronik ohne Urheber da.
+  actorId   String?
+  actor     User?   @relation("AssetEreignisUrheber", fields: [actorId], references: [id], onDelete: SetNull)
+  actorName String
+
+  note String?
+
+  createdAt DateTime @default(now())
+
+  @@index([assetId, createdAt])
+}
+
+/// Übergabeprotokoll.
+///
+/// Ein eigener Datensatz und keine bloße Notiz in der Chronik: Das Protokoll
+/// wird ausgedruckt, unterschrieben, abgeheftet und Jahre später wieder
+/// hervorgeholt – dann muss genau das wieder erscheinen, was damals gedruckt
+/// wurde, samt Zubehör und Zustand.
+model AssetHandover {
+  id         String @id @default(cuid())
+  /// Fortlaufende Protokollnummer, z. B. "UP-2026-000031".
+  protocolNo String @unique
+
+  assetId String
+  asset   Asset  @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  userId   String?
+  user     User?   @relation("AssetUebergabeEmpfaenger", fields: [userId], references: [id], onDelete: SetNull)
+  /// Name des Empfängers zum Zeitpunkt der Übergabe – siehe actorName oben.
+  userName String
+
+  direction HandoverDirection
+
+  handedOverAt DateTime @default(now())
+
+  actorId   String?
+  actor     User?   @relation("AssetUebergabeUrheber", fields: [actorId], references: [id], onDelete: SetNull)
+  actorName String
+
+  /// Zustand bei der Übergabe, z. B. "neuwertig" oder "Kratzer am Deckel".
+  condition   String?
+  /// Mitgegebenes Zubehör: Netzteil, Tasche, Maus.
+  accessories String?
+  note        String?
+
+  createdAt DateTime @default(now())
+
+  @@index([assetId, handedOverAt])
+  @@index([userId])
+}
+
+/// Laufende Nummer der Übergabeprotokolle, je Jahr.
+model HandoverCounter {
+  id    String @id @default(cuid())
+  year  Int    @unique
+  value Int    @default(0)
 }
 
 model TicketAsset {
@@ -906,10 +1183,10 @@ model SavedView {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  name String
+  name      String
   /// Filterzustand als JSON, entspricht den Suchparametern der Ticketliste.
-  filters Json
-  sortOrder Int @default(0)
+  filters   Json
+  sortOrder Int    @default(0)
 
   createdAt DateTime @default(now())
 
@@ -932,13 +1209,13 @@ model MailAccount {
   address String
 
   // --- IMAP ---------------------------------------------------------------
-  imapHost   String?
-  imapPort   Int?    @default(993)
-  imapSecure Boolean @default(true)
-  imapUser   String?
+  imapHost            String?
+  imapPort            Int?    @default(993)
+  imapSecure          Boolean @default(true)
+  imapUser            String?
   /// Mit AES-256-GCM aus APP_SECRET verschlüsselt. Nie im Klartext ablegen.
-  imapPasswordEnc String?
-  imapFolder      String  @default("INBOX")
+  imapPasswordEnc     String?
+  imapFolder          String  @default("INBOX")
   /// Ordner, in den verarbeitete Mails verschoben werden. Leer = nur als
   /// gelesen markieren.
   imapProcessedFolder String?

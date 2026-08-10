@@ -55,6 +55,7 @@ function mitgliedschaft(
   teamId: string,
   role: TeamRole = TeamRole.MEMBER,
   mode: TeamMode = TeamMode.VOLL,
+  teamHasInventory = false,
 ) {
   return {
     teamId,
@@ -63,6 +64,7 @@ function mitgliedschaft(
     teamMode: mode,
     role,
     capabilities: capabilitiesFor(mode),
+    teamHasInventory,
   };
 }
 

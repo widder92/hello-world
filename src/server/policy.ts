@@ -46,6 +46,8 @@ export interface MembershipInfo {
   teamMode: TeamMode;
   role: TeamRole;
   capabilities: TeamCapabilities;
+  /** Ob dieser Bereich ein Inventar führt (Team.hasInventory). */
+  teamHasInventory: boolean;
 }
 
 export interface QueueInfo {
@@ -102,7 +104,14 @@ export const getActor = cache(async (): Promise<Actor | null> => {
         select: {
           role: true,
           team: {
-            select: { id: true, key: true, name: true, mode: true, isActive: true },
+            select: {
+              id: true,
+              key: true,
+              name: true,
+              mode: true,
+              isActive: true,
+              hasInventory: true,
+            },
           },
         },
       },
@@ -137,6 +146,7 @@ export const getActor = cache(async (): Promise<Actor | null> => {
       teamMode: m.team.mode,
       role: m.role,
       capabilities: capabilitiesFor(m.team.mode),
+      teamHasInventory: m.team.hasInventory,
     }));
 
   // Bereichsleitungen sehen alle Eingänge ihres Bereichs, auch ohne
@@ -290,6 +300,66 @@ export function canViewStatistics(actor: Actor, teamId: string): boolean {
   const membership = membershipFor(actor, teamId);
   if (!membership?.capabilities.statistik) return false;
   return membership.role === TeamRole.LEAD;
+}
+
+// ---------------------------------------------------------------------------
+// Inventar
+// ---------------------------------------------------------------------------
+
+export type InventoryLevel =
+  /** Darf Geräte anlegen, ändern, herausgeben – und die Stammdatenlisten pflegen. */
+  | "manage"
+  /** Darf das Inventar sehen und Geräte pflegen, aber keine Stammdatenlisten. */
+  | "read"
+  /** Kein Zugang zum Inventar. Sieht höchstens die eigenen Geräte. */
+  | "none";
+
+/**
+ * Zugang zum Inventar.
+ *
+ * Anders als bei den Vorgängen hängt er nicht an einzelnen Eingängen, sondern
+ * am Bereich: Wer in einem Bereich arbeitet, der ein Inventar führt, sieht
+ * dessen Geräte vollständig. Eine standortweise Trennung wäre hier falsch –
+ * ein Notebook wandert zwischen Häusern, und wer es sucht, muss es finden.
+ *
+ * Die eigenen Geräte sieht jede Person unabhängig davon; dafür ist diese
+ * Funktion nicht zuständig (siehe /meine-geraete).
+ */
+export function inventoryAccess(actor: Actor): InventoryLevel {
+  if (actor.isAdmin) return "manage";
+
+  const inventarBereiche = actor.memberships.filter((m) => m.teamHasInventory);
+  if (inventarBereiche.length === 0) return "none";
+
+  // Die Stammdatenlisten – Gerätearten, Hersteller, Kostenstellen – wirken auf
+  // alle Geräte gleichzeitig. Eine gelöschte Kostenstelle verfälscht jede
+  // Auswertung, deshalb bleibt das Pflegen bei der Bereichsleitung.
+  return inventarBereiche.some((m) => m.role === TeamRole.LEAD)
+    ? "manage"
+    : "read";
+}
+
+/** Bereiche, deren Inventar diese Person führen darf. */
+export function inventoryTeamIds(actor: Actor): string[] {
+  return actor.memberships.filter((m) => m.teamHasInventory).map((m) => m.teamId);
+}
+
+export function requireInventory(
+  actor: Actor,
+  mindestens: Exclude<InventoryLevel, "none"> = "read",
+): InventoryLevel {
+  const stufe = inventoryAccess(actor);
+  if (stufe === "none") {
+    throw new AccessDenied(
+      "Das Inventar steht nur Bereichen offen, die eines führen.",
+    );
+  }
+  if (mindestens === "manage" && stufe !== "manage") {
+    throw new AccessDenied(
+      "Stammdaten des Inventars darf nur die Bereichsleitung ändern.",
+    );
+  }
+  return stufe;
 }
 
 // ---------------------------------------------------------------------------

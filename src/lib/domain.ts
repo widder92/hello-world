@@ -1,7 +1,9 @@
 import {
-  AssetType,
+  AssetStatus,
   EventType,
+  HandoverDirection,
   Impact,
+  MacKind,
   Priority,
   SiteType,
   TicketSource,
@@ -304,18 +306,55 @@ export const SITE_TYPE: Record<SiteType, string> = {
   SONSTIGE: "Sonstiger Standort",
 };
 
-// --- Geräte ----------------------------------------------------------------
+// --- Inventar --------------------------------------------------------------
 
-export const ASSET_TYPE: Record<AssetType, string> = {
-  PC: "PC",
-  NOTEBOOK: "Notebook",
-  TABLET: "Tablet",
-  DRUCKER: "Drucker",
-  TELEFON: "Telefon",
-  MONITOR: "Bildschirm",
-  NETZWERK: "Netzwerkgerät",
-  SOFTWARE_LIZENZ: "Softwarelizenz",
-  SONSTIGES: "Sonstiges",
+/**
+ * Gerätearten stehen in der Tabelle `AssetKind` und sind in der Verwaltung
+ * pflegbar – hier steht deshalb nichts dazu.
+ */
+
+export const ASSET_STATUS: Record<AssetStatus, string> = {
+  LAGER: "Im Lager",
+  RESERVIERT: "Vorgemerkt",
+  HERAUSGEGEBEN: "Herausgegeben",
+  REPARATUR: "In Reparatur",
+  AUSGESONDERT: "Ausgesondert",
+  VERLUST: "Verlust",
+};
+
+/** Ein Satz zur Erklärung, für die Auswahl im Formular. */
+export const ASSET_STATUS_HINWEIS: Record<AssetStatus, string> = {
+  LAGER: "Einsatzbereit und verfügbar.",
+  RESERVIERT: "Für jemanden vorgemerkt, aber noch nicht übergeben.",
+  HERAUSGEGEBEN: "Bei einer Person im Einsatz.",
+  REPARATUR: "Beim Hersteller oder in der Werkstatt.",
+  AUSGESONDERT: "Ausgemustert, verkauft oder entsorgt.",
+  VERLUST: "Verloren oder gestohlen.",
+};
+
+/** Farbton der Statusanzeige – dieselben Töne wie bei den Vorgängen. */
+export const ASSET_STATUS_TON: Record<
+  AssetStatus,
+  "neutral" | "info" | "success" | "warning" | "danger" | "outline"
+> = {
+  LAGER: "success",
+  RESERVIERT: "info",
+  HERAUSGEGEBEN: "info",
+  REPARATUR: "warning",
+  AUSGESONDERT: "neutral",
+  VERLUST: "danger",
+};
+
+export const MAC_KIND: Record<MacKind, string> = {
+  LAN: "LAN (Kabel)",
+  WLAN: "WLAN",
+  BLUETOOTH: "Bluetooth",
+  SONSTIGE: "Sonstige",
+};
+
+export const HANDOVER_DIRECTION: Record<HandoverDirection, string> = {
+  AUSGABE: "Ausgabe",
+  RUECKNAHME: "Rücknahme",
 };
 
 // --- Ereignisse im Verlauf -------------------------------------------------

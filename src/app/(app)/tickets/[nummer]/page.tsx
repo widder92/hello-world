@@ -74,7 +74,14 @@ export default async function TicketSeite({
       tasks: { orderBy: { sortOrder: "asc" } },
       assets: {
         select: {
-          asset: { select: { id: true, assetTag: true, name: true, type: true } },
+          asset: {
+            select: {
+              id: true,
+              assetTag: true,
+              name: true,
+              kind: { select: { name: true } },
+            },
+          },
         },
       },
       linksFrom: {
