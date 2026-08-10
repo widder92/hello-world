@@ -166,7 +166,8 @@ steht in **[BETRIEB.md](BETRIEB.md)**.
 
 ## Demo-Daten
 
-`npm run db:seed` legt sechs Standorte, sechs Bereiche in beiden Ausbaustufen,
+`npm run db:seed` bringt die Datenbank zuerst auf den aktuellen Aufbau und legt
+dann sechs Standorte, sechs Bereiche in beiden Ausbaustufen,
 elf Eingänge, zwanzig Personen und fünfundzwanzig Vorgänge an – samt einer
 Abspaltung, einer Weiterleitung und überfälligen Fristen, damit die Ampel etwas
 zu zeigen hat. Dazu ein gefülltes Inventar: neunzehn Geräte in allen Zuständen,
@@ -201,7 +202,7 @@ npm run start        # Produktionsserver
 npm run worker       # Mailabruf, Fristenprüfung, Aufräumen
 
 npm run db:migrate   # Migrationen anwenden
-npm run db:seed      # Demo-Daten
+npm run db:seed      # Demo-Daten (wendet vorher die Migrationen an)
 npm run db:studio    # Datenbank ansehen
 
 npm run typecheck    # tsc --noEmit
