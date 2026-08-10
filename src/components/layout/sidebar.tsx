@@ -7,8 +7,10 @@ import { TeamMode } from "@prisma/client";
 import {
   BarChart3,
   BookOpen,
+  Boxes,
   ChevronDown,
   Inbox,
+  Laptop,
   LayoutDashboard,
   ListChecks,
   Search,
@@ -87,6 +89,16 @@ export function Sidebar({
         >
           Wissensdatenbank
         </NavLink>
+        {navigation.hasInventory && (
+          <NavLink
+            href="/inventar"
+            icon={Boxes}
+            active={pathname.startsWith("/inventar")}
+            onNavigate={onNavigate}
+          >
+            Inventar
+          </NavLink>
+        )}
         {navigation.hasStatistics && (
           <NavLink
             href="/statistik"
@@ -95,6 +107,17 @@ export function Sidebar({
             onNavigate={onNavigate}
           >
             Auswertung
+          </NavLink>
+        )}
+        {navigation.meineGeraeteCount > 0 && (
+          <NavLink
+            href="/meine-geraete"
+            icon={Laptop}
+            active={pathname.startsWith("/meine-geraete")}
+            badge={navigation.meineGeraeteCount}
+            onNavigate={onNavigate}
+          >
+            Meine Geräte
           </NavLink>
         )}
         <NavLink

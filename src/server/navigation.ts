@@ -1,7 +1,7 @@
 import { TeamMode, TeamRole } from "@prisma/client";
 
 import { db } from "@/server/db";
-import type { Actor } from "@/server/policy";
+import { inventoryAccess, type Actor } from "@/server/policy";
 import { STATUS_OFFEN } from "@/lib/domain";
 
 /**
@@ -51,6 +51,10 @@ export interface Navigation {
   unreadNotifications: number;
   /** Darf mindestens eine Auswertung sehen. */
   hasStatistics: boolean;
+  /** Darf das Inventar sehen. */
+  hasInventory: boolean;
+  /** Wie viele Geräte mir selbst zugewiesen sind. */
+  meineGeraeteCount: number;
 }
 
 export async function buildNavigation(actor: Actor): Promise<Navigation> {
@@ -84,6 +88,12 @@ export async function buildNavigation(actor: Actor): Promise<Navigation> {
       }),
       db.notification.count({ where: { userId: actor.id, readAt: null } }),
     ]);
+
+  // Der Menüpunkt "Meine Geräte" erscheint nur, wenn dort auch etwas steht –
+  // ein leerer Punkt beantwortet keine Frage und kostet nur einen Klick.
+  const meineGeraeteCount = await db.asset.count({
+    where: { assignedToId: actor.id },
+  });
 
   const offenMap = new Map(offenProEingang.map((r) => [r.queueId, r._count._all]));
   const ohneMap = new Map(
@@ -143,5 +153,7 @@ export async function buildNavigation(actor: Actor): Promise<Navigation> {
     hasStatistics:
       actor.isAdmin ||
       navTeams.some((t) => t.mode === TeamMode.VOLL && t.isLead),
+    hasInventory: inventoryAccess(actor) !== "none",
+    meineGeraeteCount,
   };
 }

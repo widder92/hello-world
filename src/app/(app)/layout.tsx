@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 
 import { AppShell } from "@/components/layout/app-shell";
 import { PortalShell } from "@/components/layout/portal-shell";
+import { db } from "@/server/db";
 import { buildNavigation } from "@/server/navigation";
 import { getActor, isAgent } from "@/server/policy";
 
@@ -36,7 +37,17 @@ export default async function AppLayout({
   };
 
   if (!isAgent(actor)) {
-    return <PortalShell user={nutzer}>{children}</PortalShell>;
+    // „Meine Geräte" erscheint im Portal nur, wenn dieser Person tatsächlich
+    // ein Gerät zugewiesen ist – sonst führte der Punkt auf eine leere Seite.
+    const eigeneGeraete = await db.asset.count({
+      where: { assignedToId: actor.id },
+    });
+
+    return (
+      <PortalShell user={nutzer} eigeneGeraete={eigeneGeraete}>
+        {children}
+      </PortalShell>
+    );
   }
 
   const navigation = await buildNavigation(actor);

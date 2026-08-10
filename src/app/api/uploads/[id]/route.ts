@@ -4,7 +4,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 
 import { db } from "@/server/db";
-import { getActor, ticketAccessLevel } from "@/server/policy";
+import { getActor, inventoryAccess, ticketAccessLevel } from "@/server/policy";
 
 /**
  * Auslieferung von Anhängen.
@@ -13,6 +13,9 @@ import { getActor, ticketAccessLevel } from "@/server/policy";
  * diesen Weg herausgegeben – nach derselben Rechteprüfung wie der Vorgang
  * selbst. Läge ein Foto vom Schaden im Wohnbereich unter einer ratbaren
  * öffentlichen Adresse, wäre die gesamte Zugriffsprüfung wirkungslos.
+ *
+ * Ein Anhang hängt entweder an einem Vorgang oder an einem Gerät. Beides wird
+ * getrennt geprüft; was an keinem von beiden hängt, wird nicht ausgeliefert.
  */
 export async function GET(
   _request: Request,
@@ -41,17 +44,33 @@ export async function GET(
           watchers: { select: { userId: true } },
         },
       },
+      asset: { select: { id: true, assignedToId: true } },
+      fotoVon: { select: { id: true, assignedToId: true } },
     },
   });
 
-  if (!anhang?.ticket) {
+  if (!anhang) {
     return new Response("Datei nicht gefunden.", { status: 404 });
   }
 
-  if (ticketAccessLevel(actor, anhang.ticket) === "none") {
-    // Bewusst 404 statt 403: Sonst ließe sich durch Durchprobieren von
-    // Kennungen feststellen, welche Dateien es gibt.
-    return new Response("Datei nicht gefunden.", { status: 404 });
+  // Bewusst überall 404 statt 403: Sonst ließe sich durch Durchprobieren von
+  // Kennungen feststellen, welche Dateien es gibt.
+  const nichtGefunden = new Response("Datei nicht gefunden.", { status: 404 });
+
+  // Das Foto hängt über Asset.photoId am Gerät, weitere Dateien (Rechnung,
+  // Lieferschein) über Attachment.assetId – beide Wege zählen.
+  const geraet = anhang.asset ?? anhang.fotoVon;
+
+  if (anhang.ticket) {
+    if (ticketAccessLevel(actor, anhang.ticket) === "none") return nichtGefunden;
+  } else if (geraet) {
+    // Wer das Gerät in der Hand hat, darf sein Foto sehen – sonst zeigte die
+    // Seite „Meine Geräte" ein leeres Bild für das eigene Notebook.
+    const darf =
+      inventoryAccess(actor) !== "none" || geraet.assignedToId === actor.id;
+    if (!darf) return nichtGefunden;
+  } else {
+    return nichtGefunden;
   }
 
   const basis = path.resolve(process.env.UPLOAD_DIR || "./uploads");

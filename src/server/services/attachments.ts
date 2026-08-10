@@ -96,9 +96,16 @@ export function pruefeDatei(opts: {
 
   const max = maxUploadBytes();
   if (opts.size > max) {
+    // Beide Zahlen nennen: „zu groß" allein lässt die Person raten, ob sie das
+    // Bild ein bisschen oder um das Dreifache verkleinern muss. Handyfotos
+    // liegen regelmäßig knapp über der Grenze.
+    const mb = (bytes: number) =>
+      (bytes / 1024 / 1024).toFixed(1).replace(".", ",");
     return {
       ok: false,
-      grund: `Die Datei ist größer als ${Math.round(max / 1024 / 1024)} MB.`,
+      grund:
+        `Die Datei ist ${mb(opts.size)} MB groß, erlaubt sind ` +
+        `${Math.round(max / 1024 / 1024)} MB.`,
     };
   }
 
@@ -141,6 +148,8 @@ export async function speichereAnhang(opts: {
   mimeType: string;
   ticketId?: string | null;
   messageId?: string | null;
+  /** Gerät, zu dem die Datei gehört – Foto, Rechnung, Lieferschein. */
+  assetId?: string | null;
   uploadedById?: string | null;
   fromEmail?: boolean;
 }): Promise<GespeicherterAnhang> {
@@ -169,6 +178,7 @@ export async function speichereAnhang(opts: {
     data: {
       ticketId: opts.ticketId ?? null,
       messageId: opts.messageId ?? null,
+      assetId: opts.assetId ?? null,
       filename,
       mimeType,
       size: opts.inhalt.length,
@@ -248,8 +258,13 @@ export async function ordneAnhaengeZu(opts: {
 }
 
 /**
- * Räumt Anhänge auf, die hochgeladen, aber nie einem Vorgang zugeordnet
- * wurden – etwa weil das Meldeformular abgebrochen wurde.
+ * Räumt Anhänge auf, die hochgeladen, aber nie zugeordnet wurden – etwa weil
+ * das Meldeformular abgebrochen wurde.
+ *
+ * Ein Anhang gilt nur dann als verwaist, wenn er an *nichts* hängt: weder an
+ * einem Vorgang noch an einem Gerät noch als Gerätefoto. Gerätefotos haben
+ * keinen Vorgang, und ohne diese Einschränkung wären sie nach einem Tag
+ * stillschweigend verschwunden.
  */
 export async function entferneVerwaisteAnhaenge(
   aelterAlsStunden = 24,
@@ -257,7 +272,12 @@ export async function entferneVerwaisteAnhaenge(
   const grenze = new Date(Date.now() - aelterAlsStunden * 60 * 60 * 1000);
 
   const verwaist = await db.attachment.findMany({
-    where: { ticketId: null, createdAt: { lt: grenze } },
+    where: {
+      ticketId: null,
+      assetId: null,
+      fotoVon: null,
+      createdAt: { lt: grenze },
+    },
     select: { id: true },
     take: 500,
   });

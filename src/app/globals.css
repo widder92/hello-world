@@ -304,3 +304,61 @@
     top: 0.75rem;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Ausdruck
+
+   Gedruckt wird im Alltag genau eine Sache: das Übergabeprotokoll aus dem
+   Inventar. Es wird unterschrieben und abgeheftet, deshalb darf nichts von der
+   Bedienoberfläche mit aufs Papier – kein Menü, keine Kopfzeile, keine Knöpfe.
+
+   Die Regeln greifen global und nicht nur auf der Protokollseite: Wer eine
+   Ticketansicht ausdruckt, will die Seitenleiste genauso wenig sehen.
+   --------------------------------------------------------------------------- */
+@media print {
+  /* Navigation und alles, was zum Anklicken da ist. */
+  aside,
+  nav,
+  .skip-link,
+  [data-drucken="aus"] {
+    display: none !important;
+  }
+
+  /* Die klebende Kopfzeile des Arbeitsplatzes. */
+  body header.sticky {
+    display: none !important;
+  }
+
+  /* Auf Papier gibt es kein Dunkelmodus-Grau: schwarze Schrift auf Weiß,
+     sonst verbraucht der Ausdruck Toner und wird schlechter lesbar. */
+  :root {
+    --bg: white;
+    --surface: white;
+    --surface-2: white;
+    --fg: black;
+    --fg-muted: #333;
+    --fg-subtle: #555;
+    --line: #999;
+  }
+
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  /* Zusammenhängende Blöcke nicht über den Seitenumbruch reißen. */
+  article section,
+  dl > div {
+    break-inside: avoid;
+  }
+
+  /* Der Rahmen um den Inhalt begrenzt sonst die Seitenhöhe. */
+  main {
+    overflow: visible !important;
+    height: auto !important;
+  }
+
+  @page {
+    margin: 18mm;
+  }
+}

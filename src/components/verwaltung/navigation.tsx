@@ -49,7 +49,9 @@ const GRUPPEN = [
     punkte: [
       { href: "/verwaltung/standorte", label: "Standorte", icon: Building2 },
       { href: "/verwaltung/kategorien", label: "Kategorien", icon: Tags },
-      { href: "/verwaltung/geraete", label: "Geräte", icon: Laptop },
+      // Das Inventar wird nicht hier gepflegt, sondern dort, wo damit
+      // gearbeitet wird – die Bereichsleitung kommt sonst nicht heran.
+      { href: "/inventar/stammdaten", label: "Inventar-Stammdaten", icon: Laptop },
     ],
   },
   {

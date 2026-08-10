@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BookOpen, LifeBuoy, PenLine, Ticket } from "lucide-react";
+import { BookOpen, Laptop, LifeBuoy, PenLine, Ticket } from "lucide-react";
 
 import { NotificationBell } from "@/components/layout/notification-bell";
 import { UserMenu } from "@/components/layout/user-menu";
@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
  */
 export function PortalShell({
   user,
+  eigeneGeraete = 0,
   children,
 }: {
   user: {
@@ -29,6 +30,8 @@ export function PortalShell({
     theme: string;
     a11yPrefs: Record<string, boolean>;
   };
+  /** Anzahl der Geräte, die dieser Person zugewiesen sind. */
+  eigeneGeraete?: number;
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
@@ -36,6 +39,10 @@ export function PortalShell({
 
   const punkte = [
     { href: "/meine-tickets", label: "Meine Meldungen", icon: Ticket },
+    // Nur wer Geräte hat, bekommt den Punkt zu sehen.
+    ...(eigeneGeraete > 0
+      ? [{ href: "/meine-geraete", label: "Meine Geräte", icon: Laptop }]
+      : []),
     { href: "/wissen", label: "Hilfe und Anleitungen", icon: BookOpen },
   ];
 
