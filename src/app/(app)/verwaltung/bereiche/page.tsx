@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { QueueMode, TeamMode } from "@prisma/client";
-import { EyeOff, Inbox, MapPin } from "lucide-react";
+import { Boxes, EyeOff, Inbox, MapPin } from "lucide-react";
 
 import { teamIcon } from "@/components/layout/icon";
 import { PageHeader } from "@/components/layout/page-header";
@@ -119,6 +119,16 @@ export default async function BereichePage() {
                       </Badge>
                     )}
 
+                    {b.hasInventory && (
+                      <Badge
+                        tone="outline"
+                        title="Dieser Bereich verwaltet eigene Geräte unter /inventar."
+                      >
+                        <Boxes aria-hidden="true" />
+                        Führt ein Inventar
+                      </Badge>
+                    )}
+
                     {!b.isActive && <Badge tone="danger">Stillgelegt</Badge>}
                   </div>
 
@@ -183,6 +193,7 @@ export default async function BereichePage() {
                     portalLabel: b.portalLabel,
                     portalDescription: b.portalDescription,
                     allowEmailCommands: b.allowEmailCommands,
+                    hasInventory: b.hasInventory,
                     notifyRequesterOnTransfer: b.notifyRequesterOnTransfer,
                     isActive: b.isActive,
                   }}

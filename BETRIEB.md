@@ -16,10 +16,11 @@ liegt. Für die Einrichtung und den Aufbau des Systems siehe
 6. [Dienstzeiten, Feiertage und Fristen](#6-dienstzeiten-feiertage-und-fristen)
 7. [Bereiche und Eingänge einrichten](#7-bereiche-und-eingänge-einrichten)
 8. [Datenübernahme aus dem Altsystem](#8-datenübernahme-aus-dem-altsystem)
-9. [Der Hintergrunddienst](#9-der-hintergrunddienst)
-10. [Sicherung und Wiederherstellung](#10-sicherung-und-wiederherstellung)
-11. [Löschfristen und Datenschutz](#11-löschfristen-und-datenschutz)
-12. [Wenn etwas klemmt](#12-wenn-etwas-klemmt)
+9. [Das IT-Inventar](#9-das-it-inventar)
+10. [Der Hintergrunddienst](#10-der-hintergrunddienst)
+11. [Sicherung und Wiederherstellung](#11-sicherung-und-wiederherstellung)
+12. [Löschfristen und Datenschutz](#12-löschfristen-und-datenschutz)
+13. [Wenn etwas klemmt](#13-wenn-etwas-klemmt)
 
 ---
 
@@ -434,7 +435,109 @@ sonst *Sonstige*.
 
 ---
 
-## 9. Der Hintergrunddienst
+## 9. Das IT-Inventar
+
+Geräte, die an Mitarbeitende ausgegeben werden: Notebooks, Telefone, Tablets,
+Monitore – und alles andere, was Sie erfassen wollen, bis hin zu Headsets ab
+einem Wert, den Sie selbst festlegen.
+
+### Einschalten
+
+Das Inventar hängt **nicht** an der Ausbaustufe VOLL/EINFACH, sondern ist ein
+eigener Schalter je Bereich:
+
+> *Verwaltung → Bereiche → Bereich öffnen → «Führt ein Inventar»*
+
+Im Auslieferungszustand führt nur die IT eines. Ein zweiter Bereich – etwa der
+Hausmeister für Werkzeug und Leitern – bekommt damit sein eigenes, getrenntes
+Inventar. Geräte wandern nicht zwischen Bereichen: Wer in Bereich A arbeitet,
+sieht die Geräte von B nicht und kann auch keine dorthin einbuchen.
+
+### Wer darf was
+
+| | Geräte sehen und pflegen | Gerätearten, Hersteller, Kostenstellen |
+|---|:---:|:---:|
+| Mitglied eines Inventarbereichs | ✓ | – |
+| Leitung eines Inventarbereichs | ✓ | ✓ |
+| Administration | ✓ | ✓ |
+| Alle anderen | nur die eigenen unter *Meine Geräte* | – |
+
+Die Stammdatenlisten bleiben bewusst bei der Leitung: Sie wirken auf alle
+Geräte gleichzeitig, und eine stillgelegte Kostenstelle verändert rückwirkend
+jede Auswertung.
+
+### Bevor Sie Geräte erfassen
+
+Legen Sie zuerst die **Kostenstellen** an (*Inventar → Stammdaten*), und zwar
+genau so, wie sie in Ihrer Buchhaltung heißen. Sie sind die Achse der
+Auswertung, und der CSV-Import lehnt unbekannte Kostenstellen ausdrücklich ab,
+statt sie stillschweigend anzulegen – eine aus einem Tippfehler entstandene
+Kostenstelle würde die Summen aufteilen, ohne dass es jemandem auffiele.
+
+Danach die **Gerätearten**. Jede Art bestimmt zweierlei: womit die
+Inventarnummer beginnt (`NB` → `NB-00042`) und welche Angaben das Formular
+verlangt. Das Kürzel lässt sich später **nicht mehr ändern** – es steht dann
+bereits auf den Aufklebern.
+
+### Status und Übergabeprotokoll
+
+| Status | Bedeutung |
+|---|---|
+| Im Lager | einsatzbereit, niemandem zugewiesen |
+| Vorgemerkt | für jemanden reserviert, noch nicht übergeben |
+| Herausgegeben | bei einer Person im Einsatz |
+| In Reparatur | beim Hersteller oder in der Werkstatt |
+| Ausgesondert | ausgemustert, verkauft, entsorgt |
+| Verlust | verloren oder gestohlen |
+
+Jeder Wechsel landet in der Gerätechronik, und bei Ausgabe wie Rücknahme
+entsteht ein **Übergabeprotokoll** mit fortlaufender Nummer (`UP-2026-000031`).
+Es wird im Browser gedruckt – Menü und Bedienelemente bleiben vom Papier weg –,
+unterschrieben und abgeheftet. Aussondern und Verlust verlangen eine
+Begründung; ohne sie speichert das System nicht.
+
+Ein ausgesondertes Gerät zurückzuholen darf nur die Bereichsleitung, und auch
+nur mit Begründung. Das ist Absicht: Meist ist das Gerät entsorgt, und wer es
+wiederbelebt, soll dafür geradestehen.
+
+### Fotos
+
+Ein Gerätefoto zeigt bei der Rückgabe, in welchem Zustand das Gerät ausgegeben
+wurde. Aufgenommen wird es direkt auf der Geräteseite, auf dem Handy über die
+Kamera. HEIC vom iPhone wird angenommen.
+
+**Für die Sicherung wichtig:** Gerätefotos liegen im selben Verzeichnis wie die
+Ticketanhänge (`UPLOAD_DIR`) und sind von Abschnitt 11 mit abgedeckt. Eine
+reine Datenbanksicherung lässt sie zurück.
+
+### Datenübernahme
+
+```bash
+npm run import -- --typ=geraete --datei=geraete.csv --dry-run
+```
+
+| Spalte | Pflicht | Hinweis |
+|---|---|---|
+| `Nummer` | ✓ | Inventarnummer aus dem Altsystem, wird übernommen |
+| `Name` | ✓ | Bezeichnung |
+| `Art` | | Geräteart; unbekannte werden angelegt |
+| `Hersteller` | | unbekannte werden angelegt |
+| `Modell`, `Seriennummer`, `IMEI` | | |
+| `MAC` | | mehrere durch Komma oder Semikolon; Schreibweise egal |
+| `Bereich` | | Kürzel oder Name; ohne Angabe der erste Inventarbereich |
+| `Kostenstelle` | | Nummer oder Bezeichnung – **muss vorher angelegt sein** |
+| `Status` | | ohne Angabe aus der Zuweisung abgeleitet |
+| `Zugewiesen` | | E-Mail-Adresse der Person |
+| `Standort`, `Raum` | | |
+| `Anschaffung`, `Garantie` | | `31.12.2025` oder ISO |
+| `Preis` | | `1.299,00` – der Punkt wird als Tausendertrenner gelesen |
+| `Lieferant`, `Rechnung`, `Notizen` | | |
+
+Immer zuerst mit `--dry-run`. Eine MAC-Adresse, die schon zu einem anderen
+Gerät gehört, wird gemeldet und übersprungen, ohne den Lauf abzubrechen – das
+ist meist der Hinweis, dass ein Gerät im Altsystem doppelt geführt wurde.
+
+## 10. Der Hintergrunddienst
 
 ```bash
 npm run worker
@@ -457,7 +560,7 @@ npm run sla:check
 
 ---
 
-## 10. Sicherung und Wiederherstellung
+## 11. Sicherung und Wiederherstellung
 
 Zu sichern sind **zwei** Dinge – die Datenbank *und* das Verzeichnis mit den
 Anhängen. Eine Datenbanksicherung allein hinterlässt Vorgänge, deren Foto vom
@@ -501,7 +604,7 @@ Produktivsystem nichts zu suchen.
 
 ---
 
-## 11. Löschfristen und Datenschutz
+## 12. Löschfristen und Datenschutz
 
 ### Automatisches Löschen
 
@@ -539,7 +642,7 @@ Zwei Dinge räumt der Job unabhängig davon auf, weil sie sonst still anwachsen:
 
 ---
 
-## 12. Wenn etwas klemmt
+## 13. Wenn etwas klemmt
 
 ### Mails werden nicht abgeholt
 

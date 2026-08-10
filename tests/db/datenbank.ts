@@ -1,4 +1,5 @@
 import {
+  AssetStatus,
   Priority,
   QueueMode,
   TeamMode,
@@ -102,6 +103,7 @@ export async function bereichAnlegen(opts: {
   queueMode?: QueueMode;
   isActive?: boolean;
   allowEmailCommands?: boolean;
+  hasInventory?: boolean;
 }) {
   const key = opts.key ?? eindeutig("T").toUpperCase().replace("-", "");
   return db.team.create({
@@ -112,6 +114,7 @@ export async function bereichAnlegen(opts: {
       queueMode: opts.queueMode ?? QueueMode.SINGLE,
       isActive: opts.isActive ?? true,
       allowEmailCommands: opts.allowEmailCommands ?? true,
+      hasInventory: opts.hasInventory ?? false,
     },
   });
 }
@@ -187,6 +190,38 @@ export async function ticketAnlegenRoh(opts: {
       status: opts.status ?? TicketStatus.NEU,
       priority: opts.priority ?? Priority.NORMAL,
       originEmailMessageId: opts.originEmailMessageId ?? null,
+    },
+  });
+}
+
+// --- Inventar --------------------------------------------------------------
+
+export async function geraeteartAnlegen(opts: { key?: string; name?: string } = {}) {
+  const key = opts.key ?? eindeutig("K").toUpperCase().replace("-", "");
+  return db.assetKind.create({
+    data: { key, name: opts.name ?? key },
+  });
+}
+
+export async function geraetAnlegen(opts: {
+  kindId: string;
+  teamId: string;
+  assetTag?: string;
+  name?: string;
+  status?: AssetStatus;
+  assignedToId?: string | null;
+  purchasePriceCents?: number | null;
+}) {
+  return db.asset.create({
+    data: {
+      assetTag: opts.assetTag ?? eindeutig("INV").toUpperCase(),
+      name: opts.name ?? "Testgerät",
+      kindId: opts.kindId,
+      teamId: opts.teamId,
+      status: opts.status ?? AssetStatus.LAGER,
+      assignedToId: opts.assignedToId ?? null,
+      assignedAt: opts.assignedToId ? new Date() : null,
+      purchasePriceCents: opts.purchasePriceCents ?? null,
     },
   });
 }

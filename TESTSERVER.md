@@ -198,7 +198,7 @@ Passwort für **alle** Demo-Konten: `Willkommen-2026-Demo`
 
 ## Ein Vorschlag für die Vorführung
 
-Zwölf Minuten, und die drei Punkte, auf die es ankommt, sind gezeigt.
+Fünfzehn Minuten, und die Punkte, auf die es ankommt, sind gezeigt.
 
 **1. Die Meldung geht direkt an den richtigen Bereich** (3 Min.)
 
@@ -241,7 +241,27 @@ keine Priorität – nur die Vorgänge der Küche, offen und erledigt.
 Dann als `admin@example.org` → *Verwaltung → Bereiche*: Dort steht je Bereich,
 welche Ausbaustufe er hat, und das lässt sich umschalten.
 
-**5. E-Mail** (1 Min.)
+**5. Das IT-Inventar** (3 Min.)
+
+Als `klaus.hoffmann@example.org` → **Inventar**. Neunzehn Geräte, filterbar
+nach Status, Geräteart und Kostenstelle. In die Suche `PF3KL201` eintippen –
+eine Seriennummer, keine Inventarnummer.
+
+Ein Gerät im Lager öffnen → **Herausgeben** → Person suchen, Zubehör eintragen
+→ speichern. Das **Übergabeprotokoll** erscheint sofort; auf *Drucken* zeigen.
+
+> Der Satz dazu: „Das wird unterschrieben und abgeheftet. Und beim nächsten
+> Mal steht in der Chronik des Geräts, wer es wann bekommen hat."
+
+Danach abmelden und als `anna.bergmann@example.org` → **Meine Geräte**: ihr
+Notebook, ohne einen einzigen Knopf, der etwas ändern würde – aber mit dem Weg
+zur Störungsmeldung.
+
+Zum Schluss `admin@example.org` → *Inventar → Auswertung*: die Aufteilung nach
+Kostenstelle. Oben stehen zwei Zahlen, die sagen, wie belastbar der Rest ist –
+Geräte ohne Kostenstelle und ohne Preis.
+
+**6. E-Mail** (1 Min.)
 
 <http://localhost:8025> aufrufen (nur beim Docker-Weg): Dort liegen die
 Benachrichtigungen, die das System während der Vorführung verschickt hat.

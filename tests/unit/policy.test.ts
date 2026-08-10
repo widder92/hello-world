@@ -9,6 +9,9 @@ import {
   canManageTeam,
   canViewStatistics,
   canWorkTicket,
+  inventoryAccess,
+  inventoryTeamIds,
+  requireInventory,
   requireTicketWork,
   ticketAccessLevel,
   ticketVisibilityFilter,
@@ -271,5 +274,87 @@ describe("Rollen innerhalb eines Bereichs", () => {
 
     expect(canViewStatistics(leitung, TEAM_HM)).toBe(true);
     expect(canViewStatistics(leitung, TEAM_IT)).toBe(false);
+  });
+});
+
+/**
+ * Zugang zum Inventar.
+ *
+ * Er hängt nicht an der Administration, sondern am Bereich: Wer in einem
+ * Bereich mit Inventar arbeitet, kommt hinein. Die Stammdatenlisten wirken
+ * dagegen auf alle Geräte gleichzeitig und bleiben bei der Leitung.
+ */
+describe("Inventar", () => {
+  const TEAM_OHNE = "team-kueche";
+
+  it("lässt die Administration alles", () => {
+    const admin = person({ isAdmin: true, memberships: [] });
+    expect(inventoryAccess(admin)).toBe("manage");
+  });
+
+  it("gibt der Leitung eines Inventarbereichs die Stammdaten", () => {
+    const leitung = person({
+      memberships: [mitgliedschaft(TEAM_IT, TeamRole.LEAD, TeamMode.VOLL, true)],
+    });
+    expect(inventoryAccess(leitung)).toBe("manage");
+    expect(() => requireInventory(leitung, "manage")).not.toThrow();
+  });
+
+  it("lässt Mitglieder Geräte pflegen, aber keine Stammdaten", () => {
+    const mitglied = person({
+      memberships: [
+        mitgliedschaft(TEAM_IT, TeamRole.MEMBER, TeamMode.VOLL, true),
+      ],
+    });
+
+    expect(inventoryAccess(mitglied)).toBe("read");
+    // Geräte ja …
+    expect(() => requireInventory(mitglied)).not.toThrow();
+    // … Gerätearten und Kostenstellen nein.
+    expect(() => requireInventory(mitglied, "manage")).toThrow();
+  });
+
+  it("sperrt Bereiche ohne Inventar aus", () => {
+    // Die Küche arbeitet im System, führt aber kein Inventar. Auch ihre
+    // Leitung hat dort nichts zu suchen.
+    const kuechenLeitung = person({
+      memberships: [
+        mitgliedschaft(TEAM_OHNE, TeamRole.LEAD, TeamMode.EINFACH, false),
+      ],
+    });
+
+    expect(inventoryAccess(kuechenLeitung)).toBe("none");
+    expect(() => requireInventory(kuechenLeitung)).toThrow();
+  });
+
+  it("sperrt Personen ohne Bereich aus", () => {
+    const melderin = person({ memberships: [], queues: [] });
+    expect(inventoryAccess(melderin)).toBe("none");
+  });
+
+  it("nennt nur die Bereiche, die tatsächlich ein Inventar führen", () => {
+    // Wer in zwei Bereichen arbeitet, darf trotzdem nur Geräte des einen
+    // sehen – sonst wanderten Geräte zwischen den Bereichen.
+    const beides = person({
+      memberships: [
+        mitgliedschaft(TEAM_IT, TeamRole.MEMBER, TeamMode.VOLL, true),
+        mitgliedschaft(TEAM_OHNE, TeamRole.LEAD, TeamMode.EINFACH, false),
+      ],
+    });
+
+    expect(inventoryTeamIds(beides)).toEqual([TEAM_IT]);
+  });
+
+  it("macht aus einer Leitung im falschen Bereich keine Inventarleitung", () => {
+    // Leitung der Küche, einfaches Mitglied in der IT: Die Stammdaten der IT
+    // gehen sie nichts an.
+    const gemischt = person({
+      memberships: [
+        mitgliedschaft(TEAM_OHNE, TeamRole.LEAD, TeamMode.EINFACH, false),
+        mitgliedschaft(TEAM_IT, TeamRole.MEMBER, TeamMode.VOLL, true),
+      ],
+    });
+
+    expect(inventoryAccess(gemischt)).toBe("read");
   });
 });

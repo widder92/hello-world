@@ -38,6 +38,7 @@ interface BereichDaten {
   portalLabel: string | null;
   portalDescription: string | null;
   allowEmailCommands: boolean;
+  hasInventory: boolean;
   notifyRequesterOnTransfer: boolean;
   isActive: boolean;
 }
@@ -83,6 +84,7 @@ export function BereichDialog({
     portalLabel: bereich?.portalLabel ?? "",
     portalDescription: bereich?.portalDescription ?? "",
     allowEmailCommands: bereich?.allowEmailCommands ?? true,
+    hasInventory: bereich?.hasInventory ?? false,
     notifyRequesterOnTransfer: bereich?.notifyRequesterOnTransfer ?? true,
     isActive: bereich?.isActive ?? true,
   });
@@ -387,6 +389,13 @@ export function BereichDialog({
               onChange={(v) => setzen("notifyRequesterOnTransfer", v)}
               titel="Melder bei Weiterleitung informieren"
               text="Der Melder bekommt eine Mail, wenn sein Vorgang diesen Bereich verlässt."
+            />
+
+            <Schalter
+              an={form.hasInventory}
+              onChange={(v) => setzen("hasInventory", v)}
+              titel="Führt ein Inventar"
+              text="Der Bereich verwaltet eigene Geräte – mit Seriennummern, Kostenstellen, Fotos und Übergabeprotokoll. Unabhängig von der Ausbaustufe: Auch ein Bereich in der schlanken Stufe kann Geräte führen."
             />
 
             <Schalter

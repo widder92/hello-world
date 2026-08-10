@@ -444,9 +444,17 @@ export async function chronikVermerk(
 /**
  * Liest einen eingetippten Betrag als Cent.
  *
- * Nimmt „1.299,00", „1299", „1299.00" und „1.299 €". Deutsche Eingabe hat den
- * Punkt als Tausendertrenner – wer das ignoriert, macht aus 1.299 € einen
- * Betrag von 1,299 € und merkt es erst in der Jahresauswertung.
+ * Nimmt „1.299,00", „1299", „1299.00", „1.299" und „1.299 €".
+ *
+ * Der Punkt ist der schwierige Teil, weil er beides sein kann: In „12.99"
+ * (aus einem Lieferantenexport) trennt er die Nachkommastellen, in „1.299"
+ * (deutsch getippt) die Tausender. Beides ist eine einzelne Zahl mit einem
+ * Punkt, und die Verwechslung ist teuer – aus 1.299 € würden 1,30 €, was
+ * erst in der Jahresauswertung auffällt.
+ *
+ * Die Unterscheidung liegt in der Stellenzahl dahinter: Genau drei Ziffern
+ * nach dem Punkt gibt es bei Preisen nur als Tausendertrennung, zwei oder
+ * eine nur als Nachkommastellen.
  */
 export function betragZuCent(eingabe: string): number | null {
   const roh = eingabe.trim().replace(/\s|€|EUR/gi, "");
@@ -459,6 +467,9 @@ export function betragZuCent(eingabe: string): number | null {
   } else if ((roh.match(/\./g) ?? []).length > 1) {
     // Mehrere Punkte können nur Tausendertrenner sein.
     normalisiert = roh.replace(/\./g, "");
+  } else if (/\.\d{3}$/.test(roh)) {
+    // Ein Punkt mit genau drei Ziffern dahinter: Tausendertrenner.
+    normalisiert = roh.replace(".", "");
   }
 
   const zahl = Number(normalisiert);

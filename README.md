@@ -47,13 +47,18 @@ eingestellt und ist jederzeit umschaltbar.
 | Zuweisung, automatische Verteilung | – | ✓ |
 | Fristen und Ampel               | – | ✓ |
 | Priorität, Kategorien, Vorlagen | – | ✓ |
-| Auswertung, Geräte, Checklisten | – | ✓ |
+| Auswertung, Checklisten         | – | ✓ |
 
 Die schlanke Stufe ist bewusst **keine ausgegraute Fassung der vollen**,
 sondern eine eigene, schmalere Oberfläche. Eine Ampel, hinter der keine
 Vereinbarung steht, erzeugt nur schlechtes Gewissen ohne Nutzen.
 
 Abgeleitet wird das an einer einzigen Stelle: `src/server/capabilities.ts`.
+
+Das **Inventar** steht bewusst neben dieser Tabelle: Es wird je Bereich
+gesondert eingeschaltet und hat mit der Ausbaustufe nichts zu tun. Ob jemand
+Geräte führt, hängt an der Aufgabe, nicht daran, wie viel Ticketwerkzeug er
+braucht.
 
 ### Teilvorgang abspalten
 
@@ -95,9 +100,17 @@ gibt:
   Wortstammerkennung und Toleranz gegen Tippfehler.
 - **Barrierefreiheit** nach WCAG 2.1 AA, geprüft mit axe: große Schrift, hoher
   Kontrast, Bewegung reduzieren, einfache Ansicht. Zustände nie nur über Farbe.
+- **IT-Inventar.** Geräte mit Seriennummer, MAC-Adressen, IMEI, Anschaffungs­datum,
+  Preis, Kostenstelle und Foto. Der Status sagt, wo ein Gerät ist – im Lager,
+  herausgegeben (und an wen), in Reparatur, ausgesondert –, und jede Änderung
+  landet in der Gerätechronik. Bei der Herausgabe entsteht ein
+  **Übergabeprotokoll** zum Ausdrucken und Unterschreiben. Mitarbeitende sehen
+  unter *Meine Geräte*, was auf ihren Namen läuft, und können von dort direkt
+  eine Störung melden. Das Inventar ist **je Bereich einschaltbar**: Heute führt
+  es die IT, morgen vielleicht der Hausmeister sein Werkzeug.
 - **Datenübernahme** aus dem Altsystem über CSV.
-- Wissensdatenbank, Textbausteine, Ticketvorlagen, Geräteverwaltung,
-  Auswertung, lückenloses Protokoll.
+- Wissensdatenbank, Textbausteine, Ticketvorlagen, Auswertung, lückenloses
+  Protokoll.
 
 ---
 
@@ -156,7 +169,8 @@ steht in **[BETRIEB.md](BETRIEB.md)**.
 `npm run db:seed` legt sechs Standorte, sechs Bereiche in beiden Ausbaustufen,
 elf Eingänge, zwanzig Personen und fünfundzwanzig Vorgänge an – samt einer
 Abspaltung, einer Weiterleitung und überfälligen Fristen, damit die Ampel etwas
-zu zeigen hat.
+zu zeigen hat. Dazu ein gefülltes Inventar: neunzehn Geräte in allen Zuständen,
+zehn Gerätearten, sechs Kostenstellen und zwei Übergabeprotokolle.
 
 Passwort für alle Konten: **`Willkommen-2026-Demo`**
 
@@ -166,9 +180,12 @@ Passwort für alle Konten: **`Willkommen-2026-Demo`**
 | `claudia.schmitt@example.org` | Melderin, Schule | Große Schrift, einfache Ansicht |
 | `frank.berger@example.org` | Hausmeister, Wohnheim Nord | Voller Arbeitsplatz, zwei Standorte freigegeben |
 | `dieter.wolf@example.org` | Leitung Hausmeister | Alle Standorte des Bereichs |
-| `klaus.hoffmann@example.org` | IT, Verteilung | Zentraler Eingang, darf zuweisen |
+| `klaus.hoffmann@example.org` | IT, Verteilung | Zentraler Eingang, darf zuweisen, führt das Inventar |
 | `marion.fischer@example.org` | Küche | Schlanke Ausbaustufe |
-| `admin@example.org` | Administration | Verwaltungsbereich |
+| `admin@example.org` | Administration | Verwaltungsbereich, Inventar-Stammdaten |
+
+`anna.bergmann@example.org` hat ein Notebook zugewiesen – bei ihr erscheint
+zusätzlich der Punkt **Meine Geräte**.
 
 Der Seed ist wiederholbar und räumt vorher auf. Nach einem Playwright-Lauf sind
 die Demo-Daten nicht mehr unberührt – dann einfach neu seeden.

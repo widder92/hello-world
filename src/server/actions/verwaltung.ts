@@ -53,6 +53,8 @@ const bereichSchema = z.object({
   portalDescription: z.string().trim().max(300).optional().or(z.literal("")),
   allowEmailCommands: z.boolean(),
   notifyRequesterOnTransfer: z.boolean(),
+  /** Ob dieser Bereich ein eigenes Geräteinventar führt. */
+  hasInventory: z.boolean(),
   isActive: z.boolean(),
 });
 
@@ -92,6 +94,7 @@ export async function bereichAnlegenAction(input: z.infer<typeof bereichSchema>)
       portalDescription: daten.portalDescription || null,
       allowEmailCommands: daten.allowEmailCommands,
       notifyRequesterOnTransfer: daten.notifyRequesterOnTransfer,
+      hasInventory: daten.hasInventory,
       isActive: daten.isActive,
       sortOrder: (letzter?.sortOrder ?? -1) + 1,
     },
@@ -156,6 +159,7 @@ export async function bereichAendernAction(
       portalDescription: daten.portalDescription || null,
       allowEmailCommands: daten.allowEmailCommands,
       notifyRequesterOnTransfer: daten.notifyRequesterOnTransfer,
+      hasInventory: daten.hasInventory,
       isActive: daten.isActive,
     },
   });
