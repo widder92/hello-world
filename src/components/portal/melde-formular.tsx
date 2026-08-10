@@ -9,6 +9,7 @@ import {
   ArrowLeft,
   CheckCircle2,
   ChevronRight,
+  Laptop,
   Lightbulb,
   Send,
 } from "lucide-react";
@@ -84,11 +85,19 @@ export function MeldeFormular({
   standorte,
   eigenerStandortId,
   einfacheAnsicht,
+  geraet,
 }: {
   bereiche: Bereich[];
   standorte: Standort[];
   eigenerStandortId: string | null;
   einfacheAnsicht: boolean;
+  /** Betroffenes Gerät, wenn die Meldung aus „Meine Geräte" kommt. */
+  geraet?: {
+    assetTag: string;
+    name: string;
+    serial: string | null;
+    kind: { name: string };
+  } | null;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -190,6 +199,7 @@ export function MeldeFormular({
           urgency: einfacheAnsicht ? undefined : dringlichkeit,
           formData: Object.keys(zusatz).length ? zusatz : undefined,
           anhangIds: anhaenge.map((a) => a.id),
+          geraetTag: geraet?.assetTag,
         });
         router.push(`/meldung-aufgegeben?nummer=${ergebnis.nummer}`);
       } catch (err) {
@@ -219,6 +229,8 @@ export function MeldeFormular({
         <p className={cn("mt-1.5 text-fg-muted", gross ? "text-lg" : "text-sm")}>
           Wählen Sie den Bereich, der sich um Ihr Anliegen kümmern soll.
         </p>
+
+        {geraet && <GeraetHinweis geraet={geraet} gross={gross} />}
 
         <div
           className={cn(
@@ -323,6 +335,8 @@ export function MeldeFormular({
           )}
         </div>
       </div>
+
+      {geraet && <GeraetHinweis geraet={geraet} gross={gross} />}
 
       <form onSubmit={absenden} className="space-y-5">
         <Card>
@@ -632,6 +646,45 @@ export function MeldungAufgegeben({ nummer }: { nummer: string }) {
           <Link href="/meine-tickets">Zu meinen Meldungen</Link>
         </Button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Hinweiszeile, wenn die Meldung ein bestimmtes Gerät betrifft.
+ *
+ * Wird aus „Meine Geräte" mitgegeben und ist bewusst nicht abwählbar: Wer den
+ * Link dort anklickt, meint dieses Gerät. Sichtbar muss es trotzdem sein –
+ * sonst wüsste niemand, dass die Angabe mitgeht.
+ */
+function GeraetHinweis({
+  geraet,
+  gross,
+}: {
+  geraet: {
+    assetTag: string;
+    name: string;
+    serial: string | null;
+    kind: { name: string };
+  };
+  gross: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "mb-6 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-line bg-surface-2 px-4 py-3",
+        gross ? "text-base" : "text-sm",
+      )}
+    >
+      <Laptop className="size-4 shrink-0 text-fg-muted" aria-hidden="true" />
+      <span className="text-fg-muted">Betrifft Ihr Gerät:</span>
+      <span className="font-medium text-fg">{geraet.name}</span>
+      <span className="font-mono text-xs text-fg-subtle">{geraet.assetTag}</span>
+      {geraet.serial && (
+        <span className="text-xs text-fg-subtle">
+          Seriennummer {geraet.serial}
+        </span>
+      )}
     </div>
   );
 }

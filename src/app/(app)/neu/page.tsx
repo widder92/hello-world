@@ -16,9 +16,15 @@ export const metadata: Metadata = { title: "Neue Meldung" };
  * Bereich landet – wer den Hausmeister meint, wählt den Hausmeister, und das
  * Ticket geht nicht erst zur IT.
  */
-export default async function NeuePage() {
+export default async function NeuePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ geraet?: string }>;
+}) {
   const actor = await getActor();
   if (!actor) redirect("/anmelden");
+
+  const sp = await searchParams;
 
   const [bereiche, standorte] = await Promise.all([
     portalTeams(),
@@ -28,6 +34,21 @@ export default async function NeuePage() {
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
     }),
   ]);
+
+  // Aus „Meine Geräte" kommt die Inventarnummer mit. Nur eigene Geräte werden
+  // angenommen – die Server-Aktion prüft dasselbe noch einmal, bevor sie die
+  // Verknüpfung schreibt.
+  const geraet = sp.geraet
+    ? await db.asset.findFirst({
+        where: { assetTag: sp.geraet, assignedToId: actor.id },
+        select: {
+          assetTag: true,
+          name: true,
+          serial: true,
+          kind: { select: { name: true } },
+        },
+      })
+    : null;
 
   return (
     <MeldeFormular
@@ -59,6 +80,7 @@ export default async function NeuePage() {
       standorte={standorte}
       eigenerStandortId={actor.siteId}
       einfacheAnsicht={Boolean(actor.a11yPrefs.simpleMode)}
+      geraet={geraet}
     />
   );
 }

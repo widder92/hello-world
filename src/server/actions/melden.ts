@@ -39,6 +39,13 @@ const meldenSchema = z.object({
   formData: z.record(z.string(), z.union([z.string(), z.boolean()])).optional(),
   /** Zuvor hochgeladene Anhänge – etwa das Foto vom Schaden. */
   anhangIds: z.array(z.string()).default([]),
+  /**
+   * Betroffenes Gerät, aus „Meine Geräte" mitgegeben.
+   *
+   * Die Inventarnummer und nicht die interne Kennung: Sie steht in der
+   * Adresszeile und ist damit lesbar statt geraten.
+   */
+  geraetTag: z.string().trim().max(40).optional().or(z.literal("")),
 });
 
 export type MeldenInput = z.infer<typeof meldenSchema>;
@@ -103,6 +110,23 @@ export async function meldungAufgebenAction(input: MeldenInput) {
       messageId: ersteNachricht?.id ?? null,
       uploadedById: actor.id,
     });
+  }
+
+  // Betroffenes Gerät verknüpfen – aber nur, wenn es der meldenden Person
+  // auch zugewiesen ist. Sonst ließe sich über die Adresszeile jedes beliebige
+  // Gerät an einen Vorgang hängen, und die IT liefe der falschen Sache
+  // hinterher. Ein unbekanntes Gerät wird stillschweigend übergangen: Die
+  // Meldung selbst ist wichtiger als die Verknüpfung.
+  if (daten.geraetTag) {
+    const geraet = await db.asset.findFirst({
+      where: { assetTag: daten.geraetTag, assignedToId: actor.id },
+      select: { id: true },
+    });
+    if (geraet) {
+      await db.ticketAsset.create({
+        data: { ticketId: ticket.id, assetId: geraet.id },
+      });
+    }
   }
 
   await benachrichtige.eingangsbestaetigung(ticket.id);
