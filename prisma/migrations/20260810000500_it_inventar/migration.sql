@@ -149,9 +149,21 @@ INSERT INTO "AssetCounter" ("id", "kindId", "value")
 SELECT gen_random_uuid()::text, "id", 0 FROM "AssetKind";
 
 -- 6b. Hersteller aus den bisherigen Freitextwerten.
+--
+--     Zusammengefasst wird ohne Rücksicht auf Gross- und Kleinschreibung:
+--     "Dell" und "dell" sind derselbe Hersteller. Genau dafür gibt es die
+--     Tabelle – sie einfach mit den alten Schreibweisen zu füllen, würde die
+--     Unordnung nur von einer Spalte in eine Tabelle verschieben.
+--
+--     Welche Schreibweise gewinnt, entscheidet die alphabetische Reihenfolge.
+--     Das ist willkürlich, aber vorhersehbar; nachbessern lässt sich der Name
+--     danach in der Verwaltung an einer Stelle für alle Geräte.
 INSERT INTO "Manufacturer" ("id", "name", "updatedAt")
-SELECT gen_random_uuid()::text, btrim("manufacturer"), CURRENT_TIMESTAMP
-FROM (SELECT DISTINCT "manufacturer" FROM "Asset" WHERE btrim(coalesce("manufacturer", '')) <> '') AS q
+SELECT DISTINCT ON (lower(btrim("manufacturer")))
+  gen_random_uuid()::text, btrim("manufacturer"), CURRENT_TIMESTAMP
+FROM "Asset"
+WHERE btrim(coalesce("manufacturer", '')) <> ''
+ORDER BY lower(btrim("manufacturer")), btrim("manufacturer")
 ON CONFLICT ("name") DO NOTHING;
 
 -- 6c. Verweise setzen.
@@ -173,7 +185,7 @@ END;
 UPDATE "Asset" a
 SET "manufacturerId" = m."id"
 FROM "Manufacturer" m
-WHERE btrim(coalesce(a."manufacturer", '')) = m."name";
+WHERE lower(btrim(coalesce(a."manufacturer", ''))) = lower(m."name");
 
 -- Führender Bereich: die IT, sonst der erste aktive Bereich. Der Rückfall ist
 -- kein Schönheitsfehler, sondern verhindert, dass die Migration an einem
@@ -205,19 +217,28 @@ UPDATE "Asset" SET
     ELSE NULL
   END;
 
--- 6e. Kein Gerät darf ohne Geräteart oder Bereich zurückbleiben. Falls doch,
---     bricht die Migration hier ab, statt die Lücke mit NOT NULL zu erzwingen
---     und dabei eine unverständliche Fehlermeldung zu erzeugen.
-DO $$
-DECLARE fehlend INTEGER;
-BEGIN
-  SELECT count(*) INTO fehlend FROM "Asset" WHERE "kindId" IS NULL OR "teamId" IS NULL;
-  IF fehlend > 0 THEN
-    RAISE EXCEPTION
-      'Umstellung abgebrochen: % Gerät(e) ohne Geräteart oder Bereich. Bitte einen aktiven Bereich anlegen und erneut ausführen.',
-      fehlend;
-  END IF;
-END $$;
+-- 6e. Kein Gerät darf ohne Geräteart oder Bereich zurückbleiben.
+--
+--     Geprüft wird das über zwei benannte Bedingungen statt über einen
+--     PL/pgSQL-Block: Diese Migration soll mit reinem SQL auskommen. Ein
+--     `DO $$ … $$` verlangt die Erweiterung plpgsql, und wo deren Bibliothek
+--     nicht geladen werden kann – unter Windows blockieren
+--     Virenschutzprogramme sie gelegentlich –, scheitert sonst die gesamte
+--     Umstellung an einer Sicherheitsprüfung, die selbst nichts verändert.
+--
+--     Die Bedingungen tragen sprechende Namen, damit die Fehlermeldung sagt,
+--     woran es liegt. Direkt danach werden sie wieder entfernt: Ihr Zweck ist
+--     die einmalige Prüfung, nicht die dauerhafte Regel – die steht ab
+--     Abschnitt 7 als NOT NULL in der Tabelle.
+ALTER TABLE "Asset"
+  ADD CONSTRAINT "uebernahme_jedes_geraet_braucht_eine_geraeteart"
+    CHECK ("kindId" IS NOT NULL),
+  ADD CONSTRAINT "uebernahme_jedes_geraet_braucht_einen_bereich"
+    CHECK ("teamId" IS NOT NULL);
+
+ALTER TABLE "Asset"
+  DROP CONSTRAINT "uebernahme_jedes_geraet_braucht_eine_geraeteart",
+  DROP CONSTRAINT "uebernahme_jedes_geraet_braucht_einen_bereich";
 
 -- 7. Alte Spalten entfernen – erst jetzt, wo alles übernommen ist ----------
 
