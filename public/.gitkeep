@@ -1,0 +1,2 @@
+# Ordner für statische Dateien (Logo, Favicon).
+# Next.js erwartet ihn; das Docker-Abbild kopiert ihn.

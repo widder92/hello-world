@@ -1,0 +1,36 @@
+# Was nicht ins Abbild gehört.
+#
+# Der wichtigste Eintrag ist der erste: Ohne ihn landet die .env mit allen
+# Geheimnissen im Abbild – und damit in jeder Registry, in die es geschoben
+# wird. Die Konfiguration kommt zur Laufzeit über env_file, nicht über das
+# Abbild.
+.env
+.env.local
+.env.*.local
+
+# Wird im Abbild neu installiert. Mitkopiert würde es die im deps-Schritt
+# gebauten Pakete überschreiben – samt der Binärdateien für die falsche
+# Plattform.
+node_modules
+.next
+
+# Verlauf, Testausgaben, hochgeladene Dateien
+.git
+.gitignore
+.scratch
+test-results
+playwright-report
+uploads
+coverage
+*.log
+tsconfig.tsbuildinfo
+
+# Nur für die Entwicklung
+tests
+playwright.config.ts
+vitest.config.ts
+Dockerfile
+docker-compose.yml
+README.md
+BETRIEB.md
+TESTSERVER.md

@@ -1,0 +1,21 @@
+node_modules/
+.next/
+out/
+build/
+dist/
+.env
+.env.local
+.env.*.local
+*.tsbuildinfo
+next-env.d.ts
+/uploads/
+/data/
+coverage/
+test-results/
+playwright-report/
+.DS_Store
+*.log
+.scratch/
+
+# Bildschirmfotos aus scripts/bildschirmfotos.ts
+/bildschirmfotos/

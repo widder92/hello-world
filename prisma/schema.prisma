@@ -1,0 +1,1343 @@
+// ---------------------------------------------------------------------------
+// Ticketsystem – Datenmodell
+//
+// Tragende Struktur:   Bereich (Team) → Eingang (Queue) → Ticket
+//
+// Ein Ticket landet nie "in einem Bereich", sondern immer in einem konkreten
+// Eingang. Ein Eingang gehört zu genau einem Bereich und optional zu einem
+// Standort. Damit lässt sich "Hausmeister Musterstadt" von "Hausmeister
+// Musterstadt 2" trennen, ohne den Bereich zu zerreißen: Rechte, Auswertung,
+// Kategorien und Vorlagen bleiben beim Bereich gebündelt.
+// ---------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================================================
+// Aufzählungen
+// ===========================================================================
+
+/// Ausbaustufe eines Bereichs. Steuert, welche Funktionen und Ansichten die
+/// Mitglieder sehen. Ein Wechsel EINFACH → VOLL blendet nur mehr ein und
+/// verändert keine Daten.
+enum TeamMode {
+  /// Voller Arbeitsplatz: Sammeleingang, Zuweisung, Fristen, Auswertung.
+  VOLL
+  /// Schlanke Ansicht: empfangen, antworten, abschließen, weitergeben.
+  EINFACH
+}
+
+/// Bestimmt, wie die Eingänge eines Bereichs geschnitten sind.
+enum QueueMode {
+  /// Ein gemeinsamer Eingang für alle Standorte (z. B. die IT).
+  SINGLE
+  /// Je Standort ein eigener Eingang (z. B. die Hausmeister).
+  PER_SITE
+}
+
+enum GlobalRole {
+  USER
+  ADMIN
+}
+
+enum TeamRole {
+  MEMBER
+  DISPATCHER
+  LEAD
+}
+
+enum SiteType {
+  SCHULE
+  WOHNHEIM
+  BETREUTES_WOHNEN
+  VERWALTUNG
+  WERKSTATT
+  SONSTIGE
+}
+
+enum TicketStatus {
+  NEU
+  OFFEN
+  IN_BEARBEITUNG
+  WARTET_AUF_MELDER
+  WARTET_AUF_DRITTE
+  ZURUECKGESTELLT
+  GELOEST
+  GESCHLOSSEN
+}
+
+enum Priority {
+  NIEDRIG
+  NORMAL
+  HOCH
+  DRINGEND
+}
+
+/// Auswirkung und Dringlichkeit ergeben zusammen einen Vorschlag für die
+/// Priorität. Die Priorität bleibt aber frei überschreibbar.
+enum Impact {
+  EINZELNE_PERSON
+  GRUPPE
+  STANDORT
+  GESAMTES_UNTERNEHMEN
+}
+
+enum Urgency {
+  KANN_WARTEN
+  NORMAL
+  BEEINTRAECHTIGT_ARBEIT
+  ARBEIT_STEHT_STILL
+}
+
+enum TicketSource {
+  WEB
+  EMAIL
+  TELEFON
+  API
+  IMPORT
+}
+
+enum MessageType {
+  /// Sichtbar für den Melder, wird per E-Mail zugestellt.
+  PUBLIC_REPLY
+  /// Nur intern sichtbar, verlässt das System nie.
+  INTERNAL_NOTE
+  /// Vom System erzeugter Hinweis im Verlauf.
+  SYSTEM
+}
+
+enum LinkType {
+  /// Das Zielticket wurde aus dem Quellticket abgespalten.
+  SPLIT_FROM
+  MERGED_INTO
+  RELATED
+  DUPLICATE_OF
+  BLOCKS
+}
+
+enum EventType {
+  CREATED
+  CLAIMED
+  ASSIGNED
+  UNASSIGNED
+  TRANSFERRED
+  SPLIT
+  SPLIT_CHILD_RESOLVED
+  MERGED
+  STATUS_CHANGED
+  PRIORITY_CHANGED
+  CATEGORY_CHANGED
+  SITE_CHANGED
+  DUE_DATE_SET
+  SLA_WARNING
+  SLA_BREACHED
+  FIRST_RESPONSE
+  REOPENED
+  WATCHER_ADDED
+  WATCHER_REMOVED
+  ATTACHMENT_ADDED
+  EMAIL_RECEIVED
+  EMAIL_SENT
+  EMAIL_COMMAND
+  EMAIL_COMMAND_REJECTED
+  IMPORTED
+}
+
+enum MailTransport {
+  IMAP
+  GRAPH
+}
+
+/// Wie mit Mails unbekannter Absender verfahren wird.
+enum UnknownSenderPolicy {
+  /// Absender als externen Melder anlegen und Ticket erzeugen.
+  CREATE_CONTACT
+  /// Ticket erzeugen, aber zur Sichtung markieren.
+  QUARANTINE
+  /// Verwerfen und nur protokollieren.
+  REJECT
+}
+
+enum AssignStrategy {
+  NONE
+  ROUND_ROBIN
+}
+
+/// Wo sich ein Gerät gerade befindet.
+///
+/// Gerätearten und Modelle stehen bewusst in Tabellen (AssetKind, AssetModel)
+/// und nicht in einer Aufzählung – ein neues Modell soll ohne
+/// Datenbankänderung anlegbar sein. Der Status dagegen gehört hierher: An ihm
+/// hängen die Übergangsregeln und die halbe Auswertung, und ein frei
+/// erfundener Zustand würde beides stillschweigend unvollständig machen.
+///
+/// Die Reihenfolge folgt dem Weg eines Geräts durchs Haus: ankommen,
+/// einrichten, bereitstellen, herausgeben – und irgendwann zurück.
+enum AssetStatus {
+  /// Im Bestand, keiner Person zugewiesen, verfügbar.
+  ///
+  /// Bewusst weit gefasst: Hier steht das fabrikneue Gerät neben dem, das
+  /// gestern zurückgekommen ist und morgen jemand anders bekommt. Was ein
+  /// Gerät hinter sich hat, sagt seine Chronik – nicht sein Status.
+  LAGER
+  /// Wird gerade eingerichtet – Betriebssystem, Programme, Konten.
+  IN_VORBEREITUNG
+  /// Fertig eingerichtet und wartet nur noch auf die Übergabe.
+  BEREIT
+  /// Für eine bestimmte Person vorgemerkt.
+  RESERVIERT
+  /// Bei einer Person im Einsatz.
+  HERAUSGEGEBEN
+  /// Beim Hersteller oder in der Werkstatt.
+  REPARATUR
+  /// Ausgemustert, verkauft oder entsorgt.
+  AUSGESONDERT
+  /// Verloren oder gestohlen.
+  VERLUST
+}
+
+/// Art einer Netzwerkadresse. Ein Notebook hat üblicherweise drei.
+enum MacKind {
+  LAN
+  WLAN
+  BLUETOOTH
+  SONSTIGE
+}
+
+/// Richtung einer Übergabe.
+enum HandoverDirection {
+  /// Vom Lager an eine Person.
+  AUSGABE
+  /// Von einer Person zurück.
+  RUECKNAHME
+}
+
+/// Was in der Gerätechronik festgehalten wird.
+enum AssetEventType {
+  ANGELEGT
+  GEAENDERT
+  STATUS
+  HERAUSGEGEBEN
+  ZURUECKGENOMMEN
+  NOTIZ
+}
+
+enum ArticleVisibility {
+  /// Auch im Melder-Portal sichtbar.
+  OEFFENTLICH
+  /// Nur für Bereichsmitglieder.
+  INTERN
+}
+
+enum NotificationType {
+  TICKET_ASSIGNED
+  TICKET_NEW_IN_QUEUE
+  TICKET_REPLY
+  TICKET_TRANSFERRED
+  TICKET_SPLIT_CHILD_RESOLVED
+  TICKET_RESOLVED
+  SLA_WARNING
+  SLA_BREACHED
+  MENTIONED
+}
+
+// ===========================================================================
+// Organisation
+// ===========================================================================
+
+/// Standort bzw. Einrichtung. Bei einem Träger mit mehreren Häusern die
+/// wichtigste Filter- und Auswertungsachse.
+model Site {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  shortName String?
+  type      SiteType @default(SONSTIGE)
+  street    String?
+  zip       String?
+  city      String?
+  notes     String?
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users   User[]
+  queues  Queue[]
+  tickets Ticket[]
+  assets  Asset[]
+
+  @@index([isActive, sortOrder])
+}
+
+/// Bereich, z. B. IT, Hausmeister, Küche.
+model Team {
+  id   String @id @default(cuid())
+  key  String @unique /// Kurzzeichen, auch Präfix der Ticketnummer, z. B. "IT"
+  name String @unique
+
+  mode      TeamMode  @default(EINFACH)
+  queueMode QueueMode @default(SINGLE)
+
+  description String?
+  color       String  @default("#0f766e")
+  icon        String  @default("Wrench") /// Name eines lucide-react-Symbols
+  sortOrder   Int     @default(0)
+  isActive    Boolean @default(true)
+
+  // --- Darstellung im Melder-Portal ---------------------------------------
+  /// Ob Mitarbeitende diesem Bereich direkt ein Ticket schreiben dürfen.
+  /// Bereiche ohne Sichtbarkeit bleiben per Weiterleitung erreichbar.
+  portalVisible     Boolean @default(true)
+  /// Beschriftung in klarer Sprache, z. B. "Gebäude, Heizung, Licht, Reparaturen".
+  portalLabel       String?
+  portalDescription String?
+
+  // --- Verhalten -----------------------------------------------------------
+  autoAssign                AssignStrategy @default(NONE)
+  /// Ob Steuerbefehle in Antwortmails (#erledigt, #intern, …) ausgeführt werden.
+  allowEmailCommands        Boolean        @default(true)
+  /// Ob der Melder bei einer Weiterleitung automatisch informiert wird.
+  notifyRequesterOnTransfer Boolean        @default(true)
+
+  /// Ob dieser Bereich ein eigenes Inventar führt.
+  ///
+  /// Bewusst ein eigener Schalter und nicht aus der Ausbaustufe abgeleitet:
+  /// Die IT inventarisiert Geräte, der Hausmeister vielleicht später sein
+  /// Werkzeug – das hat mit VOLL oder EINFACH nichts zu tun.
+  hasInventory Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  queues      Queue[]
+  memberships TeamMembership[]
+  categories  Category[]
+  tickets     Ticket[]
+  slaPolicies SlaPolicy[]
+  canned      CannedResponse[]
+  templates   TicketTemplate[]
+  articles    KbArticle[]
+  counters    TicketCounter[]
+  assets      Asset[]
+
+  @@index([isActive, sortOrder])
+  @@index([portalVisible])
+}
+
+/// Eingang: der eigentliche Zielort eines Tickets.
+model Queue {
+  id     String  @id @default(cuid())
+  teamId String
+  team   Team    @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  /// Leer bei Bereichen mit einem gemeinsamen Eingang für alle Standorte.
+  siteId String?
+  site   Site?   @relation(fields: [siteId], references: [id], onDelete: SetNull)
+
+  name         String
+  /// Eigene Empfangsadresse, z. B. hausmeister-musterstadt2@example.org
+  inboundEmail String? @unique
+
+  portalVisible Boolean @default(true)
+  isActive      Boolean @default(true)
+  sortOrder     Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tickets     Ticket[]
+  access      QueueAccess[]
+  mailAccount MailAccount?
+
+  /// Je Bereich höchstens ein Eingang pro Standort.
+  @@unique([teamId, siteId])
+  @@index([teamId, isActive])
+}
+
+// ===========================================================================
+// Benutzer und Zugriff
+// ===========================================================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  name          String
+  image         String?
+
+  /// Nur bei lokalen Konten gesetzt. Bei reinen SSO-Konten leer.
+  passwordHash String?
+  /// Objekt-ID aus Entra ID, sofern über SSO angemeldet.
+  entraOid     String? @unique
+
+  globalRole GlobalRole @default(USER)
+
+  /// Eigener Standort. Belegt das Meldeformular vor und bestimmt die
+  /// Startansicht im Arbeitsplatz.
+  siteId String?
+  site   Site?   @relation(fields: [siteId], references: [id], onDelete: SetNull)
+
+  phone      String?
+  department String?
+  jobTitle   String?
+  isActive   Boolean @default(true)
+
+  /// Barrierefreiheitseinstellungen:
+  /// { largeText, highContrast, reduceMotion, simpleMode }
+  a11yPrefs Json   @default("{}")
+  /// Oberflächenthema: "light" | "dark" | "system"
+  theme     String @default("system")
+
+  /// Externe Melder entstehen automatisch aus eingehenden Mails unbekannter
+  /// Absender und können sich nicht anmelden.
+  isExternal Boolean @default(false)
+
+  lastLoginAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  accounts    Account[]
+  sessions    Session[]
+  memberships TeamMembership[]
+  queueAccess QueueAccess[]
+
+  requestedTickets Ticket[]        @relation("TicketRequester")
+  assignedTickets  Ticket[]        @relation("TicketAssignee")
+  messages         TicketMessage[]
+  events           TicketEvent[]
+  watching         TicketWatcher[]
+  tasks            TicketTask[]
+  uploads          Attachment[]
+  notifications    Notification[]
+  savedViews       SavedView[]
+  articles         KbArticle[]
+  auditEntries     AuditLog[]
+
+  /// Geräte, die dieser Person zugewiesen sind – die Grundlage für
+  /// „Meine Geräte".
+  assets           Asset[]
+  assetEvents      AssetEvent[]    @relation("AssetEreignisPerson")
+  assetEventsActed AssetEvent[]    @relation("AssetEreignisUrheber")
+  handovers        AssetHandover[] @relation("AssetUebergabeEmpfaenger")
+  handoversActed   AssetHandover[] @relation("AssetUebergabeUrheber")
+
+  @@index([isActive])
+  @@index([siteId])
+}
+
+model TeamMembership {
+  id     String   @id @default(cuid())
+  userId String
+  user   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  teamId String
+  team   Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  role   TeamRole @default(MEMBER)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, teamId])
+  @@index([teamId])
+}
+
+/// Welche Standort-Eingänge eine Person sehen darf. Wer zwei Häuser betreut,
+/// bekommt zwei Einträge. Bereichsleitungen (TeamRole.LEAD) sehen alle
+/// Eingänge ihres Bereichs auch ohne Eintrag hier.
+model QueueAccess {
+  id        String  @id @default(cuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  queueId   String
+  queue     Queue   @relation(fields: [queueId], references: [id], onDelete: Cascade)
+  /// Startansicht nach dem Anmelden.
+  isDefault Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, queueId])
+  @@index([queueId])
+}
+
+// ===========================================================================
+// Auth.js
+// ===========================================================================
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ===========================================================================
+// Kategorien, Fristen, Dienstzeiten
+// ===========================================================================
+
+model Category {
+  id     String @id @default(cuid())
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  name     String
+  parentId String?
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children Category[] @relation("CategoryTree")
+
+  description     String?
+  defaultPriority Priority @default(NORMAL)
+
+  slaPolicyId String?
+  slaPolicy   SlaPolicy? @relation(fields: [slaPolicyId], references: [id], onDelete: SetNull)
+
+  /// Zusatzfelder für das Meldeformular. Aufbau:
+  /// [{ key, label, type: "text"|"textarea"|"select"|"number"|"date"|"checkbox",
+  ///    required, options?, help? }]
+  formSchema Json?
+
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tickets Ticket[]
+
+  @@unique([teamId, name, parentId])
+  @@index([teamId, isActive])
+}
+
+/// Dienstzeiten, innerhalb derer Fristen laufen. Außerhalb steht die Uhr still.
+model BusinessHours {
+  id       String @id @default(cuid())
+  name     String @unique
+  timezone String @default("Europe/Berlin")
+
+  /// Wochenplan: { "1": [["07:30","16:30"]], … "7": [] }  (1 = Montag)
+  schedule Json
+
+  isDefault Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  holidays Holiday[]
+  policies SlaPolicy[]
+
+  @@index([isDefault])
+}
+
+model Holiday {
+  id              String        @id @default(cuid())
+  businessHoursId String
+  businessHours   BusinessHours @relation(fields: [businessHoursId], references: [id], onDelete: Cascade)
+  date            DateTime      @db.Date
+  name            String
+
+  @@unique([businessHoursId, date])
+}
+
+model SlaPolicy {
+  id     String  @id @default(cuid())
+  teamId String?
+  team   Team?   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  name     String
+  priority Priority
+
+  /// Fristen in Minuten reiner Dienstzeit.
+  firstResponseMinutes Int
+  resolutionMinutes    Int
+  /// Ab welchem Anteil der Frist gewarnt wird (0.8 = bei 80 %).
+  warningThreshold     Float @default(0.8)
+
+  businessHoursId String
+  businessHours   BusinessHours @relation(fields: [businessHoursId], references: [id])
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  categories Category[]
+  tickets    Ticket[]
+
+  @@unique([teamId, priority, name])
+  @@index([teamId, priority])
+}
+
+// ===========================================================================
+// Tickets
+// ===========================================================================
+
+/// Fortlaufende Nummer je Bereich und Jahr. Wird in einer Transaktion mit
+/// Zeilensperre hochgezählt, damit keine Nummer doppelt vergeben wird.
+model TicketCounter {
+  id     String @id @default(cuid())
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  year   Int
+  value  Int    @default(0)
+
+  @@unique([teamId, year])
+}
+
+model Ticket {
+  id     String @id @default(cuid())
+  /// Sprechende Kennung, z. B. "HM-2026-000087".
+  number String @unique
+
+  subject String
+
+  // --- Zuordnung ----------------------------------------------------------
+  queueId String
+  queue   Queue  @relation(fields: [queueId], references: [id])
+  /// Aus dem Eingang abgeleitet. Wird mitgeführt, damit Listen und
+  /// Auswertungen über den Bereich ohne zusätzlichen Join filtern können.
+  teamId  String
+  team    Team   @relation(fields: [teamId], references: [id])
+
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  /// Betroffener Standort. Bei Bereichen mit Eingang je Standort entspricht er
+  /// dem Standort des Eingangs, bei zentralen Bereichen ist er reine Angabe.
+  siteId     String?
+  site       Site?   @relation(fields: [siteId], references: [id], onDelete: SetNull)
+  roomOrArea String?
+
+  requesterId String
+  requester   User    @relation("TicketRequester", fields: [requesterId], references: [id])
+  assigneeId  String?
+  assignee    User?   @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+
+  // --- Zustand ------------------------------------------------------------
+  status   TicketStatus @default(NEU)
+  priority Priority     @default(NORMAL)
+  impact   Impact?
+  urgency  Urgency?
+  source   TicketSource @default(WEB)
+
+  /// Antworten der Zusatzfelder aus dem Kategorieformular.
+  formData Json?
+
+  // --- Fristen ------------------------------------------------------------
+  slaPolicyId        String?
+  slaPolicy          SlaPolicy? @relation(fields: [slaPolicyId], references: [id], onDelete: SetNull)
+  firstResponseDue   DateTime?
+  resolutionDue      DateTime?
+  firstResponseAt    DateTime?
+  slaWarningNotified Boolean    @default(false)
+  slaBreached        Boolean    @default(false)
+
+  resolvedAt DateTime?
+  closedAt   DateTime?
+
+  /// Wird beim Abspalten gesetzt, wenn das Ursprungsticket auf das Kindticket
+  /// warten soll. Schließt das Kindticket, springt dieses Ticket auf OFFEN.
+  waitingForChild Boolean @default(false)
+
+  // --- E-Mail -------------------------------------------------------------
+  /// Message-ID der Mail, aus der das Ticket entstanden ist.
+  originEmailMessageId String?
+  /// Zur Sichtung markiert, weil der Absender unbekannt war.
+  quarantined          Boolean @default(false)
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  lastActivityAt DateTime @default(now())
+
+  messages      TicketMessage[]
+  events        TicketEvent[]
+  attachments   Attachment[]
+  watchers      TicketWatcher[]
+  tags          TicketTag[]
+  tasks         TicketTask[]
+  assets        TicketAsset[]
+  linksFrom     TicketLink[]    @relation("LinkFrom")
+  linksTo       TicketLink[]    @relation("LinkTo")
+  notifications Notification[]
+
+  @@index([queueId, status])
+  @@index([teamId, status])
+  @@index([assigneeId, status])
+  @@index([requesterId])
+  @@index([siteId])
+  @@index([status, resolutionDue])
+  @@index([lastActivityAt])
+  @@index([createdAt])
+}
+
+model TicketMessage {
+  id       String      @id @default(cuid())
+  ticketId String
+  ticket   Ticket      @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  type     MessageType @default(PUBLIC_REPLY)
+
+  /// Leer bei Nachrichten aus Mails externer Absender ohne Konto.
+  authorId    String?
+  author      User?   @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  authorName  String?
+  authorEmail String?
+
+  /// Aufbereiteter Inhalt (bereinigtes HTML).
+  body     String @db.Text
+  /// Reiner Text für Suche, Vorschau und Mailversand.
+  bodyText String @db.Text
+
+  // --- E-Mail-Verkettung --------------------------------------------------
+  emailMessageId String?   @unique
+  emailInReplyTo String?
+  /// Ob diese Nachricht bereits per Mail verschickt wurde.
+  emailSentAt    DateTime?
+
+  /// Ob der Text über einen Steuerbefehl in einer Antwortmail entstand.
+  viaEmailCommand Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  attachments Attachment[]
+
+  @@index([ticketId, createdAt])
+  @@index([emailInReplyTo])
+}
+
+/// Lückenloses Protokoll aller Zustandsänderungen eines Tickets.
+model TicketEvent {
+  id       String    @id @default(cuid())
+  ticketId String
+  ticket   Ticket    @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  type     EventType
+
+  actorId   String?
+  actor     User?   @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  actorName String?
+
+  fromValue String?
+  toValue   String?
+  note      String? @db.Text
+  meta      Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([ticketId, createdAt])
+  @@index([type, createdAt])
+}
+
+/// Verknüpfung zweier Tickets. Trägt insbesondere die Abspaltung: das
+/// Kindticket zeigt mit SPLIT_FROM auf sein Ursprungsticket.
+model TicketLink {
+  id     String   @id @default(cuid())
+  fromId String
+  from   Ticket   @relation("LinkFrom", fields: [fromId], references: [id], onDelete: Cascade)
+  toId   String
+  to     Ticket   @relation("LinkTo", fields: [toId], references: [id], onDelete: Cascade)
+  type   LinkType
+
+  createdAt DateTime @default(now())
+
+  @@unique([fromId, toId, type])
+  @@index([toId])
+}
+
+model TicketWatcher {
+  id       String @id @default(cuid())
+  ticketId String
+  ticket   Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([ticketId, userId])
+  @@index([userId])
+}
+
+model TicketTask {
+  id       String    @id @default(cuid())
+  ticketId String
+  ticket   Ticket    @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  title    String
+  done     Boolean   @default(false)
+  doneAt   DateTime?
+
+  assigneeId String?
+  assignee   User?   @relation(fields: [assigneeId], references: [id], onDelete: SetNull)
+
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([ticketId, sortOrder])
+}
+
+model Tag {
+  id    String @id @default(cuid())
+  name  String @unique
+  color String @default("#64748b")
+
+  tickets TicketTag[]
+}
+
+model TicketTag {
+  ticketId String
+  ticket   Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  tagId    String
+  tag      Tag    @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([ticketId, tagId])
+  @@index([tagId])
+}
+
+model Attachment {
+  id       String  @id @default(cuid())
+  ticketId String?
+  ticket   Ticket? @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  messageId String?
+  message   TicketMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  /// Gerätefoto, Rechnung oder Lieferschein im Inventar.
+  assetId String?
+  asset   Asset?  @relation("AssetDateien", fields: [assetId], references: [id], onDelete: Cascade)
+
+  filename   String
+  mimeType   String
+  size       Int
+  /// Pfad in der Dateiablage, relativ zu UPLOAD_DIR.
+  storageKey String
+  checksum   String?
+
+  uploadedById String?
+  uploadedBy   User?   @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  /// Ob die Datei aus einer eingehenden Mail stammt (Inline-Bilder u. ä.).
+  fromEmail Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  /// Rückrichtung für Asset.photo – dasselbe Foto, von der Geräteseite aus.
+  fotoVon Asset? @relation("AssetFoto")
+
+  /// Rückrichtung für AssetModel.photo – das Bild eines ganzen Modells.
+  fotoVonModell AssetModel? @relation("ModellFoto")
+
+  @@index([ticketId])
+  @@index([messageId])
+  @@index([assetId])
+}
+
+// ===========================================================================
+// Hilfsmittel für die Bearbeitung
+// ===========================================================================
+
+model CannedResponse {
+  id     String  @id @default(cuid())
+  teamId String?
+  team   Team?   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  title    String
+  /// Kurzbefehl zum Einfügen, z. B. "/neustart".
+  shortcut String?
+  body     String  @db.Text
+
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([teamId, isActive])
+}
+
+model TicketTemplate {
+  id     String @id @default(cuid())
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  name            String
+  description     String?
+  subjectTemplate String
+  bodyTemplate    String   @db.Text
+  defaultPriority Priority @default(NORMAL)
+  /// Vorbelegte Checkliste: ["Konto anlegen", "Postfach einrichten", …]
+  checklist       Json?
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([teamId, name])
+}
+
+model KbArticle {
+  id    String @id @default(cuid())
+  slug  String @unique
+  title String
+
+  body       String            @db.Text
+  summary    String?
+  visibility ArticleVisibility @default(INTERN)
+
+  teamId String?
+  team   Team?   @relation(fields: [teamId], references: [id], onDelete: SetNull)
+
+  authorId String?
+  author   User?   @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  published  Boolean @default(false)
+  viewCount  Int     @default(0)
+  helpfulYes Int     @default(0)
+  helpfulNo  Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([published, visibility])
+  @@index([teamId])
+}
+
+// ===========================================================================
+// IT-Inventar
+// ===========================================================================
+
+/// Geräteart – PC, Notebook, Tablet, Smartphone, Headset, …
+///
+/// Eine Tabelle statt eines Enums, weil sich die Liste ändert: Heute sind es
+/// Kopfhörer ab einem gewissen Wert, morgen Konferenzkameras. Eine neue Art
+/// darf keine Datenbankänderung kosten.
+model AssetKind {
+  id   String @id @default(cuid())
+  /// Kurzzeichen, zugleich Präfix der Inventarnummer, z. B. "NB" -> NB-00042.
+  key  String @unique
+  name String @unique
+
+  icon      String  @default("Package") /// Name eines lucide-react-Symbols
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  /// Ob das Formular eine Seriennummer verlangt. Ein Monitor hat eine,
+  /// ein Softwareschlüssel nicht.
+  requiresSerial Boolean @default(true)
+  /// Ob das Formular mindestens eine MAC-Adresse verlangt.
+  requiresMac    Boolean @default(false)
+
+  /// Vorbelegung im Formular – die meisten Notebooks laufen auf derselben
+  /// Kostenstelle, und Tippen ist die häufigste Fehlerquelle.
+  defaultCostCenterId String?
+  defaultCostCenter   CostCenter? @relation(fields: [defaultCostCenterId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  assets   Asset[]
+  counters AssetCounter[]
+  models   AssetModel[]
+
+  @@index([isActive, sortOrder])
+}
+
+/// Hersteller. Bisher Freitext, dadurch standen "Lenovo", "lenovo" und
+/// "LENOVO" nebeneinander und keine Auswertung stimmte. Die Support-Nummer
+/// steht hier, damit sie im Störungsfall nicht gesucht werden muss.
+model Manufacturer {
+  id   String @id @default(cuid())
+  name String @unique
+
+  website      String?
+  supportPhone String?
+  notes        String?
+  isActive     Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  assets Asset[]
+  models AssetModel[]
+
+  @@index([isActive, name])
+}
+
+/// Gerätemodell – „Lenovo ThinkPad L14", „Apple iPad 10".
+///
+/// Eigene Tabelle, weil dasselbe Modell zwanzigmal beschafft wird und sich nur
+/// in Seriennummer und Besitzer unterscheidet. Zwei Dinge folgen daraus:
+///
+///  1. Beim Anlegen wird das Modell ausgewählt statt abgetippt. Ein Feld, in
+///     das zwanzigmal „ThinkPad L14" eingegeben wird, enthält am Ende
+///     „Thinkpad L 14", „T14L" und „ThinkPad L14 (neu)".
+///  2. Das **Foto hängt am Modell**, nicht am Gerät. Alle ThinkPads L14 sehen
+///     gleich aus; das Bild einmal zu hinterlegen genügt, und jedes weitere
+///     Gerät dieses Modells erbt es.
+model AssetModel {
+  id String @id @default(cuid())
+
+  manufacturerId String
+  manufacturer   Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Cascade)
+
+  name String
+
+  /// Übliche Geräteart – belegt das Formular vor.
+  kindId String?
+  kind   AssetKind? @relation(fields: [kindId], references: [id], onDelete: SetNull)
+
+  /// Bild des Modells. Gilt für alle Geräte dieses Modells, sofern das
+  /// einzelne Gerät kein eigenes Foto hat.
+  photoId String?     @unique
+  photo   Attachment? @relation("ModellFoto", fields: [photoId], references: [id], onDelete: SetNull)
+
+  notes    String?
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  assets Asset[]
+
+  /// Derselbe Modellname bei zwei Herstellern ist möglich und in Ordnung –
+  /// „Pro 8" gibt es mehrfach. Beim selben Hersteller nicht.
+  @@unique([manufacturerId, name])
+  @@index([isActive, name])
+}
+
+/// Kostenstelle. Gepflegte Liste, damit die Auswertung überhaupt summieren
+/// kann – als Freitextfeld wäre jede Summe geraten.
+model CostCenter {
+  id   String @id @default(cuid())
+  code String @unique /// z. B. "4300"
+  name String
+
+  description String?
+  sortOrder   Int     @default(0)
+  isActive    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  assets Asset[]
+  kinds  AssetKind[]
+
+  @@index([isActive, sortOrder])
+}
+
+/// Laufende Nummer je Geräteart, nach demselben Muster wie TicketCounter.
+model AssetCounter {
+  id     String    @id @default(cuid())
+  kindId String    @unique
+  kind   AssetKind @relation(fields: [kindId], references: [id], onDelete: Cascade)
+  value  Int       @default(0)
+}
+
+model Asset {
+  id       String @id @default(cuid())
+  /// Sprechende Inventarnummer, z. B. "NB-00042".
+  assetTag String @unique
+  name     String
+
+  kindId String
+  kind   AssetKind @relation(fields: [kindId], references: [id], onDelete: Restrict)
+
+  /// Welcher Bereich das Gerät führt. Entscheidet mit darüber, wer es sieht.
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Restrict)
+
+  status AssetStatus @default(LAGER)
+
+  manufacturerId String?
+  manufacturer   Manufacturer? @relation(fields: [manufacturerId], references: [id], onDelete: SetNull)
+
+  /// Gerätemodell. Trägt das Foto, das alle Geräte dieses Modells verwenden.
+  modelId String?
+  model   AssetModel? @relation(fields: [modelId], references: [id], onDelete: SetNull)
+
+  serial String?
+  /// Bei Mobilgeräten. Steht auf der Rechnung und beim Mobilfunkanbieter.
+  imei   String?
+
+  siteId          String?
+  site            Site?   @relation(fields: [siteId], references: [id], onDelete: SetNull)
+  room            String?
+  /// Wo im Lager das Gerät liegt, z. B. "Schrank 2, Fach C".
+  storageLocation String?
+
+  assignedToId String?
+  assignedTo   User?     @relation(fields: [assignedToId], references: [id], onDelete: SetNull)
+  assignedAt   DateTime?
+
+  costCenterId String?
+  costCenter   CostCenter? @relation(fields: [costCenterId], references: [id], onDelete: SetNull)
+
+  purchasedAt        DateTime?
+  warrantyUntil      DateTime?
+  /// Anschaffungspreis in Cent. Bewusst ganzzahlig: Ein Gleitkommawert kann
+  /// 12,99 nicht genau darstellen, und eine Kostenstellenauswertung, die um
+  /// Cent danebenliegt, ist wertlos.
+  purchasePriceCents Int?
+  supplier           String?
+  invoiceNumber      String?
+
+  /// Foto genau dieses Geräts – für den Ausnahmefall, dass es anders aussieht
+  /// als der Rest seines Modells: ein Aufkleber, ein Schaden, ein Umbau.
+  /// Fehlt es, zeigt die Oberfläche das Bild des Modells.
+  photoId String?     @unique
+  photo   Attachment? @relation("AssetFoto", fields: [photoId], references: [id], onDelete: SetNull)
+
+  notes String?
+
+  retiredAt     DateTime?
+  retiredReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tickets   TicketAsset[]
+  macs      AssetMac[]
+  events    AssetEvent[]
+  handovers AssetHandover[]
+  dateien   Attachment[]    @relation("AssetDateien")
+
+  @@index([siteId])
+  @@index([assignedToId])
+  @@index([teamId, status])
+  @@index([kindId])
+  @@index([costCenterId])
+  @@index([serial])
+}
+
+/// Netzwerkadresse eines Geräts. Eigene Tabelle, weil ein Notebook LAN, WLAN
+/// und Bluetooth hat – in einem einzelnen Feld ginge das verloren.
+model AssetMac {
+  id      String @id @default(cuid())
+  assetId String
+  asset   Asset  @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  /// Immer normalisiert als "aa:bb:cc:dd:ee:ff" abgelegt, sonst greift weder
+  /// die Eindeutigkeit noch die Suche.
+  address String  @unique
+  kind    MacKind @default(LAN)
+  label   String?
+
+  createdAt DateTime @default(now())
+
+  @@index([assetId])
+}
+
+/// Gerätechronik. Jede Änderung am Status landet hier – dargestellt wird sie
+/// wie der Verlauf eines Vorgangs.
+model AssetEvent {
+  id      String @id @default(cuid())
+  assetId String
+  asset   Asset  @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  type       AssetEventType
+  fromStatus AssetStatus?
+  toStatus   AssetStatus?
+
+  /// Betroffene Person, etwa der Empfänger bei einer Herausgabe.
+  userId String?
+  user   User?   @relation("AssetEreignisPerson", fields: [userId], references: [id], onDelete: SetNull)
+
+  /// Wer gehandelt hat. Der Name bleibt erhalten, auch wenn das Konto
+  /// später gelöscht wird – sonst stünde die Chronik ohne Urheber da.
+  actorId   String?
+  actor     User?   @relation("AssetEreignisUrheber", fields: [actorId], references: [id], onDelete: SetNull)
+  actorName String
+
+  note String?
+
+  createdAt DateTime @default(now())
+
+  @@index([assetId, createdAt])
+}
+
+/// Übergabeprotokoll.
+///
+/// Ein eigener Datensatz und keine bloße Notiz in der Chronik: Das Protokoll
+/// wird ausgedruckt, unterschrieben, abgeheftet und Jahre später wieder
+/// hervorgeholt – dann muss genau das wieder erscheinen, was damals gedruckt
+/// wurde, samt Zubehör und Zustand.
+model AssetHandover {
+  id         String @id @default(cuid())
+  /// Fortlaufende Protokollnummer, z. B. "UP-2026-000031".
+  protocolNo String @unique
+
+  assetId String
+  asset   Asset  @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  userId   String?
+  user     User?   @relation("AssetUebergabeEmpfaenger", fields: [userId], references: [id], onDelete: SetNull)
+  /// Name des Empfängers zum Zeitpunkt der Übergabe – siehe actorName oben.
+  userName String
+
+  direction HandoverDirection
+
+  handedOverAt DateTime @default(now())
+
+  actorId   String?
+  actor     User?   @relation("AssetUebergabeUrheber", fields: [actorId], references: [id], onDelete: SetNull)
+  actorName String
+
+  /// Zustand bei der Übergabe, z. B. "neuwertig" oder "Kratzer am Deckel".
+  condition   String?
+  /// Mitgegebenes Zubehör: Netzteil, Tasche, Maus.
+  accessories String?
+  note        String?
+
+  createdAt DateTime @default(now())
+
+  @@index([assetId, handedOverAt])
+  @@index([userId])
+}
+
+/// Laufende Nummer der Übergabeprotokolle, je Jahr.
+model HandoverCounter {
+  id    String @id @default(cuid())
+  year  Int    @unique
+  value Int    @default(0)
+}
+
+model TicketAsset {
+  ticketId String
+  ticket   Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  assetId  String
+  asset    Asset  @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@id([ticketId, assetId])
+  @@index([assetId])
+}
+
+/// Gespeicherte Filteransicht im Arbeitsplatz ("Meine offenen", "SLA kritisch").
+model SavedView {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name      String
+  /// Filterzustand als JSON, entspricht den Suchparametern der Ticketliste.
+  filters   Json
+  sortOrder Int    @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, name])
+}
+
+// ===========================================================================
+// E-Mail-Anbindung
+// ===========================================================================
+
+model MailAccount {
+  id      String @id @default(cuid())
+  queueId String @unique
+  queue   Queue  @relation(fields: [queueId], references: [id], onDelete: Cascade)
+
+  transport MailTransport @default(IMAP)
+  isActive  Boolean       @default(true)
+
+  /// Die Adresse, unter der dieser Eingang Post empfängt.
+  address String
+
+  // --- IMAP ---------------------------------------------------------------
+  imapHost            String?
+  imapPort            Int?    @default(993)
+  imapSecure          Boolean @default(true)
+  imapUser            String?
+  /// Mit AES-256-GCM aus APP_SECRET verschlüsselt. Nie im Klartext ablegen.
+  imapPasswordEnc     String?
+  imapFolder          String  @default("INBOX")
+  /// Ordner, in den verarbeitete Mails verschoben werden. Leer = nur als
+  /// gelesen markieren.
+  imapProcessedFolder String?
+
+  // --- Microsoft Graph ----------------------------------------------------
+  graphUserId String?
+
+  unknownSender UnknownSenderPolicy @default(CREATE_CONTACT)
+
+  lastSyncAt    DateTime?
+  lastSyncError String?
+  /// Höchste bereits verarbeitete IMAP-UID, damit nichts doppelt läuft.
+  lastUid       Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ===========================================================================
+// Benachrichtigungen und Protokoll
+// ===========================================================================
+
+model Notification {
+  id     String           @id @default(cuid())
+  userId String
+  user   User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type   NotificationType
+
+  ticketId String?
+  ticket   Ticket? @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  title String
+  body  String?
+
+  readAt      DateTime?
+  emailSentAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, readAt, createdAt])
+}
+
+/// Protokoll administrativer Eingriffe außerhalb einzelner Tickets.
+model AuditLog {
+  id      String  @id @default(cuid())
+  actorId String?
+  actor   User?   @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  action     String
+  entityType String
+  entityId   String?
+  summary    String?
+  meta       Json?
+
+  ipAddress String?
+
+  createdAt DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}

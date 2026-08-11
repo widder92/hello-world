@@ -1,90 +1,306 @@
-# Welcome to GitHub
+# Ticketsystem
 
-Welcome to GitHub—where millions of developers work together on software. Ready to get started? Let’s learn how this all works by building and publishing your first GitHub Pages website!
+Ein Ticketsystem für einen Träger der Behindertenhilfe: mehrere Bereiche,
+mehrere Standorte, Schule, Wohnheime und Betreutes Wohnen.
 
-## Repositories
+Der Unterschied zu einem gewöhnlichen IT-Helpdesk steckt in einem Satz: **Wer
+dem Hausmeister schreibt, landet beim Hausmeister** – und zwar bei dem des
+eigenen Hauses, nicht bei der IT und nicht an einem anderen Standort. Die IT
+ist einer von mehreren Bereichen, nicht die Poststelle für alle anderen.
 
-Right now, we’re in your first GitHub **repository**. A repository is like a folder or storage space for your project. Your project's repository contains all its files such as code, documentation, images, and more. It also tracks every change that you—or your collaborators—make to each file, so you can always go back to previous versions of your project if you make any mistakes.
+---
 
-This repository contains three important files: The HTML code for your first website on GitHub, the CSS stylesheet that decorates your website with colors and fonts, and the **README** file. It also contains an image folder, with one image file.
+## Die drei Ideen, auf denen alles aufbaut
 
-## Describe your project
+### Bereich → Eingang → Vorgang
 
-You are currently viewing your project's **README** file. **_README_** files are like cover pages or elevator pitches for your project. They are written in plain text or [Markdown language](https://guides.github.com/features/mastering-markdown/), and usually include a paragraph describing the project, directions on how to use it, who authored it, and more.
+Ein **Bereich** ist eine Organisationseinheit: IT, Hausmeister, Küche,
+Fahrdienst, Verwaltung. Ein **Eingang** ist die Stelle, an der die Vorgänge
+eines Bereichs zusammenlaufen. Beides ist getrennt, weil Bereiche verschieden
+arbeiten:
 
-[Learn more about READMEs](https://help.github.com/en/articles/about-readmes)
+- Die **IT** arbeitet zentral: ein Eingang für alle Standorte. Der Standort
+  steht am Vorgang, sortiert ihn aber nicht (`queueMode = SINGLE`).
+- Die **Hausmeister** arbeiten am Haus: je Standort ein eigener Eingang, und
+  wer meldet, wählt beim Melden aus, welches Haus betroffen ist
+  (`queueMode = PER_SITE`).
 
-## Your first website
+Die Freigabe für einen Eingang steuert, wer dort arbeitet. Der Hausmeister aus
+Wohnheim Nord kommt so nicht an die Vorgänge der Schule, obwohl beide im selben
+Bereich sind. Umstellen lässt sich das jederzeit in der Verwaltung; bestehende
+Eingänge werden dabei nie gelöscht, sondern nur stillgelegt – sonst gingen die
+Vorgänge darin verloren.
 
-**GitHub Pages** is a free and easy way to create a website using the code that lives in your GitHub repositories. You can use GitHub Pages to build a portfolio of your work, create a personal website, or share a fun project that you coded with the world. GitHub Pages is automatically enabled in this repository, but when you create new repositories in the future, the steps to launch a GitHub Pages website will be slightly different.
+### Zwei Ausbaustufen
 
-[Learn more about GitHub Pages](https://pages.github.com/)
+Nicht jeder Bereich braucht das volle System. Die Stufe wird je Bereich
+eingestellt und ist jederzeit umschaltbar.
 
-## Rename this repository to publish your site
+|                                | Schlank | Voll |
+|--------------------------------|:-------:|:----:|
+| Vorgänge annehmen, beantworten, abschließen | ✓ | ✓ |
+| Interne Notizen                 | ✓ | ✓ |
+| An anderen Bereich weiterleiten | ✓ | ✓ |
+| Teilvorgang abspalten           | ✓ | ✓ |
+| Bearbeitung per Antwortmail     | ✓ | ✓ |
+| Sammeleingang mit „Ticket ziehen" | – | ✓ |
+| Zuweisung, automatische Verteilung | – | ✓ |
+| Fristen und Ampel               | – | ✓ |
+| Priorität, Kategorien, Vorlagen | – | ✓ |
+| Auswertung, Checklisten         | – | ✓ |
 
-We've already set-up a GitHub Pages website for you, based on your personal username. This repository is called `hello-world`, but you'll rename it to: `username.github.io`, to match your website's URL address. If the first part of the repository doesn’t exactly match your username, it won’t work, so make sure to get it right.
+Die schlanke Stufe ist bewusst **keine ausgegraute Fassung der vollen**,
+sondern eine eigene, schmalere Oberfläche. Eine Ampel, hinter der keine
+Vereinbarung steht, erzeugt nur schlechtes Gewissen ohne Nutzen.
 
-Let's get started! To update this repository’s name, click the `Settings` tab on this page. This will take you to your repository’s settings page. 
+Abgeleitet wird das an einer einzigen Stelle: `src/server/capabilities.ts`.
 
-![repo-settings-image](https://user-images.githubusercontent.com/18093541/63130482-99e6ad80-bf88-11e9-99a1-d3cf1660b47e.png)
+Das **Inventar** steht bewusst neben dieser Tabelle: Es wird je Bereich
+gesondert eingeschaltet und hat mit der Ausbaustufe nichts zu tun. Ob jemand
+Geräte führt, hängt an der Aufgabe, nicht daran, wie viel Ticketwerkzeug er
+braucht.
 
-Under the **Repository Name** heading, type: `username.github.io`, where username is your username on GitHub. Then click **Rename**—and that’s it. When you’re done, click your repository name or browser’s back button to return to this page.
+### Teilvorgang abspalten
 
-<img width="1039" alt="rename_screenshot" src="https://user-images.githubusercontent.com/18093541/63129466-956cc580-bf85-11e9-92d8-b028dd483fa5.png">
+Der Fall aus dem Alltag: Ein Vorgang kommt in die IT – „neuer Arbeitsplatz
+eingerichtet, kein Netzwerk, keine Steckdose". Die Dose zu legen ist Sache des
+Hausmeisters, den Rechner einzurichten Sache der IT. Ohne Abspalten bliebe nur,
+den Melder um ein zweites Ticket zu bitten oder den ganzen Vorgang wegzugeben.
 
-Once you click **Rename**, your website will automatically be published at: https://your-username.github.io/. The HTML file—called `index.html`—is rendered as the home page and you'll be making changes to this file in the next step.
+Beim Abspalten wählt man aus dem bisherigen Verlauf aus, welche Nachrichten
+mitkopiert werden – der interne Vermerk über einen Lieferanten hilft dem
+Hausmeister nicht und gehört ihm auch nicht vorgelegt. Der Melder bleibt
+derselbe und muss nichts erneut tun.
 
-Congratulations! You just launched your first GitHub Pages website. It's now live to share with the entire world
+Für den eigenen Vorgang gibt es drei Fortsetzungen, weil es drei Situationen
+gibt:
 
-## Making your first edit
+1. **Bleibt offen** – der eigene Anteil läuft parallel weiter.
+2. **Zurückstellen, bis der Teilvorgang erledigt ist** – der Vorgang ruht und
+   wird automatisch wieder geöffnet, sobald der andere Bereich fertig ist.
+3. **Abschließen** – geht uns nichts mehr an.
 
-When you make any change to any file in your project, you’re making a **commit**. If you fix a typo, update a filename, or edit your code, you can add it to GitHub as a commit. Your commits represent your project’s entire history—and they’re all saved in your project’s repository.
+---
 
-With each commit, you have the opportunity to write a **commit message**, a short, meaningful comment describing the change you’re making to a file. So you always know exactly what changed, no matter when you return to a commit.
+## Was das System sonst noch kann
 
-## Practice: Customize your first GitHub website by writing HTML code
+- **Vorgang telefonisch aufnehmen.** Wer anruft, statt zu schreiben, bekommt
+  seinen Vorgang trotzdem: Der Bereich nimmt ihn im Namen des Melders auf. Der
+  Vorgang gehört danach dem Melder – er sieht ihn unter seinen Meldungen und
+  kann per Antwortmail mitreden; im Verlauf steht, wer ihn aufgenommen hat.
+  Auch für Personen ohne Konto, etwa eine Handwerksfirma.
+- **E-Mail in beide Richtungen.** Mails an die Adresse eines Eingangs werden zu
+  Vorgängen; Antworten auf Benachrichtigungen landen am selben Vorgang. Wer
+  sich nie anmeldet, kann per Antwortmail vollständig arbeiten – `#erledigt`,
+  `#intern`, `#warten`, `#übernehmen`, `#an <Bereich>`.
+- **Anmeldung** über Microsoft Entra ID (SSO) und/oder lokale Konten.
+- **Fristen** rechnen in Dienstzeiten, mit Feiertagen: Wer freitags um 15:50
+  meldet, ist nicht um 19:50 überfällig, sondern am Montagvormittag.
+- **Volltextsuche** über Vorgänge und Wissensartikel, mit deutscher
+  Wortstammerkennung und Toleranz gegen Tippfehler.
+- **Barrierefreiheit** nach WCAG 2.1 AA, geprüft mit axe: große Schrift, hoher
+  Kontrast, Bewegung reduzieren, einfache Ansicht. Zustände nie nur über Farbe.
+- **IT-Inventar.** Geräte mit Seriennummer, MAC-Adressen, IMEI, Anschaffungs­datum,
+  Preis, Kostenstelle und Foto. Der Status folgt dem Weg durchs Haus – im Lager,
+  in Vorbereitung, **bereit zur Übergabe**, herausgegeben (und an wen), in
+  Reparatur, ausgesondert –, und jede Änderung landet in der Gerätechronik. Bei
+  der Herausgabe entsteht ein **Übergabeprotokoll** zum Ausdrucken und
+  Unterschreiben.
 
-Want to edit the site you just published? Let’s practice commits by introducing yourself in your `index.html` file. Don’t worry about getting it right the first time—you can always build on your introduction later.
+  **Modelle sind eigene Stammdaten**, und das Bild hängt am Modell: Wer das
+  einundzwanzigste ThinkPad L14 erfasst, wählt Hersteller und Modell aus einer
+  Liste und bekommt das Bild automatisch mit. Fehlt ein Hersteller, legt man ihn
+  im Formular an, ohne die Seite zu verlassen.
 
-Let’s start with this template:
+  Mitarbeitende sehen unter *Meine Geräte*, was auf ihren Namen läuft, und
+  können von dort direkt eine Störung melden. Das Inventar ist **je Bereich
+  einschaltbar**: Heute führt es die IT, morgen vielleicht der Hausmeister sein
+  Werkzeug.
+- **Datenübernahme** aus dem Altsystem über CSV.
+- Wissensdatenbank, Textbausteine, Ticketvorlagen, Auswertung, lückenloses
+  Protokoll.
+
+---
+
+## Nur ausprobieren?
+
+Für eine Testumgebung auf dem eigenen Rechner – mit einem Befehl, ohne echte
+Postfächer, restlos wieder entfernbar – gibt es eine eigene Anleitung:
+**[TESTSERVER.md](TESTSERVER.md)**. Sie enthält auch einen Vorschlag für eine
+zwölfminütige Vorführung.
+
+```bash
+cp .env.example .env
+docker compose up -d      # http://localhost:3000
+```
+
+---
+
+## Einrichten
+
+Voraussetzungen: Node.js 20 oder neuer und PostgreSQL 16 oder neuer. Mit Docker bringt die
+`docker-compose.yml` beides samt Mailfänger mit.
+
+```bash
+cp .env.example .env          # und ausfüllen, siehe unten
+npm install
+
+docker compose up -d postgres # oder ein vorhandener PostgreSQL-Server
+npm run db:migrate
+npm run db:seed               # Demo-Daten, siehe unten
+
+npm run dev                   # http://localhost:3000
+npm run worker                # in einem zweiten Terminal: Mailabruf und Fristen
+```
+
+Mindestens auszufüllen in `.env`:
+
+| Schlüssel | Bedeutung |
+|---|---|
+| `DATABASE_URL` | Verbindung zur Datenbank |
+| `APP_URL` | Öffentliche Adresse, für Links in E-Mails |
+| `APP_SECRET`, `AUTH_SECRET` | Zufällig, je `openssl rand -base64 48` |
+| `MAIL_REPLY_DOMAIN`, `MAIL_REPLY_LOCALPART` | Basis der signierten Antwortadressen |
+
+`APP_SECRET` verschlüsselt außerdem die hinterlegten Postfach-Kennwörter und
+signiert die Antwortadressen. **Wird er ausgetauscht, sind beide unbrauchbar**
+– die Kennwörter müssen dann neu eingetragen werden, und Antworten auf ältere
+Benachrichtigungen finden ihren Vorgang nur noch über Betreff und Kopfzeilen.
+
+Alles Weitere – Entra ID, Postfächer, Catch-all, Dienstzeiten, Sicherung –
+steht in **[BETRIEB.md](BETRIEB.md)**.
+
+---
+
+## Demo-Daten
+
+`npm run db:seed` bringt die Datenbank zuerst auf den aktuellen Aufbau und legt
+dann sechs Standorte, sechs Bereiche in beiden Ausbaustufen,
+elf Eingänge, zwanzig Personen und fünfundzwanzig Vorgänge an – samt einer
+Abspaltung, einer Weiterleitung und überfälligen Fristen, damit die Ampel etwas
+zu zeigen hat. Dazu ein gefülltes Inventar: neunzehn Geräte in allen Zuständen,
+zehn Gerätearten, fünfzehn Modelle, sechs Kostenstellen und zwei
+Übergabeprotokolle.
+
+Passwort für alle Konten: **`Willkommen-2026-Demo`**
+
+| Konto | Rolle | Zeigt |
+|---|---|---|
+| `anna.bergmann@example.org` | Betreuerin, Wohnheim Nord, kein Bereich | Das Melder-Portal |
+| `claudia.schmitt@example.org` | Melderin, Schule | Große Schrift, einfache Ansicht |
+| `frank.berger@example.org` | Hausmeister, Wohnheim Nord | Voller Arbeitsplatz, zwei Standorte freigegeben |
+| `dieter.wolf@example.org` | Leitung Hausmeister | Alle Standorte des Bereichs |
+| `klaus.hoffmann@example.org` | IT, Verteilung | Zentraler Eingang, darf zuweisen, führt das Inventar |
+| `marion.fischer@example.org` | Küche | Schlanke Ausbaustufe |
+| `admin@example.org` | Administration | Verwaltungsbereich, Inventar-Stammdaten |
+
+`anna.bergmann@example.org` hat ein Notebook zugewiesen – bei ihr erscheint
+zusätzlich der Punkt **Meine Geräte**.
+
+Der Seed ist wiederholbar und räumt vorher auf. Nach einem Playwright-Lauf sind
+die Demo-Daten nicht mehr unberührt – dann einfach neu seeden.
+
+---
+
+## Befehle
+
+```bash
+npm run dev          # Entwicklungsserver
+npm run build        # Produktionsbau
+npm run start        # Produktionsserver
+npm run worker       # Mailabruf, Fristenprüfung, Aufräumen
+
+npm run db:migrate   # Migrationen anwenden
+npm run db:seed      # Demo-Daten (wendet vorher die Migrationen an)
+npm run db:studio    # Datenbank ansehen
+
+npm run typecheck    # tsc --noEmit
+npm run lint         # ESLint
+npm test             # Vitest
+npm run test:e2e     # Playwright inklusive Prüfung mit axe
+
+npm run vorbereiten  # Migrationen + Demo-Daten, falls die DB leer ist
+npm run demo         # vorbereiten, bauen, starten – für eine Vorführung
+npm run bilder       # Bildschirmfotos der Hauptansichten
+
+npm run import -- --typ=benutzer --datei=benutzer.csv --dry-run
+npm run sla:check    # Fristenprüfung von Hand anstoßen
+```
+
+---
+
+## Tests
+
+**`npm test`** – 159 Tests in zwei Gruppen.
+
+`tests/unit` läuft ohne Datenbank: Rechteprüfung, Ausbaustufen, Aufbereitung
+eingehender Mails, Signatur der Antwortadressen, Dienstzeiten-Rechnung.
+
+`tests/db` läuft gegen PostgreSQL, weil sich manches nicht sinnvoll nachbauen
+lässt – die Nummernvergabe lebt von einer Zeilensperre, die Zuordnung von
+Antwortmails von Unique-Indizes, das Abspalten von einer Transaktion über acht
+Tabellen. Einmalig einrichten:
+
+```bash
+createdb ticketsystem_test
+DATABASE_URL="postgresql://ticket:ticket@localhost:5432/ticketsystem_test" \
+  npx prisma migrate deploy
+```
+
+Diese Tests **löschen alle Zeilen** und laufen deshalb nur gegen eine
+Datenbank, deren Name auf `_test` endet. Ist keine erreichbar, überspringen sie
+sich, statt den Lauf abzubrechen.
+
+**`npm run test:e2e`** – 24 Playwright-Tests über den Ablauf aus der Abnahme,
+jede Hauptseite zusätzlich mit `@axe-core/playwright` gegen WCAG 2.1 AA
+geprüft. Sie laufen gegen die Anwendung mit den Demo-Daten und starten den
+Entwicklungsserver selbst.
+
+---
+
+## Aufbau
 
 ```
-<p>Hello World! I’m [username]. This is my website!</p>
+prisma/schema.prisma            Datenmodell; die Kette Bereich → Eingang → Vorgang
+prisma/seed.ts                  Demo-Daten
+
+src/app/(app)/                  Angemeldeter Bereich
+  eingang/[queueId]/            Sammeleingang (volle Stufe)
+  unsere-tickets/[queueId]/     Ticketliste (schlanke Stufe)
+  tickets/[nummer]/             Vorgang mit Verlauf
+  neu/                          Melde-Formular
+  verwaltung/                   15 Seiten Einstellungen
+
+src/server/policy.ts            Die einzige Stelle für Sichtbarkeit und Rechte
+src/server/capabilities.ts      Die einzige Stelle für die Ausbaustufen
+src/server/services/
+  routing.ts                    Bereich + Standort → Eingang
+  split.ts                      Abspalten und Zusammenführen
+  number.ts                     Ticketnummern, gesperrt vergeben
+  sla.ts                        Fristen
+src/lib/business-hours.ts       Rechnen mit Dienstzeiten und Feiertagen
+src/lib/crypto.ts               Verschlüsselung und signierte Antwortadressen
+
+src/mail/
+  types.ts                      Schnittstelle MailSource
+  imap.ts, graph.ts             Die beiden Postfach-Anbindungen
+  threading.ts                  Antwort → Vorgang, über vier Wege
+  commands.ts                   Steuerbefehle samt Rechteprüfung
+  parse.ts                      Zitate abschneiden, automatische Antworten
+
+worker/index.ts                 Mailabruf, Fristenprüfung, Aufräumen
+scripts/import-csv.ts           Datenübernahme aus dem Altsystem
 ```
 
-To add your introduction, copy our template and click the edit pencil icon at the top right hand corner of the `index.html` file.
+Zwei Dateien tragen die Rechte: **`src/server/policy.ts`** entscheidet, wer was
+sehen und tun darf, **`src/server/capabilities.ts`**, was eine Ausbaustufe
+kann. Jede Seite und jede Server-Aktion fragt dort an. Dass die Oberfläche
+einen Knopf ausblendet, ist Bequemlichkeit – nie der Schutz.
 
-<img width="997" alt="edit-this-file" src="https://user-images.githubusercontent.com/18093541/63131820-0794d880-bf8d-11e9-8b3d-c096355e9389.png">
+---
 
+## Technik
 
-Delete this placeholder line:
-
-```
-<p>Welcome to your first GitHub Pages website!</p>
-```
-
-Then, paste the template to line 15 and fill in the blanks.
-
-<img width="1032" alt="edit-githuboctocat-index" src="https://user-images.githubusercontent.com/18093541/63132339-c3a2d300-bf8e-11e9-8222-59c2702f6c42.png">
-
-
-When you’re done, scroll down to the `Commit changes` section near the bottom of the edit page. Add a short message explaining your change, like "Add my introduction", then click `Commit changes`.
-
-
-<img width="1030" alt="add-my-username" src="https://user-images.githubusercontent.com/18093541/63131801-efbd5480-bf8c-11e9-9806-89273f027d16.png">
-
-Once you click `Commit changes`, your changes will automatically be published on your GitHub Pages website. Refresh the page to see your new changes live in action.
-
-:tada: You just made your first commit! :tada:
-
-## Extra Credit: Keep on building!
-
-Change the placeholder Octocat gif on your GitHub Pages website by [creating your own personal Octocat emoji](https://myoctocat.com/build-your-octocat/) or [choose a different Octocat gif from our logo library here](https://octodex.github.com/). Add that image to line 12 of your `index.html` file, in place of the `<img src=` link.
-
-Want to add even more code and fun styles to your GitHub Pages website? [Follow these instructions](https://github.com/github/personal-website) to build a fully-fledged static website.
-
-![octocat](./images/create-octocat.png)
-
-## Everything you need to know about GitHub
-
-Getting started is the hardest part. If there’s anything you’d like to know as you get started with GitHub, try searching [GitHub Help](https://help.github.com). Our documentation has tutorials on everything from changing your repository settings to configuring GitHub from your command line.
+Next.js 15 (App Router, Server Actions) · React 19 · TypeScript ·
+Tailwind CSS v4 · Prisma 6 auf PostgreSQL (16 oder neuer) · Auth.js v5 mit Entra ID und
+lokalen Konten (argon2id) · Radix UI · Vitest · Playwright mit axe
