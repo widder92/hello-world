@@ -128,6 +128,76 @@ const AUFNAHMEN: {
     pfad: "/statistik",
     titel: "Auswertung",
   },
+
+  // --- IT-Inventar ---------------------------------------------------------
+  {
+    datei: "14-inventar-liste",
+    konto: "klaus.hoffmann@example.org",
+    pfad: "/inventar",
+    titel: "Das Inventar: Status, Kostenstelle, Besitz auf einen Blick",
+  },
+  {
+    datei: "15-inventar-geraet",
+    konto: "klaus.hoffmann@example.org",
+    pfad: "/inventar?q=NB-00104",
+    titel: "Ein Leihgerät, das seinen Kreis schon durchlaufen hat",
+    vorher: async (page) => {
+      await page.getByRole("link", { name: /Leihnotebook 1/ }).first().click();
+      await page.getByRole("heading", { name: "Chronik" }).waitFor();
+    },
+  },
+  {
+    datei: "16-inventar-anlegen",
+    konto: "klaus.hoffmann@example.org",
+    pfad: "/inventar/neu",
+    titel: "Gerät anlegen: Hersteller und Modell werden ausgewählt",
+    vorher: async (page) => {
+      await page.getByLabel("Hersteller").selectOption({ label: "Lenovo" });
+      await page.getByLabel("Modell").selectOption({ label: "ThinkPad L14" });
+      await page.getByLabel("Bezeichnung").fill("Notebook Verwaltung Buchhaltung");
+      await page.getByLabel("Seriennummer").fill("PF7XK4402");
+    },
+  },
+  {
+    datei: "17-inventar-herausgeben",
+    konto: "klaus.hoffmann@example.org",
+    pfad: "/inventar?q=NB-00104",
+    titel: "Herausgeben: Person suchen, Zubehör festhalten",
+    vorher: async (page) => {
+      await page.getByRole("link", { name: /Leihnotebook 1/ }).first().click();
+      await page.getByRole("button", { name: "Herausgeben" }).click();
+      await page.getByLabel("Person").fill("Bergmann");
+      await page.getByRole("button", { name: /Anna Bergmann/ }).click();
+      await page.getByLabel("Zustand").fill("Gebraucht, guter Zustand");
+      await page.getByLabel("Zubehör").fill("Netzteil, Tasche");
+    },
+  },
+  {
+    datei: "18-uebergabeprotokoll",
+    konto: "klaus.hoffmann@example.org",
+    pfad: "/inventar?q=NB-00101",
+    titel: "Übergabeprotokoll zum Ausdrucken und Unterschreiben",
+    vorher: async (page) => {
+      await page
+        .getByRole("link", { name: /Notebook Wohnbereichsleitung Nord/ })
+        .first()
+        .click();
+      await page.getByRole("link", { name: /UP-\d{4}-\d{6}/ }).first().click();
+      await page.getByRole("heading", { name: "Übergabeprotokoll" }).waitFor();
+    },
+  },
+  {
+    datei: "19-inventar-auswertung",
+    konto: "admin@example.org",
+    pfad: "/inventar/auswertung",
+    titel: "Anschaffungswerte je Kostenstelle",
+  },
+  {
+    datei: "20-meine-geraete",
+    konto: "anna.bergmann@example.org",
+    pfad: "/meine-geraete",
+    titel: "Was Mitarbeitende von ihren Geräten sehen – nur zum Ansehen",
+  },
 ];
 
 async function anmelden(page: Page, konto: string) {
