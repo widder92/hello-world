@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { db } from "@/server/db";
 import { getActor } from "@/server/policy";
+import { fotoFuer } from "@/server/services/inventar";
 import { ASSET_STATUS, ASSET_STATUS_TON, MAC_KIND } from "@/lib/domain";
 import { formatDate } from "@/lib/format";
 
@@ -34,6 +35,7 @@ export default async function MeineGeraetePage() {
     include: {
       kind: { select: { name: true } },
       manufacturer: { select: { name: true } },
+      model: { select: { name: true, photo: { select: { id: true } } } },
       site: { select: { name: true } },
       photo: { select: { id: true } },
       macs: { orderBy: { createdAt: "asc" } },
@@ -66,10 +68,10 @@ export default async function MeineGeraetePage() {
           <Card key={g.id}>
             <CardContent className="flex flex-wrap gap-5 py-5">
               <span className="flex size-24 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-line bg-surface-2">
-                {g.photo ? (
+                {fotoFuer(g) ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
-                    src={`/api/uploads/${g.photo.id}`}
+                    src={`/api/uploads/${fotoFuer(g)!.id}`}
                     alt={`Foto von ${g.name}`}
                     className="size-full object-cover"
                   />
@@ -91,7 +93,9 @@ export default async function MeineGeraetePage() {
                   <Angabe label="Art" wert={g.kind.name} />
                   <Angabe
                     label="Gerät"
-                    wert={[g.manufacturer?.name, g.model].filter(Boolean).join(" ")}
+                    wert={[g.manufacturer?.name, g.model?.name]
+                      .filter(Boolean)
+                      .join(" ")}
                   />
                   <Angabe label="Seriennummer" wert={g.serial} mono />
                   <Angabe

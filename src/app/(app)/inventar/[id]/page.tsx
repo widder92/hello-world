@@ -86,6 +86,7 @@ export default async function GeraetPage({
       kind: true,
       team: { select: { name: true } },
       manufacturer: true,
+      model: { include: { photo: { select: { id: true } } } },
       site: { select: { name: true } },
       costCenter: { select: { code: true, name: true } },
       assignedTo: { select: { id: true, name: true, email: true, jobTitle: true } },
@@ -150,7 +151,7 @@ export default async function GeraetPage({
         title={geraet.name}
         description={`${geraet.kind.name}${
           geraet.manufacturer ? ` · ${geraet.manufacturer.name}` : ""
-        }${geraet.model ? ` ${geraet.model}` : ""}`}
+        }${geraet.model ? ` ${geraet.model.name}` : ""}`}
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Link
@@ -235,7 +236,7 @@ export default async function GeraetPage({
                 <Zeile label="Geräteart" wert={geraet.kind.name} />
                 <Zeile label="Bereich" wert={geraet.team.name} />
                 <Zeile label="Hersteller" wert={geraet.manufacturer?.name} />
-                <Zeile label="Modell" wert={geraet.model} />
+                <Zeile label="Modell" wert={geraet.model?.name} />
                 <Zeile label="Seriennummer" wert={geraet.serial} mono />
                 <Zeile label="IMEI" wert={geraet.imei} mono />
                 <Zeile
@@ -376,7 +377,17 @@ export default async function GeraetPage({
               <h2 className="mb-2.5 text-xs font-semibold uppercase tracking-wide text-fg-subtle">
                 Foto
               </h2>
-              <FotoBereich assetId={geraet.id} fotoId={geraet.photo?.id ?? null} />
+              <FotoBereich
+                assetId={geraet.id}
+                fotoId={geraet.photo?.id ?? null}
+                modellFotoId={geraet.model?.photo?.id ?? null}
+                modellName={
+                  geraet.model
+                    ? `${geraet.manufacturer?.name ?? ""} ${geraet.model.name}`.trim()
+                    : null
+                }
+                modellId={geraet.modelId}
+              />
             </CardContent>
           </Card>
 

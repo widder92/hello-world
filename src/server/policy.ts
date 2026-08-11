@@ -331,12 +331,31 @@ export function inventoryAccess(actor: Actor): InventoryLevel {
   const inventarBereiche = actor.memberships.filter((m) => m.teamHasInventory);
   if (inventarBereiche.length === 0) return "none";
 
-  // Die Stammdatenlisten – Gerätearten, Hersteller, Kostenstellen – wirken auf
-  // alle Geräte gleichzeitig. Eine gelöschte Kostenstelle verfälscht jede
-  // Auswertung, deshalb bleibt das Pflegen bei der Bereichsleitung.
+  // Gerätearten und Kostenstellen wirken auf alle Geräte gleichzeitig und
+  // hängen an Buchhaltung und Nummernkreisen – ihr Pflegen bleibt bei der
+  // Bereichsleitung.
+  //
+  // Hersteller und Modelle sind ausdrücklich **nicht** davon erfasst; sie
+  // entstehen beim Erfassen eines Geräts (siehe `canCreateInventoryLookups`).
   return inventarBereiche.some((m) => m.role === TeamRole.LEAD)
     ? "manage"
     : "read";
+}
+
+/**
+ * Darf diese Person Hersteller und Gerätemodelle anlegen?
+ *
+ * Jede, die Geräte erfasst. Das ist bewusst großzügiger als bei den übrigen
+ * Stammdaten: Wer ein neu geliefertes Notebook einbuchen will, dessen
+ * Hersteller noch niemand eingetragen hat, käme sonst nicht weiter und müsste
+ * auf die Bereichsleitung warten – für einen Listeneintrag, der ohnehin nur
+ * ein Name ist.
+ *
+ * Der Schaden wäre auch gering: Ein überflüssiger Hersteller lässt sich
+ * stilllegen. Eine falsche Kostenstelle dagegen verfälscht Summen.
+ */
+export function canCreateInventoryLookups(actor: Actor): boolean {
+  return inventoryAccess(actor) !== "none";
 }
 
 /** Bereiche, deren Inventar diese Person führen darf. */

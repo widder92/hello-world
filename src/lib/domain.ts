@@ -315,6 +315,8 @@ export const SITE_TYPE: Record<SiteType, string> = {
 
 export const ASSET_STATUS: Record<AssetStatus, string> = {
   LAGER: "Im Lager",
+  IN_VORBEREITUNG: "In Vorbereitung",
+  BEREIT: "Bereit zur Übergabe",
   RESERVIERT: "Vorgemerkt",
   HERAUSGEGEBEN: "Herausgegeben",
   REPARATUR: "In Reparatur",
@@ -324,8 +326,10 @@ export const ASSET_STATUS: Record<AssetStatus, string> = {
 
 /** Ein Satz zur Erklärung, für die Auswahl im Formular. */
 export const ASSET_STATUS_HINWEIS: Record<AssetStatus, string> = {
-  LAGER: "Einsatzbereit und verfügbar.",
-  RESERVIERT: "Für jemanden vorgemerkt, aber noch nicht übergeben.",
+  LAGER: "Da, aber noch nicht eingerichtet.",
+  IN_VORBEREITUNG: "Wird gerade eingerichtet – System, Programme, Konten.",
+  BEREIT: "Fertig eingerichtet. Wartet nur noch darauf, abgeholt zu werden.",
+  RESERVIERT: "Für eine bestimmte Person vorgemerkt.",
   HERAUSGEGEBEN: "Bei einer Person im Einsatz.",
   REPARATUR: "Beim Hersteller oder in der Werkstatt.",
   AUSGESONDERT: "Ausgemustert, verkauft oder entsorgt.",
@@ -337,7 +341,11 @@ export const ASSET_STATUS_TON: Record<
   AssetStatus,
   "neutral" | "info" | "success" | "warning" | "danger" | "outline"
 > = {
-  LAGER: "success",
+  LAGER: "neutral",
+  IN_VORBEREITUNG: "warning",
+  // Der Zustand, auf den die IT hinarbeitet – und der einzige, bei dem ein
+  // Blick in die Liste genügt, um zu wissen: Das kann raus.
+  BEREIT: "success",
   RESERVIERT: "info",
   HERAUSGEGEBEN: "info",
   REPARATUR: "warning",

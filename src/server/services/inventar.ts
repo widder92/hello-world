@@ -154,6 +154,19 @@ export interface UebergangsRegel {
   protokoll?: HandoverDirection;
 }
 
+/** Herausgabe an eine Person – überall gleich, deshalb einmal benannt. */
+const HERAUSGABE: UebergangsRegel = {
+  brauchtPerson: true,
+  zuweisung: "setzen",
+  protokoll: HandoverDirection.AUSGABE,
+};
+
+/** Aussondern und Verlust sind von überall aus erreichbar und begründungspflichtig. */
+const ENDE: Partial<Record<AssetStatus, UebergangsRegel>> = {
+  AUSGESONDERT: { brauchtGrund: true, zuweisung: "loesen" },
+  VERLUST: { brauchtGrund: true, zuweisung: "loesen" },
+};
+
 /**
  * Was von welchem Zustand aus erlaubt ist.
  *
@@ -161,53 +174,68 @@ export interface UebergangsRegel {
  * zehn Sekunden ablesen, was das System zulässt, und ein neuer Zustand
  * vergisst keinen Fall. Fehlt ein Paar in der Tabelle, ist der Übergang
  * verboten – das ist die sichere Vorgabe.
+ *
+ * Der Regelweg eines neuen Geräts liest sich von oben nach unten:
+ * Lager → In Vorbereitung → Bereit → Herausgegeben. Jeder Schritt lässt sich
+ * zurückgehen, weil im Alltag ständig etwas dazwischenkommt.
  */
 export const UEBERGAENGE: Partial<
   Record<AssetStatus, Partial<Record<AssetStatus, UebergangsRegel>>>
 > = {
   LAGER: {
+    IN_VORBEREITUNG: { zuweisung: "behalten" },
+    // Der kurze Weg: Ein Monitor oder eine Tastatur braucht keine Einrichtung.
+    BEREIT: { zuweisung: "behalten" },
     RESERVIERT: { brauchtPerson: true, zuweisung: "behalten" },
-    HERAUSGEGEBEN: {
-      brauchtPerson: true,
-      zuweisung: "setzen",
-      protokoll: HandoverDirection.AUSGABE,
-    },
+    HERAUSGEGEBEN: HERAUSGABE,
     REPARATUR: { zuweisung: "behalten" },
-    AUSGESONDERT: { brauchtGrund: true, zuweisung: "loesen" },
-    VERLUST: { brauchtGrund: true, zuweisung: "loesen" },
+    ...ENDE,
+  },
+  IN_VORBEREITUNG: {
+    // Der Regelweg: eingerichtet und damit bereit.
+    BEREIT: { zuweisung: "behalten" },
+    LAGER: { zuweisung: "behalten" },
+    RESERVIERT: { brauchtPerson: true, zuweisung: "behalten" },
+    // Wenn sich beim Einrichten herausstellt, dass das Gerät defekt ist.
+    REPARATUR: { zuweisung: "behalten" },
+    ...ENDE,
+  },
+  BEREIT: {
+    HERAUSGEGEBEN: HERAUSGABE,
+    RESERVIERT: { brauchtPerson: true, zuweisung: "behalten" },
+    // Zurück, falls doch noch etwas fehlt.
+    IN_VORBEREITUNG: { zuweisung: "behalten" },
+    LAGER: { zuweisung: "behalten" },
+    REPARATUR: { zuweisung: "behalten" },
+    ...ENDE,
   },
   RESERVIERT: {
+    HERAUSGEGEBEN: HERAUSGABE,
+    BEREIT: { zuweisung: "behalten" },
+    IN_VORBEREITUNG: { zuweisung: "behalten" },
     LAGER: { zuweisung: "loesen" },
-    HERAUSGEGEBEN: {
-      brauchtPerson: true,
-      zuweisung: "setzen",
-      protokoll: HandoverDirection.AUSGABE,
-    },
-    AUSGESONDERT: { brauchtGrund: true, zuweisung: "loesen" },
-    VERLUST: { brauchtGrund: true, zuweisung: "loesen" },
+    ...ENDE,
   },
   HERAUSGEGEBEN: {
-    // Rücknahme: Das Gerät kommt zurück ins Lager und die Zuweisung endet.
+    // Rücknahme: Das Gerät kommt zurück und die Zuweisung endet.
     LAGER: { zuweisung: "loesen", protokoll: HandoverDirection.RUECKNAHME },
     REPARATUR: { zuweisung: "loesen", protokoll: HandoverDirection.RUECKNAHME },
-    // Weitergabe an eine andere Person, ohne Umweg über das Lager.
-    HERAUSGEGEBEN: {
-      brauchtPerson: true,
-      zuweisung: "setzen",
-      protokoll: HandoverDirection.AUSGABE,
+    // Zurückgenommen und gleich wieder herrichten – etwa beim Personalwechsel.
+    IN_VORBEREITUNG: {
+      zuweisung: "loesen",
+      protokoll: HandoverDirection.RUECKNAHME,
     },
-    AUSGESONDERT: { brauchtGrund: true, zuweisung: "loesen" },
-    VERLUST: { brauchtGrund: true, zuweisung: "loesen" },
+    // Weitergabe an eine andere Person, ohne Umweg über das Lager.
+    HERAUSGEGEBEN: HERAUSGABE,
+    ...ENDE,
   },
   REPARATUR: {
+    // Aus der Reparatur zurück heißt meist: noch einmal prüfen und einrichten.
+    IN_VORBEREITUNG: { zuweisung: "behalten" },
+    BEREIT: { zuweisung: "behalten" },
     LAGER: { zuweisung: "behalten" },
-    HERAUSGEGEBEN: {
-      brauchtPerson: true,
-      zuweisung: "setzen",
-      protokoll: HandoverDirection.AUSGABE,
-    },
-    AUSGESONDERT: { brauchtGrund: true, zuweisung: "loesen" },
-    VERLUST: { brauchtGrund: true, zuweisung: "loesen" },
+    HERAUSGEGEBEN: HERAUSGABE,
+    ...ENDE,
   },
   // Ein ausgesondertes Gerät zurückzuholen ist ein Sonderfall und soll
   // auffallen: Meist ist es entsorgt, und wer es wiederbelebt, muss dafür
@@ -489,4 +517,26 @@ export function centAlsEuro(cent: number | null | undefined): string {
     style: "currency",
     currency: "EUR",
   }).format(cent / 100);
+}
+
+// ---------------------------------------------------------------------------
+// Fotos
+// ---------------------------------------------------------------------------
+
+/**
+ * Welches Bild ein Gerät zeigt.
+ *
+ * Der Regelfall ist das Bild des **Modells**: Zwanzig ThinkPads L14 sehen
+ * gleich aus, und niemand soll beim einundzwanzigsten wieder zur Kamera
+ * greifen. Ein eigenes Bild am Gerät hat trotzdem Vorrang – es entsteht nur
+ * dort, wo ein Gerät sich vom Rest unterscheidet: ein Schaden, ein Umbau, ein
+ * Aufkleber, den man wiedererkennen will.
+ */
+export function fotoFuer(geraet: {
+  photo?: { id: string } | null;
+  model?: { photo?: { id: string } | null } | null;
+}): { id: string; vomModell: boolean } | null {
+  if (geraet.photo) return { id: geraet.photo.id, vomModell: false };
+  if (geraet.model?.photo) return { id: geraet.model.photo.id, vomModell: true };
+  return null;
 }

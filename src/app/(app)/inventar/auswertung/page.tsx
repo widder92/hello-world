@@ -220,13 +220,25 @@ export default async function AuswertungPage() {
                 <tbody className="divide-y divide-line">
                   {kostenstellen.map((k) => (
                     <tr key={k.schluessel}>
+                      {/*
+                        Die Zeile ohne Kostenstelle war einmal eingefärbt. Der
+                        Farbton `--warning` ist für Symbole und Plaketten
+                        gedacht und erreicht als Fließtext den nötigen Kontrast
+                        nicht – axe hat das zu Recht bemängelt. Die Aussage
+                        steckt ohnehin im Text: „Ohne Kostenstelle" sagt genug,
+                        und Zustände allein über Farbe zu transportieren wäre
+                        hier so falsch wie überall sonst im System.
+                      */}
                       <th
                         scope="row"
-                        className={`px-5 py-2.5 text-left font-medium ${
-                          k.schluessel === "ohne" ? "text-warning" : "text-fg"
-                        }`}
+                        className="px-5 py-2.5 text-left font-medium text-fg"
                       >
                         {k.bezeichnung}
+                        {k.schluessel === "ohne" && (
+                          <span className="ml-2 font-normal text-fg-muted">
+                            – bitte zuordnen
+                          </span>
+                        )}
                       </th>
                       <td className="px-3 py-2.5 text-right tabular-nums">
                         {k.anzahl}

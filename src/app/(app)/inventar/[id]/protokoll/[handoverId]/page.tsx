@@ -50,6 +50,7 @@ export default async function ProtokollPage({
         include: {
           kind: { select: { name: true } },
           manufacturer: { select: { name: true } },
+          model: { select: { name: true } },
           site: { select: { name: true } },
           costCenter: { select: { code: true, name: true } },
           macs: { orderBy: { createdAt: "asc" } },
@@ -103,7 +104,9 @@ export default async function ProtokollPage({
             <Feld label="Geräteart" wert={g.kind.name} />
             <Feld
               label="Hersteller und Modell"
-              wert={[g.manufacturer?.name, g.model].filter(Boolean).join(" ")}
+              wert={[g.manufacturer?.name, g.model?.name]
+                .filter(Boolean)
+                .join(" ")}
             />
             <Feld label="Seriennummer" wert={g.serial} mono />
             <Feld label="IMEI" wert={g.imei} mono />

@@ -5,6 +5,7 @@ import {
   InventarFehler,
   betragZuCent,
   centAlsEuro,
+  fotoFuer,
   macNormalisieren,
   macNormalisierenWeich,
   moeglicheZiele,
@@ -110,6 +111,46 @@ describe("centAlsEuro", () => {
 });
 
 describe("Statusübergänge", () => {
+  it("führt den Regelweg vom Lager über die Vorbereitung zur Herausgabe", () => {
+    // Der Weg, den ein neu geliefertes Gerät nimmt.
+    expect(
+      uebergangErlaubt(AssetStatus.LAGER, AssetStatus.IN_VORBEREITUNG),
+    ).not.toBeNull();
+    expect(
+      uebergangErlaubt(AssetStatus.IN_VORBEREITUNG, AssetStatus.BEREIT),
+    ).not.toBeNull();
+
+    const raus = uebergangErlaubt(AssetStatus.BEREIT, AssetStatus.HERAUSGEGEBEN);
+    expect(raus?.brauchtPerson).toBe(true);
+    expect(raus?.protokoll).toBe("AUSGABE");
+  });
+
+  it("lässt Zubehör ohne Einrichtung direkt bereitstellen", () => {
+    // Ein Monitor muss nicht erst eingerichtet werden.
+    expect(uebergangErlaubt(AssetStatus.LAGER, AssetStatus.BEREIT)).not.toBeNull();
+  });
+
+  it("lässt jeden Schritt auch wieder zurückgehen", () => {
+    // Im Alltag kommt ständig etwas dazwischen: Beim Einrichten fällt auf,
+    // dass ein Teil fehlt; ein bereitgestelltes Gerät muss noch einmal ran.
+    expect(
+      uebergangErlaubt(AssetStatus.BEREIT, AssetStatus.IN_VORBEREITUNG),
+    ).not.toBeNull();
+    expect(
+      uebergangErlaubt(AssetStatus.IN_VORBEREITUNG, AssetStatus.LAGER),
+    ).not.toBeNull();
+  });
+
+  it("nimmt ein Gerät zurück und richtet es gleich neu her", () => {
+    // Personalwechsel: zurück und direkt in die Vorbereitung, mit Protokoll.
+    const regel = uebergangErlaubt(
+      AssetStatus.HERAUSGEGEBEN,
+      AssetStatus.IN_VORBEREITUNG,
+    );
+    expect(regel?.protokoll).toBe("RUECKNAHME");
+    expect(regel?.zuweisung).toBe("loesen");
+  });
+
   it("erlaubt den Alltagsweg Lager → herausgegeben → zurück", () => {
     const raus = uebergangErlaubt(AssetStatus.LAGER, AssetStatus.HERAUSGEGEBEN);
     expect(raus).not.toBeNull();
@@ -139,6 +180,8 @@ describe("Statusübergänge", () => {
   it("verlangt für Aussonderung und Verlust eine Begründung", () => {
     for (const von of [
       AssetStatus.LAGER,
+      AssetStatus.IN_VORBEREITUNG,
+      AssetStatus.BEREIT,
       AssetStatus.HERAUSGEGEBEN,
       AssetStatus.REPARATUR,
     ]) {
@@ -168,9 +211,8 @@ describe("Statusübergänge", () => {
     expect(
       uebergangErlaubt(AssetStatus.AUSGESONDERT, AssetStatus.HERAUSGEGEBEN),
     ).toBeNull();
-    // Aus dem Lager direkt in den Verlust ist erlaubt, aber nicht umgekehrt
-    // ohne Leitungsrecht – geprüft wird hier nur, dass der Rückweg aus der
-    // Reparatur in die Reservierung fehlt.
+    // Aus der Reparatur heraus jemandem etwas vormerken ergibt keinen Sinn –
+    // erst kommt das Gerät zurück, dann wird es vergeben.
     expect(
       uebergangErlaubt(AssetStatus.REPARATUR, AssetStatus.RESERVIERT),
     ).toBeNull();
@@ -186,5 +228,28 @@ describe("Statusübergänge", () => {
     expect(moeglicheZiele(AssetStatus.AUSGESONDERT)).toEqual([
       AssetStatus.LAGER,
     ]);
+  });
+});
+
+describe("fotoFuer", () => {
+  it("nimmt das Bild des Modells, wenn das Gerät keines hat", () => {
+    // Der Regelfall ab dem zweiten Gerät derselben Bauart.
+    const geraet = { photo: null, model: { photo: { id: "modellbild" } } };
+    expect(fotoFuer(geraet)).toEqual({ id: "modellbild", vomModell: true });
+  });
+
+  it("lässt dem eigenen Bild den Vorrang", () => {
+    // Ein Gerät mit Schaden oder Aufkleber sieht anders aus als sein Modell.
+    const geraet = {
+      photo: { id: "geraetebild" },
+      model: { photo: { id: "modellbild" } },
+    };
+    expect(fotoFuer(geraet)).toEqual({ id: "geraetebild", vomModell: false });
+  });
+
+  it("liefert nichts, wenn es nirgends ein Bild gibt", () => {
+    expect(fotoFuer({ photo: null, model: null })).toBeNull();
+    expect(fotoFuer({ photo: null, model: { photo: null } })).toBeNull();
+    expect(fotoFuer({})).toBeNull();
   });
 });

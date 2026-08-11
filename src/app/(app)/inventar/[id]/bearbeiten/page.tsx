@@ -54,7 +54,7 @@ export default async function GeraetBearbeitenPage({
             kindId: geraet.kindId,
             teamId: geraet.teamId,
             manufacturerId: geraet.manufacturerId,
-            model: geraet.model,
+            modelId: geraet.modelId,
             serial: geraet.serial,
             imei: geraet.imei,
             siteId: geraet.siteId,

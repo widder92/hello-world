@@ -12,7 +12,11 @@ import { Card } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/input";
 import { db } from "@/server/db";
 import { getActor, inventoryAccess, inventoryTeamIds } from "@/server/policy";
-import { centAlsEuro, macNormalisierenWeich } from "@/server/services/inventar";
+import {
+  centAlsEuro,
+  fotoFuer,
+  macNormalisierenWeich,
+} from "@/server/services/inventar";
 import { ASSET_STATUS, ASSET_STATUS_TON } from "@/lib/domain";
 import { formatDate } from "@/lib/format";
 
@@ -70,7 +74,7 @@ export default async function InventarPage({
           { assetTag: { contains: suche, mode: "insensitive" } },
           { name: { contains: suche, mode: "insensitive" } },
           { serial: { contains: suche, mode: "insensitive" } },
-          { model: { contains: suche, mode: "insensitive" } },
+          { model: { name: { contains: suche, mode: "insensitive" } } },
           { imei: { contains: suche, mode: "insensitive" } },
           { assignedTo: { name: { contains: suche, mode: "insensitive" } } },
           {
@@ -104,6 +108,7 @@ export default async function InventarPage({
         include: {
           kind: { select: { name: true } },
           manufacturer: { select: { name: true } },
+          model: { select: { name: true, photo: { select: { id: true } } } },
           site: { select: { name: true, shortName: true } },
           costCenter: { select: { code: true } },
           assignedTo: { select: { id: true, name: true } },
@@ -287,10 +292,10 @@ export default async function InventarPage({
               {/* Miniaturbild – macht die Liste beim Suchen im Lager schneller
                   lesbar als jede Textzeile. */}
               <span className="flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-line bg-surface-2">
-                {g.photo ? (
+                {fotoFuer(g) ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
-                    src={`/api/uploads/${g.photo.id}`}
+                    src={`/api/uploads/${fotoFuer(g)!.id}`}
                     alt=""
                     className="size-full object-cover"
                   />
@@ -316,7 +321,9 @@ export default async function InventarPage({
                 <p className="mt-0.5 flex flex-wrap items-center gap-x-3 text-xs text-fg-muted">
                   {(g.manufacturer || g.model) && (
                     <span>
-                      {[g.manufacturer?.name, g.model].filter(Boolean).join(" ")}
+                      {[g.manufacturer?.name, g.model?.name]
+                        .filter(Boolean)
+                        .join(" ")}
                     </span>
                   )}
                   {g.serial && <span className="font-mono">{g.serial}</span>}

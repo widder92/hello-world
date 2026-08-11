@@ -7,6 +7,7 @@ import {
   AlertCircle,
   ArrowRightLeft,
   Camera,
+  Images,
   MessageSquarePlus,
   Trash2,
 } from "lucide-react";
@@ -25,6 +26,7 @@ import { Field, Input, Textarea } from "@/components/ui/input";
 import {
   fotoEntfernenAction,
   fotoSetzenAction,
+  modellFotoSetzenAction,
   notizAction,
   statusWechselnAction,
   suchePerson,
@@ -319,6 +321,13 @@ function beschriftung(von: AssetStatus, nach: AssetStatus): string {
   if (nach === AssetStatus.HERAUSGEGEBEN) {
     return von === AssetStatus.HERAUSGEGEBEN ? "An andere Person" : "Herausgeben";
   }
+  if (nach === AssetStatus.IN_VORBEREITUNG) {
+    // Von einer Person zurück heißt: erst einsammeln, dann herrichten.
+    return von === AssetStatus.HERAUSGEGEBEN
+      ? "Zurücknehmen und einrichten"
+      : "Einrichten";
+  }
+  if (nach === AssetStatus.BEREIT) return "Bereitstellen";
   if (nach === AssetStatus.LAGER) {
     return von === AssetStatus.HERAUSGEGEBEN ? "Zurücknehmen" : "Ins Lager";
   }
@@ -336,14 +345,43 @@ function beschriftung(von: AssetStatus, nach: AssetStatus): string {
 export function FotoBereich({
   assetId,
   fotoId,
+  modellFotoId,
+  modellName,
+  modellId,
 }: {
   assetId: string;
+  /** Bild genau dieses Geräts – hat Vorrang. */
   fotoId: string | null;
+  /** Bild des Modells, das sonst gilt. */
+  modellFotoId?: string | null;
+  modellName?: string | null;
+  modellId?: string | null;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [fehler, setFehler] = useState<string | null>(null);
   const eingabe = useRef<HTMLInputElement>(null);
+  const modellEingabe = useRef<HTMLInputElement>(null);
+  const [modellPending, startModell] = useTransition();
+
+  /** Bild am Modell hinterlegen – gilt sofort für alle Geräte dieser Bauart. */
+  function modellBildHochladen(datei: File) {
+    if (!modellId) return;
+    setFehler(null);
+    const daten = new FormData();
+    daten.set("modelId", modellId);
+    daten.set("datei", datei);
+    startModell(async () => {
+      try {
+        await modellFotoSetzenAction(daten);
+        router.refresh();
+      } catch (e) {
+        setFehler(
+          e instanceof Error ? e.message : "Das Bild konnte nicht gespeichert werden.",
+        );
+      }
+    });
+  }
 
   function hochladen(datei: File) {
     setFehler(null);
@@ -376,23 +414,34 @@ export function FotoBereich({
     });
   }
 
+  // Das eigene Bild geht vor, sonst das des Modells.
+  const gezeigt = fotoId ?? modellFotoId ?? null;
+  const vomModell = !fotoId && Boolean(modellFotoId);
+
   return (
     <div className="space-y-2">
       <div className="overflow-hidden rounded-lg border border-line bg-surface-2">
-        {fotoId ? (
+        {gezeigt ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={`/api/uploads/${fotoId}`}
-            alt="Foto des Geräts"
+            src={`/api/uploads/${gezeigt}`}
+            alt={vomModell ? `Bild des Modells ${modellName ?? ""}` : "Foto des Geräts"}
             className="max-h-64 w-full object-contain"
           />
         ) : (
           <p className="px-4 py-10 text-center text-sm text-fg-muted">
-            Noch kein Foto. Ein Bild hilft beim Wiedererkennen im Lager und
-            zeigt bei einer Rückgabe, wie das Gerät ausgegeben wurde.
+            Noch kein Bild. Eines am Modell zu hinterlegen lohnt sich: Es gilt
+            dann für alle Geräte derselben Bauart.
           </p>
         )}
       </div>
+
+      {vomModell && (
+        <p className="text-xs text-fg-muted">
+          Bild des Modells {modellName}. Es gilt für alle Geräte dieser Bauart –
+          ein eigenes Bild braucht dieses Gerät nur, wenn es anders aussieht.
+        </p>
+      )}
 
       <input
         ref={eingabe}
@@ -409,6 +458,21 @@ export function FotoBereich({
         }}
       />
 
+      <input
+        ref={modellEingabe}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="sr-only"
+        aria-label="Bild des Modells auswählen"
+        tabIndex={-1}
+        onChange={(e) => {
+          const datei = e.target.files?.[0];
+          if (datei) modellBildHochladen(datei);
+          e.target.value = "";
+        }}
+      />
+
       <div className="flex flex-wrap gap-2">
         <Button
           variant="secondary"
@@ -417,12 +481,29 @@ export function FotoBereich({
           loading={pending}
         >
           <Camera aria-hidden="true" />
-          {fotoId ? "Foto ersetzen" : "Foto aufnehmen oder wählen"}
+          {fotoId
+            ? "Gerätebild ersetzen"
+            : vomModell
+              ? "Abweichendes Bild für dieses Gerät"
+              : "Foto aufnehmen oder wählen"}
         </Button>
+
+        {modellId && (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => modellEingabe.current?.click()}
+            loading={modellPending}
+          >
+            <Images aria-hidden="true" />
+            {modellFotoId ? "Bild des Modells ersetzen" : "Bild für das Modell"}
+          </Button>
+        )}
+
         {fotoId && (
           <Button variant="ghost" size="sm" onClick={entfernen} disabled={pending}>
             <Trash2 aria-hidden="true" />
-            Entfernen
+            Gerätebild entfernen
           </Button>
         )}
       </div>

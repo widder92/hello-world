@@ -1,14 +1,19 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { MacKind } from "@prisma/client";
-import { AlertCircle, Plus, X } from "lucide-react";
+import { AlertCircle, Camera, Check, Image as ImageIcon, Plus, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
-import { geraetSpeichernAction } from "@/server/actions/inventar";
+import {
+  fotoVorbereitenAction,
+  geraetSpeichernAction,
+  herstellerAnlegenAction,
+  modellAnlegenAction,
+} from "@/server/actions/inventar";
 import { MAC_KIND } from "@/lib/domain";
 
 /**
@@ -32,7 +37,16 @@ export interface Stammdaten {
     requiresMac: boolean;
     defaultCostCenterId: string | null;
   }[];
-  hersteller: { id: string; name: string }[];
+  hersteller: {
+    id: string;
+    name: string;
+    models: {
+      id: string;
+      name: string;
+      kindId: string | null;
+      photo: { id: string } | null;
+    }[];
+  }[];
   kostenstellen: { id: string; code: string; name: string }[];
   standorte: { id: string; name: string }[];
   bereiche: { id: string; name: string }[];
@@ -44,7 +58,7 @@ export interface GeraetWerte {
   kindId: string;
   teamId: string;
   manufacturerId: string | null;
-  model: string | null;
+  modelId: string | null;
   serial: string | null;
   imei: string | null;
   siteId: string | null;
@@ -88,7 +102,7 @@ export function GeraetFormular({
     kindId: geraet?.kindId ?? (stammdaten.arten[0]?.id ?? ""),
     teamId: geraet?.teamId ?? (stammdaten.bereiche[0]?.id ?? ""),
     manufacturerId: geraet?.manufacturerId ?? "",
-    model: geraet?.model ?? "",
+    modelId: geraet?.modelId ?? "",
     serial: geraet?.serial ?? "",
     imei: geraet?.imei ?? "",
     siteId: geraet?.siteId ?? "",
@@ -106,6 +120,50 @@ export function GeraetFormular({
   const [macs, setMacs] = useState<{ address: string; kind: MacKind }[]>(
     geraet?.macs.length ? geraet.macs : [],
   );
+
+  // Hersteller und Modelle wachsen während des Ausfüllens, wenn jemand neue
+  // anlegt – deshalb im Zustand und nicht direkt aus den Eigenschaften.
+  const [hersteller, setHersteller] = useState(stammdaten.hersteller);
+
+  // Vor dem Speichern hochgeladenes Bild.
+  const [fotoId, setFotoId] = useState<string | null>(null);
+  const [fotoFehler, setFotoFehler] = useState<string | null>(null);
+  const [fotoLaeuft, setFotoLaeuft] = useState(false);
+  const fotoEingabe = useRef<HTMLInputElement>(null);
+
+  const modelle = useMemo(
+    () => hersteller.find((h) => h.id === form.manufacturerId)?.models ?? [],
+    [hersteller, form.manufacturerId],
+  );
+
+  const gewaehltesModell = useMemo(
+    () => modelle.find((m) => m.id === form.modelId) ?? null,
+    [modelle, form.modelId],
+  );
+
+  /**
+   * Welches Bild angezeigt wird und wohin ein neues gehört.
+   *
+   * Hat das Modell schon eines, ist die Sache erledigt – genau dafür hängt das
+   * Bild am Modell. Erst wenn keines da ist, wird eines verlangt, und es gilt
+   * dann für alle weiteren Geräte desselben Modells.
+   */
+  const modellFoto = gewaehltesModell?.photo?.id ?? null;
+
+  function fotoHochladen(datei: File) {
+    setFotoFehler(null);
+    setFotoLaeuft(true);
+    const daten = new FormData();
+    daten.set("datei", datei);
+    void fotoVorbereitenAction(daten)
+      .then((e) => setFotoId(e.fotoId))
+      .catch((e) =>
+        setFotoFehler(
+          e instanceof Error ? e.message : "Das Bild konnte nicht gespeichert werden.",
+        ),
+      )
+      .finally(() => setFotoLaeuft(false));
+  }
 
   const art = useMemo(
     () => stammdaten.arten.find((a) => a.id === form.kindId),
@@ -137,6 +195,9 @@ export function GeraetFormular({
         const ergebnis = await geraetSpeichernAction({
           ...form,
           macs: macs.filter((m) => m.address.trim()),
+          fotoId: fotoId ?? undefined,
+          // Ohne Modell kann das Bild nur am Gerät hängen.
+          fotoZiel: form.modelId ? "modell" : "geraet",
           id: geraet?.id,
         });
         router.push(`/inventar/${ergebnis.id}`);
@@ -186,25 +247,91 @@ export function GeraetFormular({
             </Field>
 
             <Field label="Hersteller" htmlFor="g-hersteller">
-              <Select
-                value={form.manufacturerId}
-                onChange={(e) => setzen("manufacturerId", e.target.value)}
-              >
-                <option value="">Nicht angegeben</option>
-                {stammdaten.hersteller.map((h) => (
-                  <option key={h.id} value={h.id}>
-                    {h.name}
-                  </option>
-                ))}
-              </Select>
+              <AuswahlMitAnlegen
+                id="g-hersteller"
+                wert={form.manufacturerId}
+                eintraege={hersteller}
+                leerText="Nicht angegeben"
+                anlegenText="Neuer Hersteller"
+                platzhalter="Framework"
+                onWaehlen={(id) =>
+                  setForm((f) => ({
+                    ...f,
+                    manufacturerId: id,
+                    // Das bisherige Modell gehört zum alten Hersteller.
+                    modelId: "",
+                  }))
+                }
+                onAnlegen={async (name) => {
+                  const neu = await herstellerAnlegenAction(name);
+                  setHersteller((liste) =>
+                    liste.some((h) => h.id === neu.id)
+                      ? liste
+                      : [...liste, { id: neu.id, name: neu.name, models: [] }].sort(
+                          (a, b) => a.name.localeCompare(b.name, "de"),
+                        ),
+                  );
+                  return neu.id;
+                }}
+              />
             </Field>
 
-            <Field label="Modell" htmlFor="g-modell">
-              <Input
-                value={form.model}
-                onChange={(e) => setzen("model", e.target.value)}
-                placeholder="ThinkPad L14"
-                maxLength={120}
+            <Field
+              label="Modell"
+              htmlFor="g-modell"
+              help={
+                form.manufacturerId
+                  ? "Dasselbe Modell wird oft mehrfach beschafft – deshalb ausgewählt statt getippt."
+                  : "Bitte zuerst den Hersteller wählen."
+              }
+            >
+              <AuswahlMitAnlegen
+                id="g-modell"
+                wert={form.modelId}
+                eintraege={modelle}
+                leerText="Nicht angegeben"
+                anlegenText="Neues Modell"
+                platzhalter="ThinkPad L14"
+                gesperrt={!form.manufacturerId}
+                onWaehlen={(id) => {
+                  const m = modelle.find((x) => x.id === id);
+                  setForm((f) => ({
+                    ...f,
+                    modelId: id,
+                    // Die übliche Geräteart des Modells vorbelegen, solange
+                    // niemand bewusst etwas anderes gewählt hat.
+                    kindId: m?.kindId ?? f.kindId,
+                  }));
+                }}
+                onAnlegen={async (name) => {
+                  const neu = await modellAnlegenAction({
+                    manufacturerId: form.manufacturerId,
+                    name,
+                    kindId: form.kindId,
+                    fotoId: fotoId ?? undefined,
+                  });
+                  setHersteller((liste) =>
+                    liste.map((h) =>
+                      h.id === form.manufacturerId
+                        ? {
+                            ...h,
+                            models: h.models.some((m) => m.id === neu.id)
+                              ? h.models
+                              : [
+                                  ...h.models,
+                                  {
+                                    id: neu.id,
+                                    name: neu.name,
+                                    kindId: form.kindId,
+                                    photo: fotoId ? { id: fotoId } : null,
+                                  },
+                                ].sort((a, b) => a.name.localeCompare(b.name, "de")),
+                          }
+                        : h,
+                    ),
+                  );
+                  return neu.id;
+                }}
               />
             </Field>
 
@@ -323,6 +450,110 @@ export function GeraetFormular({
               )}
             </fieldset>
           )}
+
+          {/* --- Foto --------------------------------------------------- */}
+          <div className="space-y-2 border-t border-line pt-4">
+            <h3 className="text-sm font-medium text-fg">Foto</h3>
+
+            {modellFoto && !fotoId ? (
+              // Der Regelfall ab dem zweiten Gerät eines Modells: Das Bild ist
+              // schon da und wird übernommen.
+              <div className="flex flex-wrap items-center gap-3 rounded-md border border-line bg-surface-2 p-3">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={`/api/uploads/${modellFoto}`}
+                  alt=""
+                  className="size-16 shrink-0 rounded-md object-cover"
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="flex items-center gap-1.5 text-sm font-medium text-success">
+                    <Check className="size-4" aria-hidden="true" />
+                    Bild vom Modell wird übernommen
+                  </p>
+                  <p className="mt-0.5 text-xs text-fg-muted">
+                    {gewaehltesModell?.name} – hinterlegt am Modell, gilt für
+                    alle Geräte dieser Bauart. Sie müssen nichts tun.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <>
+                {fotoId ? (
+                  <div className="flex flex-wrap items-center gap-3 rounded-md border border-line bg-surface-2 p-3">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={`/api/uploads/${fotoId}`}
+                      alt=""
+                      className="size-16 shrink-0 rounded-md object-cover"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm text-fg">Bild ausgewählt.</p>
+                      <p className="mt-0.5 text-xs text-fg-muted">
+                        {form.modelId
+                          ? "Wird beim Speichern am Modell hinterlegt – jedes weitere Gerät dieser Bauart übernimmt es dann."
+                          : "Wird beim Speichern an diesem Gerät hinterlegt."}
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setFotoId(null)}
+                    >
+                      <X aria-hidden="true" />
+                      Entfernen
+                    </Button>
+                  </div>
+                ) : (
+                  <p className="text-xs text-fg-muted">
+                    {form.modelId
+                      ? "Für dieses Modell ist noch kein Bild hinterlegt. Einmal aufnehmen genügt – alle weiteren Geräte derselben Bauart übernehmen es."
+                      : "Ohne Modell gehört das Bild nur zu diesem einen Gerät."}
+                  </p>
+                )}
+
+                <input
+                  ref={fotoEingabe}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="sr-only"
+                  aria-label="Foto auswählen"
+                  tabIndex={-1}
+                  onChange={(e) => {
+                    const datei = e.target.files?.[0];
+                    if (datei) fotoHochladen(datei);
+                    e.target.value = "";
+                  }}
+                />
+
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  loading={fotoLaeuft}
+                  onClick={() => fotoEingabe.current?.click()}
+                >
+                  {fotoId ? (
+                    <ImageIcon aria-hidden="true" />
+                  ) : (
+                    <Camera aria-hidden="true" />
+                  )}
+                  {fotoId ? "Anderes Bild wählen" : "Foto aufnehmen oder wählen"}
+                </Button>
+              </>
+            )}
+
+            {fotoFehler && (
+              <p
+                role="alert"
+                className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger-soft-fg"
+              >
+                <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+                {fotoFehler}
+              </p>
+            )}
+          </div>
         </CardContent>
       </Card>
 
@@ -504,5 +735,133 @@ export function GeraetFormular({
         )}
       </div>
     </form>
+  );
+}
+
+/**
+ * Auswahlfeld, in dem sich ein fehlender Eintrag sofort anlegen lässt.
+ *
+ * Der Grund ist banal und trotzdem entscheidend: Ein neu geliefertes Gerät
+ * lässt sich nicht erfassen, wenn sein Hersteller noch nicht in der Liste
+ * steht. Wer dafür die Seite verlassen, in die Stammdaten wechseln und von
+ * vorn anfangen muss, tippt beim dritten Mal irgendetwas in ein anderes Feld –
+ * und genau so entstehen die Datenbestände, die niemand mehr auswerten kann.
+ *
+ * Bewusst ein einfaches `select` mit einem zusätzlichen Eintrag statt eines
+ * selbstgebauten Auswahlfelds: Das native Element funktioniert mit Tastatur,
+ * Vorleseprogramm und auf dem Handy so, wie die Person es kennt.
+ */
+function AuswahlMitAnlegen({
+  id,
+  wert,
+  eintraege,
+  leerText,
+  anlegenText,
+  platzhalter,
+  gesperrt,
+  onWaehlen,
+  onAnlegen,
+}: {
+  id: string;
+  wert: string;
+  eintraege: { id: string; name: string }[];
+  leerText: string;
+  anlegenText: string;
+  platzhalter: string;
+  gesperrt?: boolean;
+  onWaehlen: (id: string) => void;
+  onAnlegen: (name: string) => Promise<string>;
+}) {
+  const [anlegen, setAnlegen] = useState(false);
+  const [name, setName] = useState("");
+  const [laeuft, setLaeuft] = useState(false);
+  const [fehler, setFehler] = useState<string | null>(null);
+
+  async function speichern() {
+    const bezeichnung = name.trim();
+    if (!bezeichnung) return;
+    setFehler(null);
+    setLaeuft(true);
+    try {
+      const neueId = await onAnlegen(bezeichnung);
+      onWaehlen(neueId);
+      setAnlegen(false);
+      setName("");
+    } catch (e) {
+      setFehler(
+        e instanceof Error ? e.message : "Der Eintrag konnte nicht angelegt werden.",
+      );
+    } finally {
+      setLaeuft(false);
+    }
+  }
+
+  if (anlegen) {
+    return (
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            id={id}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={platzhalter}
+            autoFocus
+            onKeyDown={(e) => {
+              // Enter legt an, statt das ganze Formular abzuschicken.
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void speichern();
+              }
+              if (e.key === "Escape") setAnlegen(false);
+            }}
+            className="min-w-40 flex-1"
+          />
+          <Button type="button" size="sm" loading={laeuft} onClick={speichern}>
+            <Check aria-hidden="true" />
+            Anlegen
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={laeuft}
+            onClick={() => {
+              setAnlegen(false);
+              setFehler(null);
+            }}
+          >
+            Abbrechen
+          </Button>
+        </div>
+        {fehler && (
+          <p role="alert" className="text-sm text-danger">
+            {fehler}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <Select
+      id={id}
+      value={wert}
+      disabled={gesperrt}
+      onChange={(e) => {
+        if (e.target.value === "__neu__") {
+          setAnlegen(true);
+          return;
+        }
+        onWaehlen(e.target.value);
+      }}
+    >
+      <option value="">{leerText}</option>
+      {eintraege.map((e) => (
+        <option key={e.id} value={e.id}>
+          {e.name}
+        </option>
+      ))}
+      {!gesperrt && <option value="__neu__">+ {anlegenText} …</option>}
+    </Select>
   );
 }

@@ -406,6 +406,43 @@ async function importiereGeraete(
     return angelegt.id;
   }
 
+  /**
+   * Modell holen oder anlegen.
+   *
+   * Ohne Hersteller geht das nicht – ein Modell gehört immer zu einem. Fehlt
+   * er in der Datei, bleibt das Gerät ohne Modell und der Text landet in den
+   * Notizen; verloren geht dabei nichts.
+   */
+  const modellMap = new Map<string, string>();
+  async function modellFinden(
+    herstellerId: string,
+    name: string,
+    kindId: string,
+  ): Promise<string> {
+    const schluessel = `${herstellerId}::${name.toLowerCase()}`;
+    const treffer = modellMap.get(schluessel);
+    if (treffer) return treffer;
+
+    const vorhanden = await db.assetModel.findFirst({
+      where: {
+        manufacturerId: herstellerId,
+        name: { equals: name, mode: "insensitive" },
+      },
+      select: { id: true },
+    });
+    const id =
+      vorhanden?.id ??
+      (
+        await db.assetModel.create({
+          data: { manufacturerId: herstellerId, name, kindId },
+          select: { id: true },
+        })
+      ).id;
+
+    modellMap.set(schluessel, id);
+    return id;
+  }
+
   for (const [i, zeile] of zeilen.entries()) {
     bericht.gelesen++;
     const nummer = i + 2;
@@ -521,13 +558,33 @@ async function importiereGeraete(
       continue;
     }
 
+    const kindId = await artFinden(artName);
+    const manufacturerId = herstellerName
+      ? await herstellerFinden(herstellerName)
+      : null;
+    const modellName = spalte(zeile, "modell", "typ");
+
+    // Ein Modellname ohne Hersteller lässt sich nicht einordnen. Statt ihn zu
+    // verwerfen, wandert er unten in die Notizen.
+    const modelId =
+      manufacturerId && modellName
+        ? await modellFinden(manufacturerId, modellName, kindId)
+        : null;
+
+    const notizen = [
+      spalte(zeile, "notizen", "bemerkung", "bemerkungen"),
+      !modelId && modellName ? `Modell (aus der Übernahme): ${modellName}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
     const daten = {
       name,
-      kindId: await artFinden(artName),
+      kindId,
       teamId,
       status,
-      manufacturerId: herstellerName ? await herstellerFinden(herstellerName) : null,
-      model: spalte(zeile, "modell", "typ") || null,
+      manufacturerId,
+      modelId,
       serial: spalte(zeile, "seriennummer", "serial", "sn") || null,
       imei: spalte(zeile, "imei") || null,
       room: spalte(zeile, "raum") || null,
@@ -542,7 +599,7 @@ async function importiereGeraete(
       purchasePriceCents,
       supplier: spalte(zeile, "lieferant") || null,
       invoiceNumber: spalte(zeile, "rechnung", "rechnungsnummer") || null,
-      notes: spalte(zeile, "notizen", "bemerkung", "bemerkungen") || null,
+      notes: notizen || null,
     };
 
     const geraet = vorhanden

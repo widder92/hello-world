@@ -171,15 +171,22 @@ enum AssignStrategy {
 
 /// Wo sich ein Gerät gerade befindet.
 ///
-/// Die Gerätearten selbst stehen bewusst in einer Tabelle (AssetKind) und nicht
-/// in einem Enum – ein neues Modell soll ohne Datenbankänderung anlegbar sein.
-/// Der Status dagegen gehört hierher: Es sind genau diese sechs Zustände, an
-/// denen die Übergänge und die halbe Auswertung hängen, und ein siebter würde
-/// beides stillschweigend unvollständig machen.
+/// Gerätearten und Modelle stehen bewusst in Tabellen (AssetKind, AssetModel)
+/// und nicht in einer Aufzählung – ein neues Modell soll ohne
+/// Datenbankänderung anlegbar sein. Der Status dagegen gehört hierher: An ihm
+/// hängen die Übergangsregeln und die halbe Auswertung, und ein frei
+/// erfundener Zustand würde beides stillschweigend unvollständig machen.
+///
+/// Die Reihenfolge folgt dem Weg eines Geräts durchs Haus: ankommen,
+/// einrichten, bereitstellen, herausgeben – und irgendwann zurück.
 enum AssetStatus {
-  /// Einsatzbereit im Lager.
+  /// Da, aber noch nicht eingerichtet. Der Zustand nach dem Auspacken.
   LAGER
-  /// Für eine Person vorgemerkt, aber noch nicht übergeben.
+  /// Wird gerade eingerichtet – Betriebssystem, Programme, Konten.
+  IN_VORBEREITUNG
+  /// Fertig eingerichtet und wartet nur noch auf die Übergabe.
+  BEREIT
+  /// Für eine bestimmte Person vorgemerkt.
   RESERVIERT
   /// Bei einer Person im Einsatz.
   HERAUSGEGEBEN
@@ -842,6 +849,9 @@ model Attachment {
   /// Rückrichtung für Asset.photo – dasselbe Foto, von der Geräteseite aus.
   fotoVon Asset? @relation("AssetFoto")
 
+  /// Rückrichtung für AssetModel.photo – das Bild eines ganzen Modells.
+  fotoVonModell AssetModel? @relation("ModellFoto")
+
   @@index([ticketId])
   @@index([messageId])
   @@index([assetId])
@@ -953,6 +963,7 @@ model AssetKind {
 
   assets   Asset[]
   counters AssetCounter[]
+  models   AssetModel[]
 
   @@index([isActive, sortOrder])
 }
@@ -973,7 +984,50 @@ model Manufacturer {
   updatedAt DateTime @updatedAt
 
   assets Asset[]
+  models AssetModel[]
 
+  @@index([isActive, name])
+}
+
+/// Gerätemodell – „Lenovo ThinkPad L14", „Apple iPad 10".
+///
+/// Eigene Tabelle, weil dasselbe Modell zwanzigmal beschafft wird und sich nur
+/// in Seriennummer und Besitzer unterscheidet. Zwei Dinge folgen daraus:
+///
+///  1. Beim Anlegen wird das Modell ausgewählt statt abgetippt. Ein Feld, in
+///     das zwanzigmal „ThinkPad L14" eingegeben wird, enthält am Ende
+///     „Thinkpad L 14", „T14L" und „ThinkPad L14 (neu)".
+///  2. Das **Foto hängt am Modell**, nicht am Gerät. Alle ThinkPads L14 sehen
+///     gleich aus; das Bild einmal zu hinterlegen genügt, und jedes weitere
+///     Gerät dieses Modells erbt es.
+model AssetModel {
+  id String @id @default(cuid())
+
+  manufacturerId String
+  manufacturer   Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Cascade)
+
+  name String
+
+  /// Übliche Geräteart – belegt das Formular vor.
+  kindId String?
+  kind   AssetKind? @relation(fields: [kindId], references: [id], onDelete: SetNull)
+
+  /// Bild des Modells. Gilt für alle Geräte dieses Modells, sofern das
+  /// einzelne Gerät kein eigenes Foto hat.
+  photoId String?     @unique
+  photo   Attachment? @relation("ModellFoto", fields: [photoId], references: [id], onDelete: SetNull)
+
+  notes    String?
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  assets Asset[]
+
+  /// Derselbe Modellname bei zwei Herstellern ist möglich und in Ordnung –
+  /// „Pro 8" gibt es mehrfach. Beim selben Hersteller nicht.
+  @@unique([manufacturerId, name])
   @@index([isActive, name])
 }
 
@@ -1022,10 +1076,14 @@ model Asset {
 
   manufacturerId String?
   manufacturer   Manufacturer? @relation(fields: [manufacturerId], references: [id], onDelete: SetNull)
-  model          String?
-  serial         String?
+
+  /// Gerätemodell. Trägt das Foto, das alle Geräte dieses Modells verwenden.
+  modelId String?
+  model   AssetModel? @relation(fields: [modelId], references: [id], onDelete: SetNull)
+
+  serial String?
   /// Bei Mobilgeräten. Steht auf der Rechnung und beim Mobilfunkanbieter.
-  imei           String?
+  imei   String?
 
   siteId          String?
   site            Site?   @relation(fields: [siteId], references: [id], onDelete: SetNull)
@@ -1049,7 +1107,9 @@ model Asset {
   supplier           String?
   invoiceNumber      String?
 
-  /// Foto des Geräts. Zeigt beim Herausgeben, in welchem Zustand es war.
+  /// Foto genau dieses Geräts – für den Ausnahmefall, dass es anders aussieht
+  /// als der Rest seines Modells: ein Aufkleber, ein Schaden, ein Umbau.
+  /// Fehlt es, zeigt die Oberfläche das Bild des Modells.
   photoId String?     @unique
   photo   Attachment? @relation("AssetFoto", fields: [photoId], references: [id], onDelete: SetNull)
 

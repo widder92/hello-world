@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { db } from "@/server/db";
 import {
+  canCreateInventoryLookups,
   inventoryAccess,
   inventoryTeamIds,
   requireActor,
@@ -106,7 +107,20 @@ export async function inventarStammdaten() {
       db.manufacturer.findMany({
         where: { isActive: true },
         orderBy: { name: "asc" },
-        select: { id: true, name: true },
+        select: {
+          id: true,
+          name: true,
+          models: {
+            where: { isActive: true },
+            orderBy: { name: "asc" },
+            select: {
+              id: true,
+              name: true,
+              kindId: true,
+              photo: { select: { id: true } },
+            },
+          },
+        },
       }),
       db.costCenter.findMany({
         where: { isActive: true },
@@ -172,7 +186,7 @@ const geraetSchema = z.object({
   kindId: z.string().min(1, "Bitte wählen Sie die Geräteart."),
   teamId: z.string().min(1, "Bitte wählen Sie den Bereich."),
   manufacturerId: leer(40),
-  model: leer(120),
+  modelId: leer(40),
   serial: leer(120),
   imei: leer(40),
   siteId: leer(40),
@@ -191,6 +205,17 @@ const geraetSchema = z.object({
     .array(z.object({ address: z.string(), kind: z.nativeEnum(MacKind) }))
     .max(8)
     .optional(),
+
+  /** Vorab hochgeladenes Bild (siehe `fotoVorbereitenAction`). */
+  fotoId: leer(40),
+  /**
+   * Wohin das Bild gehört.
+   *
+   * Der Regelfall ist `modell`: Alle Geräte desselben Modells sehen gleich
+   * aus, und das Bild soll für die nächsten zwanzig mitgelten. `geraet` ist
+   * die Ausnahme für ein Gerät, das anders aussieht als der Rest.
+   */
+  fotoZiel: z.enum(["modell", "geraet"]).optional(),
 });
 
 export type GeraetInput = z.input<typeof geraetSchema> & { id?: string };
@@ -229,6 +254,24 @@ export async function geraetSpeichernAction(input: GeraetInput) {
     );
   }
 
+  // Modell und Hersteller müssen zusammenpassen. Die Oberfläche stellt das
+  // sicher, indem sie nur die Modelle des gewählten Herstellers anbietet –
+  // aber die Kennungen kommen aus dem Browser und sind damit frei wählbar.
+  if (daten.modelId) {
+    const modell = await db.assetModel.findFirst({
+      where: { id: daten.modelId, isActive: true },
+      select: { id: true, name: true, manufacturerId: true },
+    });
+    if (!modell) {
+      throw new InventarFehler("Dieses Modell gibt es nicht mehr.");
+    }
+    if (modell.manufacturerId !== daten.manufacturerId) {
+      throw new InventarFehler(
+        `Das Modell ${modell.name} gehört zu einem anderen Hersteller.`,
+      );
+    }
+  }
+
   const preis = daten.preis ? betragZuCent(daten.preis) : null;
 
   // MAC-Adressen vereinheitlichen, bevor irgendetwas geschrieben wird – ein
@@ -252,7 +295,7 @@ export async function geraetSpeichernAction(input: GeraetInput) {
     kindId: daten.kindId,
     teamId: daten.teamId,
     manufacturerId: daten.manufacturerId || null,
-    model: daten.model || null,
+    modelId: daten.modelId || null,
     serial: daten.serial || null,
     imei: daten.imei || null,
     siteId: daten.siteId || null,
@@ -320,6 +363,37 @@ export async function geraetSpeichernAction(input: GeraetInput) {
       await tx.assetMac.create({
         data: { assetId: datensatz.id, address: mac.address, kind: mac.kind },
       });
+    }
+
+    // Ein vorab hochgeladenes Bild jetzt verknüpfen – entweder am Modell,
+    // damit alle weiteren Geräte davon zehren, oder an diesem einen Gerät.
+    if (daten.fotoId) {
+      const amModell = daten.fotoZiel !== "geraet" && daten.modelId;
+      if (amModell) {
+        const modell = await tx.assetModel.findUnique({
+          where: { id: daten.modelId! },
+          select: { photoId: true },
+        });
+        // Ein vorhandenes Modellbild wird nicht beiläufig überschrieben: Es
+        // gilt für alle Geräte dieses Modells, und das gehört auf die
+        // Modellseite und nicht in ein Geräteformular.
+        if (modell && !modell.photoId) {
+          await tx.assetModel.update({
+            where: { id: daten.modelId! },
+            data: { photoId: daten.fotoId },
+          });
+        } else {
+          await tx.asset.update({
+            where: { id: datensatz.id },
+            data: { photoId: daten.fotoId },
+          });
+        }
+      } else {
+        await tx.asset.update({
+          where: { id: datensatz.id },
+          data: { photoId: daten.fotoId },
+        });
+      }
     }
 
     if (input.id) {
@@ -683,4 +757,212 @@ export async function kostenstelleSpeichernAction(
   revalidatePath("/verwaltung/kostenstellen");
   revalidatePath("/inventar/auswertung");
   return { ok: true as const, id: kostenstelle.id };
+}
+
+// ---------------------------------------------------------------------------
+// Hersteller und Modelle beim Erfassen anlegen
+// ---------------------------------------------------------------------------
+//
+// Beides entsteht dort, wo es gebraucht wird: mitten im Geräteformular. Wer
+// ein neu geliefertes Gerät einbuchen will, dessen Hersteller noch niemand
+// eingetragen hat, soll nicht abbrechen und auf die Bereichsleitung warten
+// müssen.
+
+function pruefeAnlegen(actor: Actor) {
+  if (!canCreateInventoryLookups(actor)) {
+    throw new InventarFehler(
+      "Hersteller und Modelle darf nur anlegen, wer Geräte erfasst.",
+    );
+  }
+}
+
+export async function herstellerAnlegenAction(name: string) {
+  const actor = await requireActor();
+  pruefeAnlegen(actor);
+
+  const bezeichnung = name.trim();
+  if (bezeichnung.length < 2) {
+    throw new InventarFehler("Bitte geben Sie den Namen des Herstellers an.");
+  }
+
+  // Groß- und Kleinschreibung ignorieren: „lenovo" soll den vorhandenen
+  // Eintrag „Lenovo" finden und nicht danebenstellen.
+  const vorhanden = await db.manufacturer.findFirst({
+    where: { name: { equals: bezeichnung, mode: "insensitive" } },
+    select: { id: true, name: true, isActive: true },
+  });
+
+  if (vorhanden) {
+    // Ein stillgelegter Hersteller wird wiederbelebt statt verdoppelt.
+    if (!vorhanden.isActive) {
+      await db.manufacturer.update({
+        where: { id: vorhanden.id },
+        data: { isActive: true },
+      });
+    }
+    revalidatePath("/inventar");
+    return { ok: true as const, id: vorhanden.id, name: vorhanden.name };
+  }
+
+  const hersteller = await db.manufacturer.create({
+    data: { name: bezeichnung },
+    select: { id: true, name: true },
+  });
+
+  await logAudit({
+    actorId: actor.id,
+    action: "manufacturer.create",
+    entityType: "Manufacturer",
+    entityId: hersteller.id,
+    summary: `Hersteller "${hersteller.name}" beim Erfassen eines Geräts angelegt.`,
+  });
+
+  revalidatePath("/inventar");
+  return { ok: true as const, id: hersteller.id, name: hersteller.name };
+}
+
+export async function modellAnlegenAction(input: {
+  manufacturerId: string;
+  name: string;
+  kindId?: string;
+  /** Zuvor hochgeladenes Bild, das für alle Geräte dieses Modells gilt. */
+  fotoId?: string;
+}) {
+  const actor = await requireActor();
+  pruefeAnlegen(actor);
+
+  const bezeichnung = input.name.trim();
+  if (bezeichnung.length < 1) {
+    throw new InventarFehler("Bitte geben Sie die Modellbezeichnung an.");
+  }
+
+  const hersteller = await db.manufacturer.findFirst({
+    where: { id: input.manufacturerId, isActive: true },
+    select: { id: true, name: true },
+  });
+  if (!hersteller) {
+    throw new InventarFehler(
+      "Bitte wählen Sie zuerst den Hersteller – ein Modell gehört immer zu einem.",
+    );
+  }
+
+  const vorhanden = await db.assetModel.findFirst({
+    where: {
+      manufacturerId: hersteller.id,
+      name: { equals: bezeichnung, mode: "insensitive" },
+    },
+    select: { id: true, name: true, isActive: true, photoId: true },
+  });
+
+  if (vorhanden) {
+    await db.assetModel.update({
+      where: { id: vorhanden.id },
+      data: {
+        isActive: true,
+        // Ein mitgeschicktes Bild nur übernehmen, wenn noch keines da ist –
+        // sonst überschriebe ein Nebenbei-Klick das Bild aller Geräte dieses
+        // Modells.
+        ...(input.fotoId && !vorhanden.photoId ? { photoId: input.fotoId } : {}),
+      },
+    });
+    revalidatePath("/inventar");
+    return { ok: true as const, id: vorhanden.id, name: vorhanden.name };
+  }
+
+  const modell = await db.assetModel.create({
+    data: {
+      manufacturerId: hersteller.id,
+      name: bezeichnung,
+      kindId: input.kindId || null,
+      photoId: input.fotoId || null,
+    },
+    select: { id: true, name: true },
+  });
+
+  await logAudit({
+    actorId: actor.id,
+    action: "assetmodel.create",
+    entityType: "AssetModel",
+    entityId: modell.id,
+    summary: `Modell "${hersteller.name} ${modell.name}" angelegt.`,
+  });
+
+  revalidatePath("/inventar");
+  return { ok: true as const, id: modell.id, name: modell.name };
+}
+
+/** Foto eines Modells nachträglich setzen oder austauschen. */
+export async function modellFotoSetzenAction(formular: FormData) {
+  const actor = await requireActor();
+  pruefeAnlegen(actor);
+
+  const modelId = String(formular.get("modelId") ?? "");
+  const datei = formular.get("datei");
+
+  if (!(datei instanceof File) || datei.size === 0) {
+    throw new InventarFehler("Bitte wählen Sie ein Bild aus.");
+  }
+  if (!datei.type.startsWith("image/")) {
+    throw new InventarFehler("Als Bild werden nur Bilddateien angenommen.");
+  }
+
+  const modell = await db.assetModel.findUnique({
+    where: { id: modelId },
+    select: { id: true, name: true, photoId: true },
+  });
+  if (!modell) throw new InventarFehler("Dieses Modell wurde nicht gefunden.");
+
+  const anhang = await speichereAnhang({
+    inhalt: Buffer.from(await datei.arrayBuffer()),
+    filename: datei.name || `${modell.name}.jpg`,
+    mimeType: datei.type,
+    uploadedById: actor.id,
+  });
+
+  const altes = modell.photoId;
+  await db.assetModel.update({
+    where: { id: modell.id },
+    data: { photoId: anhang.id },
+  });
+  if (altes) await entferneAnhang(altes);
+
+  revalidatePath("/inventar");
+  return { ok: true as const, fotoId: anhang.id };
+}
+
+// ---------------------------------------------------------------------------
+// Foto schon beim Anlegen
+// ---------------------------------------------------------------------------
+
+/**
+ * Nimmt ein Bild entgegen, bevor es ein Gerät oder Modell gibt.
+ *
+ * Beim Anlegen existiert noch kein Datensatz, an den das Bild gehängt werden
+ * könnte. Es wird deshalb zunächst ohne Zuordnung abgelegt und erst beim
+ * Speichern verknüpft – dasselbe Vorgehen wie bei den Anhängen im
+ * Meldeformular. Bricht jemand ab, räumt `entferneVerwaisteAnhaenge` die
+ * Datei nach einem Tag weg.
+ */
+export async function fotoVorbereitenAction(formular: FormData) {
+  const actor = await requireActor();
+  requireInventory(actor);
+
+  const datei = formular.get("datei");
+  if (!(datei instanceof File) || datei.size === 0) {
+    throw new InventarFehler("Bitte wählen Sie ein Bild aus.");
+  }
+  if (!datei.type.startsWith("image/")) {
+    throw new InventarFehler(
+      "Als Foto werden nur Bilder angenommen (JPG, PNG, HEIC).",
+    );
+  }
+
+  const anhang = await speichereAnhang({
+    inhalt: Buffer.from(await datei.arrayBuffer()),
+    filename: datei.name || "geraet.jpg",
+    mimeType: datei.type,
+    uploadedById: actor.id,
+  });
+
+  return { ok: true as const, fotoId: anhang.id, dateiname: anhang.filename };
 }

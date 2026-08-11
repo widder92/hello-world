@@ -101,13 +101,21 @@ gibt:
 - **Barrierefreiheit** nach WCAG 2.1 AA, geprüft mit axe: große Schrift, hoher
   Kontrast, Bewegung reduzieren, einfache Ansicht. Zustände nie nur über Farbe.
 - **IT-Inventar.** Geräte mit Seriennummer, MAC-Adressen, IMEI, Anschaffungs­datum,
-  Preis, Kostenstelle und Foto. Der Status sagt, wo ein Gerät ist – im Lager,
-  herausgegeben (und an wen), in Reparatur, ausgesondert –, und jede Änderung
-  landet in der Gerätechronik. Bei der Herausgabe entsteht ein
-  **Übergabeprotokoll** zum Ausdrucken und Unterschreiben. Mitarbeitende sehen
-  unter *Meine Geräte*, was auf ihren Namen läuft, und können von dort direkt
-  eine Störung melden. Das Inventar ist **je Bereich einschaltbar**: Heute führt
-  es die IT, morgen vielleicht der Hausmeister sein Werkzeug.
+  Preis, Kostenstelle und Foto. Der Status folgt dem Weg durchs Haus – im Lager,
+  in Vorbereitung, **bereit zur Übergabe**, herausgegeben (und an wen), in
+  Reparatur, ausgesondert –, und jede Änderung landet in der Gerätechronik. Bei
+  der Herausgabe entsteht ein **Übergabeprotokoll** zum Ausdrucken und
+  Unterschreiben.
+
+  **Modelle sind eigene Stammdaten**, und das Bild hängt am Modell: Wer das
+  einundzwanzigste ThinkPad L14 erfasst, wählt Hersteller und Modell aus einer
+  Liste und bekommt das Bild automatisch mit. Fehlt ein Hersteller, legt man ihn
+  im Formular an, ohne die Seite zu verlassen.
+
+  Mitarbeitende sehen unter *Meine Geräte*, was auf ihren Namen läuft, und
+  können von dort direkt eine Störung melden. Das Inventar ist **je Bereich
+  einschaltbar**: Heute führt es die IT, morgen vielleicht der Hausmeister sein
+  Werkzeug.
 - **Datenübernahme** aus dem Altsystem über CSV.
 - Wissensdatenbank, Textbausteine, Ticketvorlagen, Auswertung, lückenloses
   Protokoll.
@@ -171,7 +179,8 @@ dann sechs Standorte, sechs Bereiche in beiden Ausbaustufen,
 elf Eingänge, zwanzig Personen und fünfundzwanzig Vorgänge an – samt einer
 Abspaltung, einer Weiterleitung und überfälligen Fristen, damit die Ampel etwas
 zu zeigen hat. Dazu ein gefülltes Inventar: neunzehn Geräte in allen Zuständen,
-zehn Gerätearten, sechs Kostenstellen und zwei Übergabeprotokolle.
+zehn Gerätearten, fünfzehn Modelle, sechs Kostenstellen und zwei
+Übergabeprotokolle.
 
 Passwort für alle Konten: **`Willkommen-2026-Demo`**
 

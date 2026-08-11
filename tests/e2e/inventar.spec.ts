@@ -35,6 +35,11 @@ test.describe("Inventar", () => {
 
     await page.getByLabel("Geräteart").selectOption({ label: "Notebook" });
     await page.getByLabel("Bezeichnung").fill(bezeichnung);
+
+    // Hersteller und Modell werden ausgewählt, nicht getippt.
+    await page.getByLabel("Hersteller").selectOption({ label: "Lenovo" });
+    await page.getByLabel("Modell").selectOption({ label: "ThinkPad L14" });
+
     await page.getByLabel("Seriennummer").fill(`SN-${kennung}`);
 
     // MAC in einer Schreibweise, die nicht die abgelegte ist – am Ende muss
@@ -45,6 +50,9 @@ test.describe("Inventar", () => {
     await page.getByLabel("Anschaffungspreis").fill("1.299,00");
 
     await page.getByRole("button", { name: "Gerät anlegen" }).click();
+
+    // Die Herausgabe erfolgt erst, wenn das Gerät eingerichtet ist – der
+    // Regelweg führt über die Vorbereitung.
 
     // Landet auf der Geräteseite, die Nummer hat das System vergeben.
     await page.waitForURL(
@@ -62,6 +70,19 @@ test.describe("Inventar", () => {
     await expect(page.getByText(/1\.299,00/)).toBeVisible();
 
     const geraeteSeite = page.url();
+
+    // --- Einrichten und bereitstellen ---------------------------------------
+    await page.getByRole("button", { name: "Einrichten" }).click();
+    await page.getByRole("button", { name: "Speichern" }).click();
+    await expect(page.getByText("In Vorbereitung").first()).toBeVisible({
+      timeout: 15_000,
+    });
+
+    await page.getByRole("button", { name: "Bereitstellen" }).click();
+    await page.getByRole("button", { name: "Speichern" }).click();
+    await expect(page.getByText("Bereit zur Übergabe").first()).toBeVisible({
+      timeout: 15_000,
+    });
 
     // --- Herausgeben -------------------------------------------------------
     await page.getByRole("button", { name: "Herausgeben" }).click();
@@ -85,7 +106,7 @@ test.describe("Inventar", () => {
     await page.goto(geraeteSeite);
     await expect(page.getByText("Herausgegeben").first()).toBeVisible();
 
-    await page.getByRole("button", { name: "Zurücknehmen" }).click();
+    await page.getByRole("button", { name: "Zurücknehmen", exact: true }).click();
     await page.getByRole("button", { name: "Speichern" }).click();
     await page.waitForURL(/\/protokoll\/[a-z0-9]+$/, { timeout: 30_000 });
 
@@ -149,6 +170,8 @@ test.describe("Inventar", () => {
     for (const beschriftung of [
       "Herausgeben",
       "Zurücknehmen",
+      "Einrichten",
+      "Bereitstellen",
       "Aussondern",
       "Bearbeiten",
     ]) {
@@ -216,6 +239,66 @@ test.describe("Inventar", () => {
     await page.goto("/verwaltung/geraete");
 
     await expect(page).toHaveURL(/\/inventar/);
+  });
+
+  test("übernimmt Hersteller und Modell samt Bild beim zweiten Gerät", async ({
+    page,
+  }) => {
+    // Der Kern der Modellverwaltung: Was einmal am Modell hängt, gilt für
+    // jedes weitere Gerät derselben Bauart.
+    const kennung = Date.now();
+    await anmelden(page, KONTEN.it);
+    await page.goto("/inventar/neu");
+
+    // Einen Hersteller anlegen, den es noch nicht gibt.
+    await page.getByLabel("Hersteller").selectOption("__neu__");
+    await page.getByLabel("Hersteller").fill(`Framework ${kennung}`);
+    await page.getByRole("button", { name: "Anlegen", exact: true }).click();
+
+    // Und direkt danach ein Modell dieses Herstellers.
+    await page.getByLabel("Modell").selectOption("__neu__");
+    await page.getByLabel("Modell").fill("Laptop 13");
+    await page.getByRole("button", { name: "Anlegen", exact: true }).click();
+
+    await page.getByLabel("Bezeichnung").fill(`Erstes Gerät ${kennung}`);
+    await page.getByLabel("Seriennummer").fill(`FW-A-${kennung}`);
+    await page.getByRole("button", { name: "Gerät anlegen" }).click();
+    await page.waitForURL(
+      (url) =>
+        /^\/inventar\/[a-z0-9]+$/.test(url.pathname) &&
+        !url.pathname.endsWith("/neu"),
+      { timeout: 30_000 },
+    );
+    await expect(page.getByText("Laptop 13").first()).toBeVisible();
+
+    // Zweites Gerät desselben Modells: Hersteller und Modell stehen bereit.
+    await page.goto("/inventar/neu");
+    await page.getByLabel("Hersteller").selectOption({ label: `Framework ${kennung}` });
+    await page.getByLabel("Modell").selectOption({ label: "Laptop 13" });
+    await page.getByLabel("Bezeichnung").fill(`Zweites Gerät ${kennung}`);
+    await page.getByLabel("Seriennummer").fill(`FW-B-${kennung}`);
+    await page.getByRole("button", { name: "Gerät anlegen" }).click();
+
+    await page.waitForURL(
+      (url) =>
+        /^\/inventar\/[a-z0-9]+$/.test(url.pathname) &&
+        !url.pathname.endsWith("/neu"),
+      { timeout: 30_000 },
+    );
+    await expect(page.getByText("Laptop 13").first()).toBeVisible();
+  });
+
+  test("bietet einem Modell ohne Bild das Anlegen an", async ({ page }) => {
+    await anmelden(page, KONTEN.it);
+    await page.goto("/inventar/neu");
+
+    await page.getByLabel("Hersteller").selectOption({ label: "Lenovo" });
+    await page.getByLabel("Modell").selectOption({ label: "ThinkPad L14" });
+
+    // Im Seed hat noch kein Modell ein Bild – der Hinweis fordert eines an.
+    await expect(
+      page.getByText(/Für dieses Modell ist noch kein Bild hinterlegt/),
+    ).toBeVisible();
   });
 
   test("hält das Inventar barrierefrei", async ({ page }) => {

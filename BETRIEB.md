@@ -479,16 +479,54 @@ Inventarnummer beginnt (`NB` → `NB-00042`) und welche Angaben das Formular
 verlangt. Das Kürzel lässt sich später **nicht mehr ändern** – es steht dann
 bereits auf den Aufklebern.
 
+**Hersteller und Modelle** müssen Sie *nicht* vorbereiten. Sie entstehen beim
+Erfassen: Im Geräteformular steht in beiden Auswahlfeldern ganz unten
+*+ Neuer Hersteller …* bzw. *+ Neues Modell …*. Das darf jede Person, die
+Geräte erfasst – wer ein neu geliefertes Notebook einbuchen will, soll nicht
+auf die Bereichsleitung warten müssen. Gerätearten und Kostenstellen bleiben
+dagegen der Leitung vorbehalten, weil sie Nummernkreise und Summen berühren.
+
+### Modelle und Bilder
+
+Ein **Modell** ist die Bauart: „Lenovo ThinkPad L14". Dasselbe Modell wird
+zwanzigmal beschafft und unterscheidet sich nur in Seriennummer und Besitzer.
+Zwei Dinge folgen daraus:
+
+- Beim Erfassen wird das Modell **ausgewählt statt getippt**. Ein Freitextfeld
+  enthält nach dem dritten Mal „Thinkpad L 14" und „T14L", und keine Auswertung
+  fasst das je wieder zusammen.
+- Das **Bild hängt am Modell**, nicht am einzelnen Gerät. Einmal aufgenommen,
+  erbt es jedes weitere Gerät derselben Bauart – beim Anlegen erscheint dann
+  nur noch der Hinweis *Bild vom Modell wird übernommen*, und Sie müssen nichts
+  tun.
+
+Ein Bild direkt am Gerät gibt es weiterhin, aber nur für den Ausnahmefall: ein
+Schaden, ein Umbau, ein Aufkleber, den man wiedererkennen will. Es hat dann
+Vorrang vor dem Bild des Modells.
+
 ### Status und Übergabeprotokoll
 
 | Status | Bedeutung |
 |---|---|
-| Im Lager | einsatzbereit, niemandem zugewiesen |
-| Vorgemerkt | für jemanden reserviert, noch nicht übergeben |
+| Im Lager | da, aber noch nicht eingerichtet – der Zustand nach dem Auspacken |
+| In Vorbereitung | wird gerade eingerichtet: System, Programme, Konten |
+| Bereit zur Übergabe | fertig eingerichtet, wartet nur noch auf die Abholung |
+| Vorgemerkt | für eine bestimmte Person reserviert |
 | Herausgegeben | bei einer Person im Einsatz |
 | In Reparatur | beim Hersteller oder in der Werkstatt |
 | Ausgesondert | ausgemustert, verkauft, entsorgt |
 | Verlust | verloren oder gestohlen |
+
+Der Regelweg eines neuen Geräts lautet **Lager → In Vorbereitung → Bereit →
+Herausgegeben**, und jeder Schritt lässt sich zurückgehen. Zubehör, das keine
+Einrichtung braucht – ein Monitor, eine Tastatur –, geht direkt vom Lager auf
+*Bereit*. Beim Personalwechsel führt *Zurücknehmen und einrichten* in einem
+Schritt zurück in die Vorbereitung; das Rücknahmeprotokoll entsteht dabei
+trotzdem.
+
+*Bereit zur Übergabe* ist der einzige Status mit grüner Plakette. Ein Blick in
+die gefilterte Liste beantwortet damit die Frage, die am häufigsten gestellt
+wird: Was kann raus?
 
 Jeder Wechsel landet in der Gerätechronik, und bei Ausgabe wie Rücknahme
 entsteht ein **Übergabeprotokoll** mit fortlaufender Nummer (`UP-2026-000031`).
@@ -522,7 +560,8 @@ npm run import -- --typ=geraete --datei=geraete.csv --dry-run
 | `Name` | ✓ | Bezeichnung |
 | `Art` | | Geräteart; unbekannte werden angelegt |
 | `Hersteller` | | unbekannte werden angelegt |
-| `Modell`, `Seriennummer`, `IMEI` | | |
+| `Modell` | | wird beim Hersteller angelegt, falls neu; ohne Hersteller landet der Text in den Notizen |
+| `Seriennummer`, `IMEI` | | |
 | `MAC` | | mehrere durch Komma oder Semikolon; Schreibweise egal |
 | `Bereich` | | Kürzel oder Name; ohne Angabe der erste Inventarbereich |
 | `Kostenstelle` | | Nummer oder Bezeichnung – **muss vorher angelegt sein** |
