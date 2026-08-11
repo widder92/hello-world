@@ -508,7 +508,7 @@ Vorrang vor dem Bild des Modells.
 
 | Status | Bedeutung |
 |---|---|
-| Im Lager | da, aber noch nicht eingerichtet – der Zustand nach dem Auspacken |
+| Im Lager | im Bestand, niemandem zugewiesen – neu geliefert **oder zurückgekommen** |
 | In Vorbereitung | wird gerade eingerichtet: System, Programme, Konten |
 | Bereit zur Übergabe | fertig eingerichtet, wartet nur noch auf die Abholung |
 | Vorgemerkt | für eine bestimmte Person reserviert |
@@ -517,12 +517,22 @@ Vorrang vor dem Bild des Modells.
 | Ausgesondert | ausgemustert, verkauft, entsorgt |
 | Verlust | verloren oder gestohlen |
 
-Der Regelweg eines neuen Geräts lautet **Lager → In Vorbereitung → Bereit →
-Herausgegeben**, und jeder Schritt lässt sich zurückgehen. Zubehör, das keine
-Einrichtung braucht – ein Monitor, eine Tastatur –, geht direkt vom Lager auf
-*Bereit*. Beim Personalwechsel führt *Zurücknehmen und einrichten* in einem
-Schritt zurück in die Vorbereitung; das Rücknahmeprotokoll entsteht dabei
-trotzdem.
+Der Regelweg lautet **Lager → In Vorbereitung → Bereit → Herausgegeben**, und
+jeder Schritt lässt sich zurückgehen.
+
+*Im Lager* ist ausdrücklich kein Zustand nur für Neugeräte. Ein Notebook, das
+eine Kollegin zurückgegeben hat und das später jemand anders bekommt, steht
+genauso im Lager – es ist verfügbar, und mehr sagt der Status nicht aus. Was
+ein Gerät hinter sich hat, steht in seiner Chronik: Dort ist jede Ausgabe und
+jede Rücknahme mit Datum und Protokollnummer vermerkt.
+
+Für ein zurückgekommenes Gerät ist das der übliche Weg: zurücknehmen (das
+Rücknahmeprotokoll entsteht dabei), dann *Einrichten*, während Sie es
+zurücksetzen und neu aufsetzen, und danach *Bereitstellen*. Beim
+Personalwechsel geht beides in einem Schritt: *Zurücknehmen und einrichten*.
+
+Zubehör, das keine Einrichtung braucht – ein Monitor, eine Tastatur –, geht
+direkt vom Lager auf *Bereit*.
 
 *Bereit zur Übergabe* ist der einzige Status mit grüner Plakette. Ein Blick in
 die gefilterte Liste beantwortet damit die Frage, die am häufigsten gestellt

@@ -180,7 +180,11 @@ enum AssignStrategy {
 /// Die Reihenfolge folgt dem Weg eines Geräts durchs Haus: ankommen,
 /// einrichten, bereitstellen, herausgeben – und irgendwann zurück.
 enum AssetStatus {
-  /// Da, aber noch nicht eingerichtet. Der Zustand nach dem Auspacken.
+  /// Im Bestand, keiner Person zugewiesen, verfügbar.
+  ///
+  /// Bewusst weit gefasst: Hier steht das fabrikneue Gerät neben dem, das
+  /// gestern zurückgekommen ist und morgen jemand anders bekommt. Was ein
+  /// Gerät hinter sich hat, sagt seine Chronik – nicht sein Status.
   LAGER
   /// Wird gerade eingerichtet – Betriebssystem, Programme, Konten.
   IN_VORBEREITUNG

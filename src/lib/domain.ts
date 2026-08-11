@@ -326,7 +326,7 @@ export const ASSET_STATUS: Record<AssetStatus, string> = {
 
 /** Ein Satz zur Erklärung, für die Auswahl im Formular. */
 export const ASSET_STATUS_HINWEIS: Record<AssetStatus, string> = {
-  LAGER: "Da, aber noch nicht eingerichtet.",
+  LAGER: "Im Bestand und niemandem zugewiesen – neu geliefert oder zurückgekommen.",
   IN_VORBEREITUNG: "Wird gerade eingerichtet – System, Programme, Konten.",
   BEREIT: "Fertig eingerichtet. Wartet nur noch darauf, abgeholt zu werden.",
   RESERVIERT: "Für eine bestimmte Person vorgemerkt.",

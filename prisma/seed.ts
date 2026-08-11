@@ -1404,7 +1404,9 @@ async function main() {
         costCenterId: kostenstellen.it.id,
         purchasedAt: vor(tage(560)),
         purchasePriceCents: euro(849),
-        notes: "Wird für Vertretungen und Schulungen herausgegeben.",
+        notes:
+          "Wird für Vertretungen und Schulungen herausgegeben. War zuletzt " +
+          "bei der Verwaltung im Einsatz und ist wieder verfügbar.",
       },
       {
         assetTag: "NB-00105",
@@ -1561,31 +1563,42 @@ async function main() {
     ].map((data) => db.asset.create({ data })),
   );
 
+  // Ab hier werden Geräte über ihre Inventarnummer angesprochen und nicht
+  // über die Position im Feld oben. Genau daran ist es schon einmal
+  // schiefgegangen: Nach dem Einfügen eines Geräts hing der Vermerk
+  // "Scharnier gebrochen" plötzlich an einem Tablet.
+  const g = new Map(geraete.map((x) => [x.assetTag, x]));
+  const geraet = (tag: string) => {
+    const treffer = g.get(tag);
+    if (!treffer) throw new Error(`Seed: Gerät ${tag} gibt es nicht.`);
+    return treffer;
+  };
+
   // --- MAC-Adressen --------------------------------------------------------
   // Immer klein und mit Doppelpunkten – so legt sie auch die Anwendung ab.
   await db.assetMac.createMany({
     data: [
-      { assetId: geraete[0].id, address: "3c:52:82:11:0a:01", kind: MacKind.LAN },
-      { assetId: geraete[0].id, address: "3c:52:82:11:0a:02", kind: MacKind.WLAN },
-      { assetId: geraete[1].id, address: "b0:83:fe:44:12:80", kind: MacKind.LAN },
-      { assetId: geraete[2].id, address: "00:17:c8:31:44:aa", kind: MacKind.LAN },
-      { assetId: geraete[3].id, address: "00:17:c8:77:31:5b", kind: MacKind.LAN },
-      { assetId: geraete[4].id, address: "a4:83:e7:55:31:20", kind: MacKind.WLAN },
-      { assetId: geraete[7].id, address: "3c:52:82:40:88:01", kind: MacKind.LAN },
-      { assetId: geraete[7].id, address: "3c:52:82:48:88:02", kind: MacKind.WLAN },
-      { assetId: geraete[15].id, address: "94:40:c9:80:12:01", kind: MacKind.LAN },
+      { assetId: geraet("NB-00101").id, address: "3c:52:82:11:0a:01", kind: MacKind.LAN },
+      { assetId: geraet("NB-00101").id, address: "3c:52:82:11:0a:02", kind: MacKind.WLAN },
+      { assetId: geraet("PC-00102").id, address: "b0:83:fe:44:12:80", kind: MacKind.LAN },
+      { assetId: geraet("DRU-00210").id, address: "00:17:c8:31:44:aa", kind: MacKind.LAN },
+      { assetId: geraet("DRU-00211").id, address: "00:17:c8:77:31:5b", kind: MacKind.LAN },
+      { assetId: geraet("TAB-00330").id, address: "a4:83:e7:55:31:20", kind: MacKind.WLAN },
+      { assetId: geraet("NB-00103").id, address: "3c:52:82:40:88:01", kind: MacKind.LAN },
+      { assetId: geraet("NB-00103").id, address: "3c:52:82:48:88:02", kind: MacKind.WLAN },
+      { assetId: geraet("NET-00801").id, address: "94:40:c9:80:12:01", kind: MacKind.LAN },
     ],
   });
 
   // --- Chronik und Übergabeprotokolle --------------------------------------
   // Zwei Protokolle, damit sich die Druckansicht ohne Vorarbeit ansehen lässt.
-  await db.handoverCounter.create({ data: { year: jahr, value: 2 } });
+  await db.handoverCounter.create({ data: { year: jahr, value: 4 } });
 
   await db.assetHandover.createMany({
     data: [
       {
         protocolNo: `UP-${jahr}-000001`,
-        assetId: geraete[0].id,
+        assetId: geraet("NB-00101").id,
         userId: anna.id,
         userName: anna.name,
         direction: HandoverDirection.AUSGABE,
@@ -1597,7 +1610,7 @@ async function main() {
       },
       {
         protocolNo: `UP-${jahr}-000002`,
-        assetId: geraete[11].id,
+        assetId: geraet("TEL-00416").id,
         userId: hmFrank.id,
         userName: hmFrank.name,
         direction: HandoverDirection.AUSGABE,
@@ -1608,20 +1621,49 @@ async function main() {
         accessories: "Ladekabel, Schutzhülle",
         note: "Für die Rufbereitschaft am Wochenende.",
       },
+
+      // Ein Gerät, das seinen Kreis schon einmal durchlaufen hat: ausgegeben,
+      // zurückgekommen, wieder im Lager – und damit für die nächste Person
+      // verfügbar. Genau dafür ist "Im Lager" kein Zustand nur für Neuware.
+      {
+        protocolNo: `UP-${jahr}-000003`,
+        assetId: geraet("NB-00104").id,
+        userId: vwPetra.id,
+        userName: vwPetra.name,
+        direction: HandoverDirection.AUSGABE,
+        handedOverAt: vor(tage(240)),
+        actorId: itKlaus.id,
+        actorName: itKlaus.name,
+        condition: "Gebraucht, guter Zustand",
+        accessories: "Netzteil, Tasche",
+        note: "Leihgerät während der Reparatur des eigenen Notebooks.",
+      },
+      {
+        protocolNo: `UP-${jahr}-000004`,
+        assetId: geraet("NB-00104").id,
+        userId: vwPetra.id,
+        userName: vwPetra.name,
+        direction: HandoverDirection.RUECKNAHME,
+        handedOverAt: vor(tage(180)),
+        actorId: itKlaus.id,
+        actorName: itKlaus.name,
+        condition: "Vollständig, kleiner Kratzer am Deckel",
+        accessories: "Netzteil, Tasche",
+      },
     ],
   });
 
   await db.assetEvent.createMany({
     data: [
       {
-        assetId: geraete[0].id,
+        assetId: geraet("NB-00101").id,
         type: AssetEventType.ANGELEGT,
         actorId: itKlaus.id,
         actorName: itKlaus.name,
         createdAt: vor(tage(430)),
       },
       {
-        assetId: geraete[0].id,
+        assetId: geraet("NB-00101").id,
         type: AssetEventType.HERAUSGEGEBEN,
         fromStatus: AssetStatus.LAGER,
         toStatus: AssetStatus.HERAUSGEGEBEN,
@@ -1632,7 +1674,7 @@ async function main() {
         createdAt: vor(tage(420)),
       },
       {
-        assetId: geraete[10].id,
+        assetId: geraet("NB-00105").id,
         type: AssetEventType.STATUS,
         fromStatus: AssetStatus.LAGER,
         toStatus: AssetStatus.REPARATUR,
@@ -1641,8 +1683,31 @@ async function main() {
         note: "Scharnier gebrochen, Abholung durch den Hersteller veranlasst.",
         createdAt: vor(tage(12)),
       },
+      // Der Kreislauf des Leihgeräts, damit die Chronik ihn auch erzählt.
       {
-        assetId: geraete[17].id,
+        assetId: geraet("NB-00104").id,
+        type: AssetEventType.HERAUSGEGEBEN,
+        fromStatus: AssetStatus.LAGER,
+        toStatus: AssetStatus.HERAUSGEGEBEN,
+        userId: vwPetra.id,
+        actorId: itKlaus.id,
+        actorName: itKlaus.name,
+        note: `Übergabeprotokoll UP-${jahr}-000003`,
+        createdAt: vor(tage(240)),
+      },
+      {
+        assetId: geraet("NB-00104").id,
+        type: AssetEventType.ZURUECKGENOMMEN,
+        fromStatus: AssetStatus.HERAUSGEGEBEN,
+        toStatus: AssetStatus.LAGER,
+        userId: vwPetra.id,
+        actorId: itKlaus.id,
+        actorName: itKlaus.name,
+        note: `Zurück ins Lager, wieder verfügbar. Übergabeprotokoll UP-${jahr}-000004`,
+        createdAt: vor(tage(180)),
+      },
+      {
+        assetId: geraet("PC-00521").id,
         type: AssetEventType.STATUS,
         fromStatus: AssetStatus.LAGER,
         toStatus: AssetStatus.AUSGESONDERT,
@@ -2128,7 +2193,7 @@ async function main() {
         druckerStandort: "Flur 1. OG, gegenüber Dienstzimmer",
         fehlerAmDisplay: "Papierstau prüfen – obere Kassette",
       },
-      geraetIds: [geraete[2].id],
+      geraetIds: [geraet("DRU-00210").id],
       nachrichten: [
         {
           autor: anna,
@@ -2265,7 +2330,7 @@ async function main() {
       siteId: standorte.werkstatt.id,
       kategorieId: itKategorieIds["Computer und Notebook"],
       erstelltVorMs: tage(1) + stunden(9),
-      geraetIds: [geraete[6].id],
+      geraetIds: [geraet("PC-00520").id],
       nachrichten: [
         {
           autor: sonja,
@@ -2317,7 +2382,7 @@ async function main() {
       kategorieId: itKategorieIds["Drucker und Kopierer"],
       erstelltVorMs: tage(9),
       geloestVorMs: tage(8) + stunden(4),
-      geraetIds: [geraete[3].id],
+      geraetIds: [geraet("DRU-00211").id],
       nachrichten: [
         {
           autor: claudia,
