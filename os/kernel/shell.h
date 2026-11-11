@@ -2,7 +2,7 @@
 #pragma once
 
 #define OS_NAME    "HelloOS"
-#define OS_VERSION "0.3"
+#define OS_VERSION "0.4"
 
 /*
  * Führt eine Shell auf der Konsole des laufenden Tasks aus. Kehrt zurück,

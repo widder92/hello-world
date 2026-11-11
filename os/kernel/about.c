@@ -164,46 +164,153 @@ void power_app(void *arg)
     window_destroy(win);
 }
 
-/* --- Hinweis nach einem Update ---------------------------------------------------- */
+/* --- Update: nachfragen, installieren, Ergebnis melden ---------------------------- */
 
-#define UPDATE_W 440
-#define UPDATE_H 140
+#define UPDATE_W     540
+#define UPDATE_H     330
+#define WRAP_COLUMNS 62
+
+/* Gibt Text mehrzeilig aus und bricht dabei an Leerzeichen um. */
+static int draw_wrapped(surface_t *s, int x, int y, const char *text,
+                        int max_lines, color_t color)
+{
+    char line[WRAP_COLUMNS * 2 + 2];
+    while (*text && max_lines > 0) {
+        /* Eine Zeile: bis zum Zeilenende oder so viele Zeichen, wie passen */
+        const char *p = text, *last_space = NULL;
+        int columns = 0;
+        while (*p && *p != '\n' && columns < WRAP_COLUMNS) {
+            if (*p == ' ')
+                last_space = p;
+            if (((uint8_t)*p & 0xC0) != 0x80)
+                columns++;              /* UTF-8-Folgebytes zählen nicht */
+            p++;
+        }
+        while (((uint8_t)*p & 0xC0) == 0x80)
+            p++;                        /* kein Zeichen in der Mitte teilen */
+        const char *end = p;
+        if (*p && *p != '\n' && last_space)
+            end = last_space;           /* mitten im Wort: beim Leerzeichen trennen */
+
+        size_t n = (size_t)(end - text);
+        if (n >= sizeof(line))
+            n = sizeof(line) - 1;
+        memcpy(line, text, n);
+        line[n] = '\0';
+        gfx_text(s, x, y, line, color, false);
+        y += FONT_H + 2;
+        max_lines--;
+
+        text = end;
+        while (*text == ' ')
+            text++;
+        if (*text == '\n')
+            text++;
+    }
+    return y;
+}
 
 void update_app(void *arg)
 {
     (void)arg;
-    window_t *win = window_create("Update installiert", UPDATE_W, UPDATE_H);
-    if (!win)
+    static bool open;                   /* nie zwei solche Fenster gleichzeitig */
+    enum { ASK, DONE, FAILED, NOTHING } stage;
+
+    uint64_t flags = irq_save();
+    bool already = open;
+    open = true;
+    irq_restore(flags);
+    if (already)
         return;
+
+    window_t *win = window_create("Software-Update", UPDATE_W, UPDATE_H);
+    if (!win) {
+        open = false;
+        return;
+    }
     surface_t *s = window_surface(win);
+    const rect_t primary = rect_make(20, UPDATE_H - 52, 172, 32);
+    const rect_t secondary = rect_make(204, UPDATE_H - 52, 100, 32);
 
-    const rect_t restart = rect_make(20, 86, 164, 32);
-    const rect_t later = rect_make(196, 86, 92, 32);
     update_info_t info;
-    char line[64];
     update_get_info(&info);
-
-    gfx_fill(s, 0, 0, UPDATE_W, UPDATE_H, C_BACKGROUND);
-    ksnprintf(line, sizeof(line), "HelloOS wurde auf Build %u aktualisiert.",
-              info.installed_build);
-    gfx_text(s, 20, 22, line, C_TEXT, true);
-    gfx_text(s, 20, 46, "Die neue Version wird beim nächsten Start aktiv.", C_MUTED,
-             false);
-    ui_button(s, restart, "Jetzt neu starten", true);
-    ui_button(s, later, "Später", false);
-    window_invalidate(win, 0, 0, UPDATE_W, UPDATE_H);
+    stage = info.available_build ? ASK : info.installed_build ? DONE : NOTHING;
 
     for (;;) {
-        event_t ev;
-        window_get_event(win, &ev, 0);
-        if (ev.type == EV_CLOSE || (ev.type == EV_KEY && ev.key == 27))
-            break;
-        if (ev.type != EV_MOUSE_UP)
+        static char notes[2048];
+        char line[96];
+        update_get_info(&info);
+
+        /* --- Zeichnen --- */
+        gfx_fill(s, 0, 0, UPDATE_W, UPDATE_H, C_BACKGROUND);
+        bool two_buttons = true;
+        const char *primary_label = "", *secondary_label = "Später";
+        if (stage == ASK) {
+            ksnprintf(line, sizeof(line), "Für HelloOS gibt es ein Update: Build %u",
+                      info.available_build);
+            gfx_text(s, 20, 20, line, C_TEXT, true);
+            ksnprintf(line, sizeof(line), "Installiert ist Build %u. Das ist neu:",
+                      info.build);
+            gfx_text(s, 20, 42, line, C_MUTED, false);
+            update_available_notes(notes, sizeof(notes));
+            draw_wrapped(s, 20, 72,
+                         notes[0] ? notes : "(keine Beschreibung mitgeliefert)",
+                         10, C_TEXT);
+            primary_label = "Jetzt installieren";
+        } else if (stage == DONE) {
+            ksnprintf(line, sizeof(line), "Build %u ist installiert.",
+                      info.installed_build);
+            gfx_text(s, 20, 20, line, C_TEXT, true);
+            gfx_text(s, 20, 46, "Die neue Version wird beim nächsten Start aktiv.",
+                     C_MUTED, false);
+            primary_label = "Jetzt neu starten";
+        } else {
+            gfx_text(s, 20, 20,
+                     stage == FAILED ? "Die Installation hat nicht geklappt."
+                                     : "Im Moment liegt kein Update bereit.",
+                     C_TEXT, true);
+            draw_wrapped(s, 20, 46, info.state, 3, C_MUTED);
+            primary_label = "Schließen";
+            two_buttons = false;
+        }
+        ui_button(s, primary, primary_label, true);
+        if (two_buttons)
+            ui_button(s, secondary, secondary_label, false);
+        window_invalidate(win, 0, 0, UPDATE_W, UPDATE_H);
+
+        /* --- Auf die Entscheidung warten --- */
+        bool yes = false, no = false;
+        while (!yes && !no) {
+            event_t ev;
+            window_get_event(win, &ev, 0);
+            /*
+             * Bewusst keine Bestätigung per Tastatur: Das Fenster kann
+             * aufgehen, während jemand gerade tippt.
+             */
+            if (ev.type == EV_CLOSE || (ev.type == EV_KEY && ev.key == 27))
+                no = true;
+            else if (ev.type == EV_MOUSE_UP && rect_contains(primary, ev.x, ev.y))
+                yes = true;
+            else if (ev.type == EV_MOUSE_UP && two_buttons &&
+                     rect_contains(secondary, ev.x, ev.y))
+                no = true;
+        }
+
+        if (stage == ASK && yes) {
+            gfx_fill(s, 0, 0, UPDATE_W, UPDATE_H, C_BACKGROUND);
+            gfx_text(s, 20, 20, "Das Update wird installiert ...", C_TEXT, true);
+            gfx_text(s, 20, 46, "Bitte den USB-Stick nicht abziehen.", C_MUTED,
+                     false);
+            window_invalidate(win, 0, 0, UPDATE_W, UPDATE_H);
+            stage = update_install(false) ? DONE : FAILED;
             continue;
-        if (rect_contains(restart, ev.x, ev.y))
+        }
+        if (stage == ASK)
+            update_decline();           /* "Später": Knopf in der Taskleiste bleibt */
+        if (stage == DONE && yes)
             power_reboot();
-        if (rect_contains(later, ev.x, ev.y))
-            break;
+        break;
     }
     window_destroy(win);
+    open = false;
 }

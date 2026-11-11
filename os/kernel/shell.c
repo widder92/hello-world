@@ -661,13 +661,41 @@ static void cmd_update(shell_t *sh, char *args)
     update_get_info(&info);
     kprintf("Laufende Version: %s %s, Build %u\n", OS_NAME, OS_VERSION, info.build);
     kprintf("Update-Quelle:    %s\n", info.url);
-    if (info.enabled)
-        update_run(true);
-    else
+    if (!info.enabled) {
         kprintf("Stand:            %s\n", info.state);
+        return;
+    }
+
+    if (update_check(true)) {
+        static char notes[2048];
+        update_get_info(&info);
+        update_available_notes(notes, sizeof(notes));
+        if (notes[0]) {
+            console_set_color(COLOR_CYAN);
+            kprintf("\nDas ist neu in Build %u:\n", info.available_build);
+            console_set_color(COLOR_DEFAULT);
+            kprintf("%s\n\n", notes);
+        }
+        /* Installiert wird nur nach ausdrücklicher Zustimmung. */
+        kprintf("Build %u jetzt installieren? (j/n) ", info.available_build);
+        int answer = console_getchar();
+        kprintf("%s\n", answer == 'j' || answer == 'J' ? "ja" : "nein");
+        if (answer == 'j' || answer == 'J')
+            update_install(true);
+        else
+            kprintf("Nicht installiert. \"update\" fragt jederzeit wieder.\n");
+    }
     update_get_info(&info);
     if (info.installed_build)
         kprintf("Mit \"reboot\" startet HelloOS in der neuen Version.\n");
+}
+
+static void cmd_news(shell_t *sh, char *args)
+{
+    (void)sh;
+    (void)args;
+    const char *notes = update_release_notes();
+    kprintf("%s\n", notes[0] ? notes : "Für diese Version gibt es keine Beschreibung.");
 }
 
 static void cmd_disk(shell_t *sh, char *args)
@@ -859,7 +887,8 @@ static const struct command commands[] = {
     { "dns",      "dns <name>",          "Namen in eine Adresse auflösen", cmd_dns },
     { "web",      "web <adresse>",       "Webseite als Text anzeigen", cmd_web },
     { "get",      "get <adresse> <datei>", "Datei aus dem Netz laden", cmd_get },
-    { "update",   "update",              "Nach Updates suchen und installieren", cmd_update },
+    { "update",   "update",              "Nach Updates suchen (fragt vor der Installation)", cmd_update },
+    { "news",     "news",                "Was ist neu in dieser Version", cmd_news },
     { "disk",     "disk",                "Datenträger anzeigen", cmd_disk },
     { "ls",       "ls",                  "Dateien auflisten", cmd_ls },
     { "cat",      "cat <datei>",         "Datei anzeigen", cmd_cat },

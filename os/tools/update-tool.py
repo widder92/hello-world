@@ -10,8 +10,9 @@ ausstellen.
   update-tool.py keygen
       Erzeugt update-key.private und update-key.pub im aktuellen Verzeichnis.
 
-  update-tool.py pack BOOTX64.EFI BUILD-NUMMER ZIELVERZEICHNIS
+  update-tool.py pack BOOTX64.EFI BUILD-NUMMER ZIELVERZEICHNIS [NEUES.txt]
       Schreibt helloos.upd (signiertes Paket) und helloos.version dorthin.
+      Der Text aus NEUES.txt wird dem Benutzer vor der Installation gezeigt.
       Der Schlüssel kommt aus update-key.private oder aus der
       Umgebungsvariable HELLOOS_UPDATE_KEY (64 Hex-Zeichen).
 
@@ -131,13 +132,15 @@ def verify(public, message, signature):
 #
 #   0   64  Signatur über alles, was folgt
 #   64   8  Kennung "HELLOUPD"
-#   72   4  Formatversion (1)
+#   72   4  Formatversion (2)
 #   76   4  Build-Nummer
-#   80   4  Länge der Nutzlast
-#   84  12  reserviert (0)
-#   96   …  Nutzlast: die neue BOOTX64.EFI
+#   80   4  Länge der Startdatei
+#   84   4  Länge des Textes "Was ist neu"
+#   88   8  reserviert (0)
+#   96   …  der Text (UTF-8), danach die neue BOOTX64.EFI
 
 MAGIC = b"HELLOUPD"
+NOTES_MAX = 4096
 PRIVATE_FILE = "update-key.private"
 PUBLIC_FILE = "update-key.pub"
 
@@ -174,7 +177,44 @@ def cmd_keygen():
     print("Öffentlicher Schlüssel: %s  (ins Repository einchecken)" % PUBLIC_FILE)
 
 
-def cmd_pack(efi_path, build, out_dir):
+def read_notes(path):
+    if not path or not os.path.exists(path):
+        return b""
+    with open(path, "rb") as f:
+        notes = f.read().strip()
+    if len(notes) > NOTES_MAX:
+        sys.exit("%s ist zu lang (höchstens %d Bytes)." % (path, NOTES_MAX))
+    return notes
+
+
+def cmd_config(out_path, build, url, key, notes_path):
+    """Schreibt die Einstellungen des Updaters als C-Datei (nur bei Änderung)."""
+    def c_string(data):
+        out = []
+        for b in data:
+            if b == 0x0A:
+                out.append("\\n")
+            elif b in (0x22, 0x5C):
+                out.append("\\" + chr(b))
+            elif 0x20 <= b < 0x7F:
+                out.append(chr(b))
+            else:
+                out.append("\\%03o" % b)       # Umlaute usw. als Oktalfolge
+        return '"' + "".join(out) + '"'
+
+    text = ("#define OS_BUILD %d\n#define UPDATE_URL %s\n"
+            "#define UPDATE_KEY_HEX %s\n#define RELEASE_NOTES %s\n"
+            % (int(build), c_string(url.encode()), c_string(key.strip().encode()),
+               c_string(read_notes(notes_path))))
+    if os.path.exists(out_path):
+        with open(out_path) as f:
+            if f.read() == text:
+                return
+    with open(out_path, "w") as f:
+        f.write(text)
+
+
+def cmd_pack(efi_path, build, out_dir, notes_path=None):
     seed = load_seed()
     if os.path.exists(PUBLIC_FILE):
         with open(PUBLIC_FILE) as f:
@@ -183,7 +223,9 @@ def cmd_pack(efi_path, build, out_dir):
                          "dieses Paket ablehnen." % PUBLIC_FILE)
     with open(efi_path, "rb") as f:
         payload = f.read()
-    body = MAGIC + struct.pack("<III", 1, int(build), len(payload)) + bytes(12) + payload
+    notes = read_notes(notes_path)
+    body = (MAGIC + struct.pack("<IIII", 2, int(build), len(payload), len(notes)) +
+            bytes(8) + notes + payload)
     package = sign(seed, body) + body
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "helloos.upd"), "wb") as f:
@@ -204,16 +246,20 @@ def cmd_verify(package_path):
           verify(public, body, package[:64]))
     if not ok:
         sys.exit("Signatur UNGÜLTIG")
-    _, build, size = struct.unpack("<III", body[8:20])
-    print("Signatur gültig: Build %d, Nutzlast %d Bytes" % (build, size))
+    _, build, size, notes_size = struct.unpack("<IIII", body[8:24])
+    print("Signatur gültig: Build %d, Startdatei %d Bytes" % (build, size))
+    if notes_size:
+        print(body[32:32 + notes_size].decode("utf-8", "replace"))
 
 
 def main():
     args = sys.argv[1:]
     if args[:1] == ["keygen"] and len(args) == 1:
         cmd_keygen()
-    elif args[:1] == ["pack"] and len(args) == 4:
-        cmd_pack(args[1], args[2], args[3])
+    elif args[:1] == ["pack"] and len(args) in (4, 5):
+        cmd_pack(*args[1:])
+    elif args[:1] == ["config"] and len(args) == 6:
+        cmd_config(*args[1:])
     elif args[:1] == ["verify"] and len(args) == 2:
         cmd_verify(args[1])
     else:

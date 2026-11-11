@@ -1,0 +1,4 @@
+HelloOS 0.4
+- Updates fragen nach: Ein Fenster zeigt, was neu ist, und installiert erst nach deiner Zustimmung.
+- Solange ein Update wartet, erscheint in der Taskleiste der Knopf "Update verfügbar".
+- Neuer Befehl "news" zeigt die Neuerungen der laufenden Version.

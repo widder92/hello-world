@@ -41,6 +41,9 @@ void gui_start(void);
 
 void gui_screen_size(int *width, int *height);
 
+/* Taskleiste neu zeichnen (z. B. wenn ein Update bereitliegt). */
+void gui_refresh_taskbar(void);
+
 /* Fehlermeldung direkt auf den Bildschirm - funktioniert auch ohne Tasks. */
 void gui_panic_screen(const char *text);
 

@@ -10,6 +10,7 @@
 #include "string.h"
 #include "task.h"
 #include "time.h"
+#include "update.h"
 
 #define MAX_WINDOWS   16
 #define MAX_DIRTY     16
@@ -387,6 +388,23 @@ static rect_t clock_rect(void)
     return rect_make(p.x - 8 - w, p.y, w, BUTTON_H);
 }
 
+/* Solange ein geprüftes Update auf Zustimmung wartet, gibt es einen Knopf. */
+#define UPDATE_LABEL "Update verfügbar"
+
+static bool update_waiting(void)
+{
+    update_info_t info;
+    update_get_info(&info);
+    return info.available_build != 0;
+}
+
+static rect_t update_rect(void)
+{
+    rect_t clock = clock_rect();
+    int w = gfx_text_width(UPDATE_LABEL) + 20;
+    return rect_make(clock.x - 8 - w, clock.y, w, BUTTON_H);
+}
+
 /* Fenster in der Reihenfolge, in der sie geöffnet wurden. */
 static int windows_by_age(window_t **out)
 {
@@ -430,15 +448,19 @@ static void draw_taskbar(void)
     int n = windows_by_age(list);
     window_t *focused = window_count ? zorder[window_count - 1] : NULL;
     rect_t clock = clock_rect();
+    bool update = update_waiting();
+    int limit = update ? update_rect().x : clock.x;
     for (int i = 0; i < n; i++) {
         rect_t r = window_button_rect(i);
-        if (r.x + r.w > clock.x - 8)
+        if (r.x + r.w > limit - 8)
             break;                      /* kein Platz mehr */
         char label[16];
         strlcpy(label, list[i]->title, sizeof(label));
         ui_button(&back, r, label, list[i] == focused);
     }
 
+    if (update)
+        ui_button(&back, update_rect(), UPDATE_LABEL, true);
     gfx_text(&back, clock.x + 8, clock.y + (BUTTON_H - FONT_H) / 2, clock_text,
              C_TEXT_LIGHT, false);
     ui_button(&back, power_rect(), "Aus", false);
@@ -619,6 +641,10 @@ static void taskbar_click(void)
     }
     if (rect_contains(power_rect(), mouse_x, mouse_y)) {
         gui_launch("aus");
+        return;
+    }
+    if (update_waiting() && rect_contains(update_rect(), mouse_x, mouse_y)) {
+        gui_launch("update");
         return;
     }
     window_t *list[MAX_WINDOWS];
@@ -842,7 +868,7 @@ bool gui_launch(const char *app)
         { "malen", "malen", paint_app },
         { "info", "info", about_app },
         { "aus", "ausschalten", power_app },
-        { "update", "update-hinweis", update_app },
+        { "update", "update", update_app },
     };
 
     if (!running)
@@ -900,6 +926,12 @@ void gui_init(void)
     gfx_text_scaled(&screen, 24, 20, OS_NAME " " OS_VERSION,
                     native(RGB(110, 190, 230)), 2);
     klog_set_screen(boot_screen_write);
+}
+
+void gui_refresh_taskbar(void)
+{
+    if (running)
+        add_dirty(taskbar_rect());
 }
 
 bool gui_available(void)

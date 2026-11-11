@@ -23,8 +23,9 @@ signierten Updates. Kein Linux, kein GRUB, keine fremde Bibliothek: rund
 - **Netzwerk**: Treiber für Intel-Netzwerkkarten, eigener Stack mit ARP, IPv4,
   ICMP, UDP, DHCP, DNS und TCP, dazu HTTP und HTTPS (TLS 1.3)
 - **Updates**: HelloOS sucht regelmäßig nach neuen Versionen, prüft deren
-  Signatur und ersetzt sich selbst auf dem USB-Stick, von dem es gestartet wurde
-- **RAM-Dateisystem** und 29 Shell-Befehle
+  Signatur, zeigt, was neu ist, und installiert sie nach deiner Zustimmung auf
+  dem USB-Stick, von dem es gestartet wurde
+- **RAM-Dateisystem** und 30 Shell-Befehle
 - **Serielle Konsole** mit eigener Shell – praktisch für Tests ohne Bildschirm
 
 ![Netzwerk: eine Webseite über HTTPS im Terminal](docs/screenshot-netz.png)
@@ -120,7 +121,8 @@ Was dabei zu beachten ist:
 | `dns <name>` | löst einen Namen in eine IPv4-Adresse auf |
 | `web <adresse>` | holt eine Webseite und zeigt sie als Text |
 | `get <adresse> <datei>` | lädt eine Datei aus dem Netz ins RAM-Dateisystem |
-| `update` | sucht jetzt nach einem Update und installiert es |
+| `update` | sucht jetzt nach einem Update und fragt, ob es installiert werden soll |
+| `news` | zeigt, was in der laufenden Version neu ist |
 | `disk` | zeigt angeschlossene USB-Datenträger |
 | `ls`, `cat <datei>`, `rm <datei>` | Dateien auflisten, anzeigen, löschen |
 | `sha256 <datei>` | Prüfsumme einer Datei |
@@ -163,24 +165,44 @@ Wichtig zu wissen:
 
 ## Updates
 
-HelloOS kann sich selbst aktuell halten. Etwa fünf Sekunden nach dem
-Netzwerkstart und danach alle sechs Stunden geschieht Folgendes:
+HelloOS hält sich auf Wunsch selbst aktuell – installiert aber nichts, ohne
+zu fragen.
 
-1. Von der Update-Quelle wird `helloos.version` geladen. Steht dort eine
-   größere Build-Nummer als die eigene, folgt `helloos.upd`.
-2. Das Paket wird nur akzeptiert, wenn seine **Ed25519-Signatur** zum
-   öffentlichen Schlüssel passt, der in den Kernel eingebaut ist, und wenn die
-   mitsignierte Build-Nummer wirklich neuer ist.
-3. Auf dem USB-Stick, von dem HelloOS gestartet wurde, wird
+![Das Update-Fenster zeigt die Neuerungen und wartet auf Zustimmung](docs/screenshot-update.png)
+
+1. **Prüfen.** Etwa fünf Sekunden nach dem Netzwerkstart und danach alle sechs
+   Stunden wird von der Update-Quelle `helloos.version` geladen. Steht dort
+   eine größere Build-Nummer als die eigene, folgt das Paket `helloos.upd`.
+   Es wird nur akzeptiert, wenn seine **Ed25519-Signatur** zum öffentlichen
+   Schlüssel passt, der in den Kernel eingebaut ist, und wenn die mitsignierte
+   Build-Nummer wirklich neuer ist.
+2. **Fragen.** Ein Fenster zeigt, was die neue Version bringt, und bietet
+   „Jetzt installieren" und „Später" an. Wer „Später" wählt, wird für diese
+   Version nicht noch einmal von selbst gefragt; in der Taskleiste bleibt der
+   Knopf „Update verfügbar" stehen, bis das Update installiert ist. Im
+   Terminal fragt der Befehl `update` mit „(j/n)".
+3. **Installieren.** Auf dem USB-Stick, von dem HelloOS gestartet wurde, wird
    `EFI/BOOT/BOOTX64.EFI` ausgetauscht – zuerst wird die neue Datei komplett
    geschrieben, dann mit einem einzigen Schreibzugriff umgeschaltet. Ein
    Stromausfall mittendrin hinterlässt also die alte oder die neue Version,
-   aber keine halbe.
-4. Ein Fenster meldet das Update; aktiv wird es beim nächsten Start.
+   aber keine halbe. Aktiv wird das Update beim nächsten Start; das Fenster
+   bietet den Neustart gleich an.
 
 Weil die Signatur entscheidet, ist es für die Sicherheit der Updates egal,
 dass der TLS-Client keine Zertifikate prüft: Ohne den geheimen Schlüssel kann
 niemand ein Paket herstellen, das HelloOS annimmt.
+
+### Woher neue Funktionen kommen
+
+Ein Update enthält genau das, was im Repository entwickelt und veröffentlicht
+wurde – von allein entstehen keine neuen Funktionen. Der Weg einer Neuerung:
+
+1. Die Änderung wird unter `os/` entwickelt.
+2. In `os/NEUES.txt` steht in ein paar Zeilen, was sich für Benutzer ändert.
+   Dieser Text erscheint im Update-Fenster und unter `news`.
+3. Sobald die Änderung auf dem Zweig `master` landet, baut der Workflow ein
+   signiertes Paket und veröffentlicht es. Laufende Installationen finden es
+   bei ihrer nächsten Prüfung und fragen nach.
 
 ### Einrichten
 
@@ -207,8 +229,9 @@ auf den Branch `helloos-updates`. Dort sucht HelloOS standardmäßig
 gelaufen.
 
 Es geht auch von Hand: `make update-package` erzeugt
-`build/update/helloos.upd` und `helloos.version`; beide Dateien müssen dann
-unter der Adresse erreichbar sein, die beim Bauen als `UPDATE_URL` galt.
+`build/update/helloos.upd` (samt dem Text aus `NEUES.txt`) und
+`helloos.version`; beide Dateien müssen dann unter der Adresse erreichbar
+sein, die beim Bauen als `UPDATE_URL` galt.
 
 Die Build-Nummer ist die Anzahl der Commits (`git rev-list --count HEAD`).
 Updates funktionieren nur, wenn HelloOS von einem USB-Stick läuft, der direkt

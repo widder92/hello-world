@@ -34,6 +34,8 @@ OS_BUILD   := $(shell git rev-list --count HEAD 2>/dev/null || echo 0)
 UPDATE_URL := https://raw.githubusercontent.com/widder92/hello-world/helloos-updates
 # Öffentlicher Schlüssel; ohne ihn sind Updates abgeschaltet.
 UPDATE_KEY := $(shell cat update-key.pub 2>/dev/null)
+# "Was ist neu": wird vor der Installation eines Updates angezeigt.
+NOTES      := NEUES.txt
 
 # UEFI-Programme sind PE-Dateien wie unter Windows - daher dieses Ziel.
 CFLAGS  := --target=x86_64-unknown-windows -std=gnu11 -O2 -Wall -Wextra \
@@ -63,9 +65,8 @@ $(BUILD):
 # Einstellungen für den Updater; die Datei ändert sich nur, wenn sich ein
 # Wert ändert - sonst würde jedes "make" neu übersetzen.
 $(BUILD)/update-config.h: FORCE | $(BUILD)
-	@printf '#define OS_BUILD %s\n#define UPDATE_URL "%s"\n#define UPDATE_KEY_HEX "%s"\n' \
-	    '$(OS_BUILD)' '$(UPDATE_URL)' '$(UPDATE_KEY)' > $@.tmp
-	@cmp -s $@.tmp $@ && rm -f $@.tmp || mv $@.tmp $@
+	@$(PYTHON) tools/update-tool.py config $@ '$(OS_BUILD)' '$(UPDATE_URL)' \
+	    '$(UPDATE_KEY)' $(NOTES)
 
 $(BUILD)/update.obj: $(BUILD)/update-config.h
 
@@ -92,7 +93,7 @@ update-key:
 	$(PYTHON) tools/update-tool.py keygen
 
 update-package: $(EFI)
-	$(PYTHON) tools/update-tool.py pack $(EFI) $(OS_BUILD) $(BUILD)/update
+	$(PYTHON) tools/update-tool.py pack $(EFI) $(OS_BUILD) $(BUILD)/update $(NOTES)
 
 test: $(IMAGE)
 	QEMU="$(QEMU)" OVMF="$(OVMF)" ./tools/smoke-test.sh $(IMAGE)
