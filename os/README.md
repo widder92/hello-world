@@ -1,9 +1,9 @@
 # HelloOS
 
 Ein kleines, von Grund auf selbst geschriebenes Betriebssystem für PCs mit
-64-Bit-Prozessor (x86-64) und UEFI – mit grafischer Oberfläche, Netzwerk und
-signierten Updates. Kein Linux, kein GRUB, keine fremde Bibliothek: rund
-12 000 Zeilen C und etwas Assembler.
+64-Bit-Prozessor (x86-64) und UEFI – mit grafischer Oberfläche, Netzwerk,
+signierten Updates und eingebautem Claude. Kein Linux, kein GRUB, keine fremde
+Bibliothek: rund 15 000 Zeilen C und etwas Assembler.
 
 ![HelloOS mit Terminal, Systemmonitor und Malprogramm](docs/screenshot.png)
 
@@ -21,11 +21,14 @@ signierten Updates. Kein Linux, kein GRUB, keine fremde Bibliothek: rund
   im Betrieb) sowie PS/2, wie es viele Notebook-Tastaturen intern noch nutzen;
   deutsche und US-Tastaturbelegung
 - **Netzwerk**: Treiber für Intel-Netzwerkkarten, eigener Stack mit ARP, IPv4,
-  ICMP, UDP, DHCP, DNS und TCP, dazu HTTP und HTTPS (TLS 1.3)
+  ICMP, UDP, DHCP, DNS und TCP, dazu HTTP und HTTPS (TLS 1.3 mit
+  Zertifikatsprüfung)
+- **Claude eingebaut**: ein Chatfenster und der Befehl `claude` – Claude
+  beantwortet Fragen und kann in HelloOS nachsehen und Befehle ausführen
 - **Updates**: HelloOS sucht regelmäßig nach neuen Versionen, prüft deren
   Signatur, zeigt, was neu ist, und installiert sie nach deiner Zustimmung auf
   dem USB-Stick, von dem es gestartet wurde
-- **RAM-Dateisystem** und 30 Shell-Befehle
+- **RAM-Dateisystem** und 31 Shell-Befehle
 - **Serielle Konsole** mit eigener Shell – praktisch für Tests ohne Bildschirm
 
 ![Netzwerk: eine Webseite über HTTPS im Terminal](docs/screenshot-netz.png)
@@ -97,7 +100,7 @@ Was dabei zu beachten ist:
 
 | Aktion | Maus | Tastatur |
 | --- | --- | --- |
-| Programm starten | Knöpfe links in der Taskleiste | F1 Terminal, F2 Monitor, F3 Malen, F4 Info |
+| Programm starten | Knöpfe links in der Taskleiste | F1 Terminal, F2 Monitor, F3 Malen, F4 Info, F5 Claude |
 | Fenster wechseln | Fenster oder dessen Knopf in der Taskleiste anklicken | Alt+Tab |
 | Fenster verschieben | an der Titelleiste ziehen | – |
 | Fenster schließen | ✕ in der Titelleiste | Alt+F4 |
@@ -115,7 +118,7 @@ Was dabei zu beachten ist:
 | `spawn counter [n]` | Hintergrund-Task, der im Sekundentakt bis *n* zählt |
 | `spawn burn` | Hintergrund-Task, der pausenlos rechnet (zeigt die Präemption) |
 | `kill <pid>` | Task beenden |
-| `start <programm>` | `terminal`, `monitor`, `malen`, `info` oder `aus` öffnen |
+| `start <programm>` | `terminal`, `monitor`, `malen`, `info`, `claude` oder `aus` öffnen |
 | `net` | Netzwerkkarte, Adressen, Paketzähler; `net dns <adresse>` setzt den DNS-Server |
 | `ping <ziel>` | prüft, ob ein Rechner antwortet |
 | `dns <name>` | löst einen Namen in eine IPv4-Adresse auf |
@@ -123,6 +126,7 @@ Was dabei zu beachten ist:
 | `get <adresse> <datei>` | lädt eine Datei aus dem Netz ins RAM-Dateisystem |
 | `update` | sucht jetzt nach einem Update und fragt, ob es installiert werden soll |
 | `news` | zeigt, was in der laufenden Version neu ist |
+| `claude <frage>` | mit Claude sprechen (siehe [Claude](#claude)) |
 | `disk` | zeigt angeschlossene USB-Datenträger |
 | `ls`, `cat <datei>`, `rm <datei>` | Dateien auflisten, anzeigen, löschen |
 | `sha256 <datei>` | Prüfsumme einer Datei |
@@ -151,17 +155,93 @@ get https://raw.githubusercontent.com/widder92/hello-world/master/README.md read
 
 Wichtig zu wissen:
 
-- **HTTPS verschlüsselt, prüft aber nicht, mit wem.** Der TLS-Client
-  unterstützt TLS 1.3 (X25519, ChaCha20-Poly1305) und kontrolliert die
-  Zertifikate der Server nicht. Mitlesen im Netz wird verhindert; wer den
-  Datenverkehr aber aktiv umleiten kann, könnte sich als Server ausgeben. Für
-  Passwörter oder andere Geheimnisse ist das nicht geeignet. (Updates sind
-  davon nicht betroffen, siehe unten.)
+- **HTTPS prüft, mit wem es spricht.** Der TLS-Client kontrolliert die
+  Zertifikatskette des Servers gegen 117 eingebaute Wurzelzertifikate (die
+  Liste von Mozilla), dazu Servername und Gültigkeitszeitraum. Passt etwas
+  nicht, kommt keine Verbindung zustande. Dafür muss die **Uhr des Rechners
+  stimmen** – steht sie auf einem Datum weit in der Vergangenheit, gelten alle
+  Zertifikate als „noch nicht gültig".
+- Unterstützt wird nur TLS 1.3 mit X25519 und ChaCha20-Poly1305. Die meisten
+  Server bieten das an, einzelne nicht – dann scheitert der Verbindungsaufbau.
+- Wer in einem Netz arbeitet, das HTTPS mit einer eigenen Zertifizierungsstelle
+  aufbricht (manche Firmennetze), kann deren Zertifikat beim Bauen mitgeben:
+  `make EXTRA_CA=/pfad/zur/ca.pem`.
 - Es gibt keinen Browser – `web` zeigt den Text einer Seite, mehr nicht.
 - Nur IPv4, keine zerteilten Pakete, keine eingehenden Verbindungen.
 - In QEMU beantwortet nur der eingebaute Router (`10.0.2.2`) Pings; Pings ins
   Internet leitet QEMUs Netz nicht weiter. Namensauflösung und Webzugriffe
   funktionieren trotzdem.
+
+## Claude
+
+![Das Claude-Fenster: Claude fragt nach, bevor ein Befehl etwas verändert](docs/screenshot-claude.png)
+
+Claude ist in HelloOS eingebaut – als Chatfenster (F5 oder der Knopf „Claude"
+in der Taskleiste) und als Befehl im Terminal (`claude wie viel speicher ist
+frei?`). Claude beantwortet nicht nur Fragen, sondern kann über die Shell von
+HelloOS selbst nachsehen und Dinge erledigen: „Welche Tasks laufen gerade?",
+„Lade mir die Seite example.com", „Schreib meine Einkaufsliste in eine Datei".
+
+### Was du dafür brauchst
+
+HelloOS spricht direkt mit der Claude-API von Anthropic. Dafür ist ein
+**API-Schlüssel** nötig, den du unter <https://console.anthropic.com/> anlegst.
+Die Nutzung wird dort nach Verbrauch abgerechnet – ein Abo von claude.ai
+(Pro, Max) deckt das nicht ab und lässt sich hier nicht verwenden.
+
+Den Schlüssel bekommt HelloOS auf einem von drei Wegen:
+
+- als Datei `claude.key` (oder `claude.txt`) im Hauptverzeichnis des
+  USB-Sticks, von dem HelloOS startet – einfach den Schlüssel als einzige
+  Zeile hineinschreiben; er wird beim ersten Gebrauch gelesen
+- im Chatfenster mit `/key sk-ant-...`
+- im Terminal mit `claude key sk-ant-...`
+
+Eingetippte Schlüssel gelten bis zum Ausschalten. HelloOS speichert den
+Schlüssel nirgends und sendet ihn nur an die API. Wer den Stick hat, hat aber
+auch die Datei – behandle ihn entsprechend.
+
+### Was Claude darf
+
+Claude arbeitet mit denselben Befehlen wie du im Terminal, in drei Stufen:
+
+| Stufe | Befehle |
+| --- | --- |
+| ohne Rückfrage | nur Anzeigen: `info`, `mem`, `uptime`, `date`, `ps`, `ls`, `cat`, `sha256`, `disk`, `news`, `history`, `net` und `keymap` ohne Angaben, außerdem `echo` und `start` |
+| erst nach deiner Zustimmung | alles, was etwas verändert oder ins Netz geht: `write`, `append`, `rm`, `kill`, `spawn`, `web`, `get`, `ping`, `dns`, `update`, `reboot`, `shutdown`, … |
+| nie | `panic` und `claude` selbst |
+
+Vor einer Rückfrage steht der vollständige Befehl im Verlauf; im Fenster
+bestätigst du mit „Erlauben" oder J, im Terminal mit j. Dass auch reine
+Netzzugriffe nachfragen, ist Absicht: Inhalte, die Claude gelesen hat – etwa
+eine Webseite mit untergeschobenen Anweisungen –, sollen nichts unbemerkt
+nach draußen schicken können.
+
+### Gut zu wissen
+
+- **Was du schreibst und was Befehle ausgeben, geht an Anthropic.** Dazu gehört
+  auch der Inhalt von Dateien, die Claude mit `cat` liest.
+- Antworten erscheinen am Stück, nicht Wort für Wort; bei längeren Aufgaben
+  kann das eine Weile dauern. Die Statuszeile zeigt, dass Claude arbeitet.
+- Das Fenster zeigt reinen Text. Zeichen außerhalb des lateinischen Alphabets
+  (auch Emojis) erscheinen als „?".
+- Ein Gespräch lebt im Arbeitsspeicher, bis das Fenster geschlossen wird;
+  `/neu` (im Terminal `claude neu`) beginnt ein neues. Die Terminals teilen
+  sich ein Gespräch, getrennt von dem im Chatfenster.
+- Voreingestellt ist das Modell `claude-opus-5-5` mit Gründlichkeit `low`
+  (schnelle, kurze Antworten). Ändern mit `claude modell <name>` und
+  `claude effort <low|medium|high|xhigh|max>`.
+- Lehnt das Modell eine Anfrage ab, darf die API sie von einem anderen
+  Claude-Modell beantworten lassen (Anthropics serverseitiger Rückfall).
+- Die API-Adresse lässt sich beim Bauen ändern (`make CLAUDE_API_URL=...`),
+  etwa für ein eigenes Gateway.
+
+**Stand der Erprobung:** Die Anbindung ist gegen einen nachgebauten API-Server
+getestet (Antworten, Befehlsaufrufe mit und ohne Rückfrage, Ablehnungen,
+Fehler und Wiederholungen) sowie gegen die echte Adresse `api.anthropic.com`
+mit einem ungültigen Schlüssel, was erwartungsgemäß die Fehlermeldung der API
+liefert. Ein vollständiges Gespräch mit einem echten Schlüssel wurde noch
+nicht geführt. Die Antworten im Bild oben stammen vom Testserver.
 
 ## Updates
 
@@ -188,9 +268,9 @@ zu fragen.
    aber keine halbe. Aktiv wird das Update beim nächsten Start; das Fenster
    bietet den Neustart gleich an.
 
-Weil die Signatur entscheidet, ist es für die Sicherheit der Updates egal,
-dass der TLS-Client keine Zertifikate prüft: Ohne den geheimen Schlüssel kann
-niemand ein Paket herstellen, das HelloOS annimmt.
+Über die Echtheit eines Updates entscheidet allein diese Signatur, nicht der
+Server, von dem es kommt: Ohne den geheimen Schlüssel kann niemand ein Paket
+herstellen, das HelloOS annimmt.
 
 ### Woher neue Funktionen kommen
 
@@ -298,8 +378,11 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `kernel/block.c`, `kernel/fat.c` | Blockgeräte, FAT32 |
 | `kernel/e1000.c` | Treiber für Intel-Netzwerkkarten |
 | `kernel/net.c`, `kernel/tcp.c` | ARP, IPv4, ICMP, UDP, DHCP, DNS; TCP |
-| `kernel/crypto_*.c` | SHA-2, HMAC/HKDF, ChaCha20-Poly1305, X25519, Ed25519 |
+| `kernel/crypto_*.c` | SHA-2, HMAC/HKDF, ChaCha20-Poly1305, X25519, Ed25519, RSA, ECDSA |
+| `kernel/x509.c`, `kernel/tls_roots.*` | Zertifikate lesen und prüfen, eingebaute Wurzelzertifikate |
 | `kernel/tls.c`, `kernel/http.c` | TLS 1.3, HTTP-Client |
+| `kernel/json.c` | JSON lesen und schreiben |
+| `kernel/claude.c`, `kernel/claude_app.c` | Anbindung an die Claude-API, Chatfenster |
 | `kernel/update.c` | Selbstaktualisierung |
 | `kernel/gfx.c`, `kernel/font_data.c` | Zeichenfunktionen, Schrift |
 | `kernel/gui.c` | Compositor, Fensterverwaltung, Taskleiste |
@@ -309,6 +392,7 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `tools/mkimage.py` | baut das Disk-Image (GPT, FAT32) |
 | `tools/update-tool.py` | Schlüssel erzeugen, Update-Pakete signieren und prüfen |
 | `tools/mkfont.py` | erzeugt `font_data.c` aus einer TrueType-Schrift |
+| `tools/mkroots.py` | erzeugt `tls_roots.bin` aus einer Liste von Wurzelzertifikaten |
 | `tools/smoke-test.sh` | automatischer Boot-Test in QEMU |
 | `tests/crypto_test.py` | Kryptografie gegen `hashlib` und `cryptography` prüfen |
 
@@ -320,7 +404,7 @@ und eigene Dateien überleben keinen Neustart. Die Kryptografie ist geprüft,
 aber nicht gegen Seitenkanäle gehärtet, und der Zufallsgenerator ist einfach
 gehalten. Naheliegende nächste Schritte:
 
-- Zertifikate prüfen, damit HTTPS auch die Gegenseite ausweist
+- Claudes Antworten Wort für Wort anzeigen (Streaming), Gespräche speichern
 - eigene Dateien dauerhaft auf dem USB-Stick speichern (FAT32 ist schon da)
 - weitere Netzwerkkarten (Realtek, Intel I225), USB-Hubs
 - User-Modus (Ring 3) mit Systemaufrufen und getrennten Adressräumen

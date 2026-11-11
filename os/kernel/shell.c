@@ -2,6 +2,7 @@
 #include "apps.h"
 #include "block.h"
 #include "bootinfo.h"
+#include "claude.h"
 #include "console.h"
 #include "cpu.h"
 #include "crypto.h"
@@ -725,6 +726,107 @@ static void cmd_disk(shell_t *sh, char *args)
         kprintf("Kein Datenträger gefunden (unterstützt werden USB-Sticks).\n");
 }
 
+/* --- Claude im Terminal ---------------------------------------------------------------- */
+
+static claude_chat_t *shell_chat;       /* ein gemeinsames Gespräch für alle Terminals */
+
+static void shell_claude_text(void *ctx, const char *text)
+{
+    (void)ctx;
+    console_set_color(COLOR_YELLOW);
+    kprintf("Claude: ");
+    console_set_color(COLOR_DEFAULT);
+    kprintf("%s\n", text);
+}
+
+static void shell_claude_note(void *ctx, const char *text)
+{
+    (void)ctx;
+    console_set_color(COLOR_CYAN);
+    kprintf("[%s]\n", text);
+    console_set_color(COLOR_DEFAULT);
+}
+
+static bool shell_claude_confirm(void *ctx, const char *command)
+{
+    (void)ctx;
+    kprintf("Claude möchte ausführen: %s\nErlauben? (j/n) ", command);
+    int answer = console_getchar();
+    bool yes = answer == 'j' || answer == 'J';
+    kprintf("%s\n", yes ? "ja" : "nein");
+    return yes;
+}
+
+static void cmd_claude(shell_t *sh, char *args)
+{
+    (void)sh;
+    char hint[48];
+    char *rest = args;
+    char *word = next_token(&rest);
+
+    if (strcmp(word, "key") == 0 && *rest) {
+        claude_set_key(rest);
+        kprintf(claude_has_key() ? "Der Schlüssel ist für diese Sitzung hinterlegt.\n"
+                                 : "Das sieht nicht nach einem gültigen Schlüssel aus.\n");
+        return;
+    }
+    if (strcmp(word, "modell") == 0 && *rest) {
+        claude_set_model(next_token(&rest));
+        kprintf("Modell: %s\n", claude_model());
+        return;
+    }
+    if (strcmp(word, "effort") == 0 && *rest) {
+        if (!claude_set_effort(next_token(&rest)))
+            kprintf("Möglich sind: low, medium, high, xhigh, max\n");
+        else
+            kprintf("Gründlichkeit: %s\n", claude_effort());
+        return;
+    }
+    if (strcmp(word, "neu") == 0 && !*rest) {
+        /*
+         * Arbeitet gerade ein anderes Terminal damit (oder wurde es mittendrin
+         * geschlossen), bleibt das alte Gespräch einfach liegen.
+         */
+        if (!claude_chat_busy(shell_chat))
+            claude_chat_free(shell_chat);
+        shell_chat = NULL;
+        kprintf("Neues Gespräch.\n");
+        return;
+    }
+    if (!*word) {
+        claude_key_hint(hint, sizeof(hint));
+        kprintf("Aufruf: claude <frage>      mit Claude sprechen\n"
+                "        claude neu          neues Gespräch beginnen\n"
+                "        claude key <k>      API-Schlüssel hinterlegen\n"
+                "        claude modell <m>   Modell wählen\n"
+                "        claude effort <e>   Gründlichkeit: low, medium, high ...\n\n"
+                "Schlüssel: %s\nModell:    %s\nGründlichkeit: %s\n",
+                hint, claude_model(), claude_effort());
+        return;
+    }
+
+    if (!need_network())
+        return;
+    if (!shell_chat)
+        shell_chat = claude_chat_new();
+    if (!shell_chat) {
+        kprintf("Nicht genug Speicher.\n");
+        return;
+    }
+
+    /* next_token() hat hinter dem ersten Wort getrennt - das rückgängig machen */
+    if (*rest)
+        word[strlen(word)] = ' ';
+    claude_ui_t ui = { shell_claude_text, shell_claude_note, shell_claude_confirm, NULL };
+    char error[200];
+    if (!claude_send(shell_chat, word, &ui, error, sizeof(error))) {
+        kprintf("Fehler: %s\n", error);
+        if (!claude_has_key())
+            kprintf("Schlüssel hinterlegen: \"claude key <schlüssel>\" oder eine Datei\n"
+                    "claude.key im Hauptverzeichnis des USB-Sticks.\n");
+    }
+}
+
 /* --- Dateien ---------------------------------------------------------------------- */
 
 static void cmd_ls(shell_t *sh, char *args)
@@ -887,6 +989,7 @@ static const struct command commands[] = {
     { "dns",      "dns <name>",          "Namen in eine Adresse auflösen", cmd_dns },
     { "web",      "web <adresse>",       "Webseite als Text anzeigen", cmd_web },
     { "get",      "get <adresse> <datei>", "Datei aus dem Netz laden", cmd_get },
+    { "claude",   "claude <frage>",      "Mit dem KI-Assistenten Claude sprechen", cmd_claude },
     { "update",   "update",              "Nach Updates suchen (fragt vor der Installation)", cmd_update },
     { "news",     "news",                "Was ist neu in dieser Version", cmd_news },
     { "disk",     "disk",                "Datenträger anzeigen", cmd_disk },
@@ -923,6 +1026,131 @@ static void execute(shell_t *sh, char *line)
     kprintf("Unbekannter Befehl: %s (\"help\" zeigt alle Befehle)\n", name);
 }
 
+/* --- Schnittstelle für den Assistenten -------------------------------------------- */
+
+bool shell_command_info(int index, const char **usage, const char **help)
+{
+    if (index < 0 || index >= (int)(sizeof(commands) / sizeof(commands[0])) - 1)
+        return false;
+    *usage = commands[index].usage;
+    *help = commands[index].help;
+    return true;
+}
+
+shell_risk_t shell_command_risk(const char *line)
+{
+    static const char *const safe[] = {
+        "help", "hilfe", "?", "info", "mem", "uptime", "date", "ps", "ls", "cat",
+        "sha256", "disk", "news", "echo", "history", "start", NULL,
+    };
+    /*
+     * ping, dns, web und get stehen bewusst nicht in der Liste: Was Claude
+     * gelesen hat, soll nicht ohne Rückfrage an fremde Rechner gehen können.
+     */
+    /* Ohne Angaben zeigen diese beiden nur an; mit Angaben ändern sie etwas. */
+    static const char *const safe_without_arguments[] = { "net", "keymap", NULL };
+    static const char *const forbidden[] = { "panic", "claude", NULL };
+
+    char copy[LINE_MAX];
+    char *cursor = copy;
+    strlcpy(copy, line, sizeof(copy));
+    char *name = next_token(&cursor);
+
+    for (int i = 0; forbidden[i]; i++) {
+        if (strcmp(name, forbidden[i]) == 0)
+            return SHELL_FORBIDDEN;
+    }
+    for (int i = 0; safe[i]; i++) {
+        if (strcmp(name, safe[i]) == 0)
+            return SHELL_SAFE;
+    }
+    for (int i = 0; safe_without_arguments[i]; i++) {
+        if (strcmp(name, safe_without_arguments[i]) == 0)
+            return *cursor ? SHELL_ASK : SHELL_SAFE;
+    }
+    for (const struct command *c = commands; c->name; c++) {
+        if (strcmp(name, c->name) == 0)
+            return SHELL_ASK;
+    }
+    return SHELL_UNKNOWN;
+}
+
+/* Eine Konsole, die alles Geschriebene in einem Puffer sammelt. */
+typedef struct {
+    console_t console;                  /* muss das erste Feld sein */
+    char *text;
+    size_t size, len;
+} capture_t;
+
+static void capture_putc(console_t *self, char c)
+{
+    capture_t *cap = (capture_t *)self;
+    uint64_t flags = irq_save();
+    if (c == '\b') {
+        if (cap->len > 0)
+            cap->len--;
+    } else if (cap->len + 1 < cap->size) {
+        cap->text[cap->len++] = c;
+    }
+    irq_restore(flags);
+}
+
+static int capture_getchar(console_t *self)
+{
+    (void)self;
+    return -1;                          /* niemand da, der etwas eintippt */
+}
+
+static void capture_release(console_t *self)
+{
+    capture_t *cap = (capture_t *)self;
+    kfree(cap->text);
+    kfree(cap);
+}
+
+size_t shell_run_captured(const char *line, char *out, size_t size)
+{
+    /*
+     * Die Konsole liegt im Heap und wird mitgezählt: Startet der Befehl
+     * einen Hintergrund-Task, schreibt der vielleicht noch weiter, wenn wir
+     * hier längst fertig sind.
+     */
+    capture_t *cap = kzalloc(sizeof(*cap));
+    char *text = kmalloc(size);
+    if (!cap || !text || size == 0) {
+        kfree(cap);
+        kfree(text);
+        return 0;
+    }
+    cap->text = text;
+    cap->size = size;
+    cap->console.putc = capture_putc;
+    cap->console.getchar = capture_getchar;
+    cap->console.release = capture_release;
+
+    console_t *previous = task_console();
+    console_ref(previous);
+    task_set_console(&cap->console);
+
+    shell_t *sh = kzalloc(sizeof(*sh));
+    if (sh) {
+        char copy[LINE_MAX];
+        strlcpy(copy, line, sizeof(copy));
+        execute(sh, copy);
+        kfree(sh);
+    }
+
+    uint64_t flags = irq_save();
+    size_t len = cap->len;
+    memcpy(out, cap->text, len);
+    out[len] = '\0';
+    irq_restore(flags);
+
+    task_set_console(previous);         /* gibt die Sammelkonsole frei, wenn unbenutzt */
+    console_unref(previous);
+    return len;
+}
+
 void shell_run(void)
 {
     /* Auf dem Stack, damit nichts verloren geht, wenn der Task beendet wird */
@@ -949,7 +1177,9 @@ void shell_run(void)
         if (len == 0)
             continue;
 
-        history_add(sh, sh->line);
+        /* Der API-Schlüssel gehört nicht in den Befehlsverlauf. */
+        if (memcmp(sh->line, "claude key ", 11) != 0)
+            history_add(sh, sh->line);
         strlcpy(copy, sh->line, LINE_MAX);  /* execute() zerlegt den Puffer */
         execute(sh, copy);
     }

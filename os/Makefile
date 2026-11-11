@@ -38,6 +38,9 @@ UPDATE_KEY := $(shell cat update-key.pub 2>/dev/null)
 NOTES      := NEUES.txt
 
 # --- HTTPS -----------------------------------------------------------------
+# Adresse der Claude-API; nur für Tests gegen einen Nachbau interessant.
+CLAUDE_API_URL := https://api.anthropic.com
+
 # Zusätzliche Zertifizierungsstellen (PEM-Datei), denen HelloOS neben den
 # eingebauten vertrauen soll - etwa für einen eigenen Server oder einen
 # Firmen-Proxy, der HTTPS-Verbindungen aufbricht. Normalerweise leer.
@@ -75,6 +78,7 @@ $(BUILD)/update-config.h: FORCE | $(BUILD)
 	    '$(UPDATE_KEY)' $(NOTES)
 
 $(BUILD)/update.obj: $(BUILD)/update-config.h
+$(BUILD)/claude.obj: CFLAGS += -DCLAUDE_API_URL='"$(CLAUDE_API_URL)"'
 
 $(BUILD)/%.obj: kernel/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@

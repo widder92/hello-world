@@ -7,6 +7,7 @@ void paint_app(void *arg);              /* Malprogramm */
 void about_app(void *arg);              /* Über HelloOS */
 void power_app(void *arg);              /* Herunterfahren / Neu starten */
 void update_app(void *arg);             /* Update: nachfragen, installieren */
+void claude_app(void *arg);             /* Gespräch mit Claude */
 
 /* Rechner ausschalten bzw. neu starten - kehren nicht zurück. */
 void power_shutdown(void) __attribute__((noreturn));

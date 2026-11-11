@@ -61,7 +61,7 @@ expect "Multitasking gestartet" 30
 expect "helloos> " 30
 
 printf 'info\nmem\ndate\n' >&3
-expect "HelloOS 0.4 (x86-64, UEFI"
+expect "HelloOS 0.5 (x86-64, UEFI"
 expect "Speicherkarte der Firmware"
 
 printf 'write test.txt Hallo Welt\nappend test.txt Zeile zwei\ncat test.txt\nls\n' >&3
@@ -90,6 +90,11 @@ expect "Adresse 10.0.2.15 per DHCP erhalten" 30
 printf 'disk\nping 10.0.2.2\n' >&3
 expect "Startdatei EFI/BOOT/BOOTX64.EFI"
 expect "4 von 4 Paketen beantwortet"
+
+# Claude: ohne Schlüssel gibt es eine klare Meldung und keinen Netzzugriff
+printf 'claude\nclaude hallo\n' >&3
+expect "Schlüssel: nicht gesetzt"
+expect "Es ist kein API-Schlüssel hinterlegt"
 
 printf 'shutdown\n' >&3
 expect "System wird heruntergefahren"

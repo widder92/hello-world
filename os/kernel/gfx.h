@@ -2,6 +2,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define FONT_W 8
@@ -68,6 +69,13 @@ int gfx_text(surface_t *s, int x, int y, const char *text, color_t color,
 void gfx_text_scaled(surface_t *s, int x, int y, const char *text,
                      color_t color, int scale);
 int gfx_text_width(const char *text);
+
+/*
+ * Löst die nächste Anzeigezeile aus einem längeren Text: höchstens columns
+ * Zeichen, umbrochen an Leerzeichen, Zeilenenden im Text bleiben erhalten.
+ * Rückt *text weiter; liefert false, wenn der Text zu Ende ist.
+ */
+bool gfx_wrap_line(const char **text, int columns, char *line, size_t size);
 
 /* Liest ein UTF-8-Zeichen und rückt *text weiter; 0 am Ende. */
 uint32_t utf8_next(const char **text);

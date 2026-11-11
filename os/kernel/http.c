@@ -19,6 +19,7 @@ typedef struct {
     tls_t *tls;
     uint8_t buffer[4096];               /* Lesepuffer */
     size_t pos, len;
+    uint32_t timeout_ms;
 } stream_t;
 
 static bool stream_open(stream_t *s, const char *host, uint16_t port,
@@ -54,8 +55,8 @@ static bool stream_write(stream_t *s, const void *data, size_t len)
 /* Füllt den Lesepuffer nach; false bei Verbindungsende oder Fehler. */
 static bool stream_fill(stream_t *s)
 {
-    int n = s->tls ? tls_recv(s->tls, s->buffer, sizeof(s->buffer), TIMEOUT_MS)
-                   : tcp_recv(s->tcp, s->buffer, sizeof(s->buffer), TIMEOUT_MS);
+    int n = s->tls ? tls_recv(s->tls, s->buffer, sizeof(s->buffer), s->timeout_ms)
+                   : tcp_recv(s->tcp, s->buffer, sizeof(s->buffer), s->timeout_ms);
     s->pos = 0;
     s->len = n > 0 ? (size_t)n : 0;
     return n > 0;
@@ -233,9 +234,10 @@ static const char *header_value(const char *line, const char *name)
 /* --- Eine Anfrage ---------------------------------------------------------------------- */
 
 /* Liefert true bei einer vollständigen Antwort; location wird bei Weiterleitung gefüllt. */
-static bool request(const char *url, size_t max_body, http_response_t *out,
-                    char *location)
+static bool request(const char *url, const http_options_t *options,
+                    http_response_t *out, char *location)
 {
+    size_t max_body = options->max_body;
     url_t u;
     if (!parse_url(url, &u)) {
         strlcpy(out->error, "Ungültige Adresse (http:// oder https:// ...)",
@@ -253,20 +255,29 @@ static bool request(const char *url, size_t max_body, http_response_t *out,
     }
     if (!stream_open(s, u.host, u.port, u.secure, out->error, sizeof(out->error)))
         goto done;
+    s->timeout_ms = options->timeout_ms;
 
     /* Anfrage senden */
     const char *path = u.path;
     char port[8] = "";
     if (u.port != (u.secure ? 443 : 80))
         ksnprintf(port, sizeof(port), ":%u", u.port);
+    char length[48] = "";
+    if (options->body)
+        ksnprintf(length, sizeof(length), "Content-Length: %zu\r\n",
+                  options->body_len);
     int n = ksnprintf(line, LINE_MAX,
-                      "GET %s%s HTTP/1.1\r\n"
+                      "%s %s%s HTTP/1.1\r\n"
                       "Host: %s%s\r\n"
                       "User-Agent: " OS_NAME "/" OS_VERSION "\r\n"
                       "Accept: */*\r\n"
+                      "%s%s"
                       "Connection: close\r\n\r\n",
-                      *path == '/' ? "" : "/", path, u.host, port);
-    if (n >= LINE_MAX || !stream_write(s, line, (size_t)n)) {
+                      options->method, *path == '/' ? "" : "/", path, u.host,
+                      port, options->headers ? options->headers : "", length);
+    if (n >= LINE_MAX || !stream_write(s, line, (size_t)n) ||
+        (options->body && options->body_len &&
+         !stream_write(s, options->body, options->body_len))) {
         strlcpy(out->error, "Anfrage konnte nicht gesendet werden",
                 sizeof(out->error));
         goto close;
@@ -364,6 +375,16 @@ done:
 
 bool http_get(const char *url, size_t max_body, http_response_t *out)
 {
+    http_options_t options = {
+        .method = "GET", .max_body = max_body, .timeout_ms = TIMEOUT_MS,
+    };
+    return http_request(url, &options, out);
+}
+
+bool http_request(const char *url, const http_options_t *options,
+                  http_response_t *out)
+{
+    bool follow = strcmp(options->method, "GET") == 0;
     char *current = kmalloc(URL_MAX);
     char *location = kmalloc(URL_MAX);
     bool ok = false;
@@ -380,9 +401,9 @@ bool http_get(const char *url, size_t max_body, http_response_t *out)
     strlcpy(current, url, URL_MAX);
 
     for (int hop = 0; hop <= REDIRECTS_MAX; hop++) {
-        if (!request(current, max_body, out, location))
+        if (!request(current, options, out, location))
             goto done;
-        if (!location[0]) {
+        if (!location[0] || !follow) {
             ok = true;
             goto done;
         }

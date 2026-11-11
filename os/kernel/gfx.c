@@ -258,3 +258,41 @@ int gfx_text_width(const char *text)
         count++;
     return count * FONT_W;
 }
+
+bool gfx_wrap_line(const char **text, int columns, char *line, size_t size)
+{
+    const char *start = *text;
+    if (!*start || size == 0)
+        return false;
+
+    const char *p = start, *last_space = NULL;
+    int count = 0;
+    while (*p && *p != '\n' && count < columns) {
+        if (*p == ' ')
+            last_space = p;
+        if (((uint8_t)*p & 0xC0) != 0x80)
+            count++;                    /* UTF-8-Folgebytes zählen nicht */
+        p++;
+    }
+    while (((uint8_t)*p & 0xC0) == 0x80)
+        p++;                            /* kein Zeichen in der Mitte teilen */
+
+    const char *end = p;
+    if (*p && *p != '\n' && *p != ' ' && last_space && last_space > start)
+        end = last_space;               /* mitten im Wort: am Leerzeichen trennen */
+
+    size_t n = (size_t)(end - start);
+    if (n >= size)
+        n = size - 1;
+    memcpy(line, start, n);
+    line[n] = '\0';
+
+    /* Das Trennzeichen selbst gehört zu keiner Zeile. */
+    if (*end == '\n')
+        end++;
+    else
+        while (*end == ' ')
+            end++;
+    *text = end;
+    return true;
+}
