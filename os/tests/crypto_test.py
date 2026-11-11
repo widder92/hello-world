@@ -78,6 +78,45 @@ for n in [0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 1000, 4000]:
         broken[rng.randrange(len(broken))] ^= 1 << rng.randrange(8)
         case("open", [key, nonce, aad, bytes(broken)], "FAIL", "Manipulation erkennen")
 
+# --- Bausteine für SSH: ChaCha20 und Poly1305 einzeln, AES-CTR, ECDH über P-256 ------
+from cryptography.hazmat.primitives import poly1305 as ref_poly1305
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+for n in [0, 1, 4, 63, 64, 65, 200, 1500]:
+    key, nonce, counter, data = rand(32), rand(12), rng.randrange(0, 200), rand(n)
+    full_nonce = counter.to_bytes(4, "little") + nonce
+    stream = Cipher(algorithms.ChaCha20(key, full_nonce), mode=None).encryptor()
+    case("chacha20", [key, nonce, bytes([counter]), data], hexs(stream.update(data)),
+         "ChaCha20 allein, %d Bytes" % n)
+    key = rand(32)
+    case("poly1305", [key, data], ref_poly1305.Poly1305.generate_tag(key, data).hex(),
+         "Poly1305 allein, %d Bytes" % n)
+
+for key_len in (16, 24, 32):
+    for n in [1, 15, 16, 17, 33, 100, 1000, 4096]:
+        key, iv, data = rand(key_len), rand(16), rand(n)
+        if n == 100:
+            iv = iv[:8] + bytes([0xFF] * 8)      # Übertrag im Zähler
+        enc = Cipher(algorithms.AES(key), modes.CTR(iv)).encryptor()
+        case("aesctr", [key, iv, data], enc.update(data).hex(),
+             "AES-%d-CTR, %d Bytes" % (key_len * 8, n))
+
+for _ in range(12):
+    ours = ec.generate_private_key(ec.SECP256R1())
+    theirs = ec.generate_private_key(ec.SECP256R1())
+    secret = ours.private_numbers().private_value.to_bytes(32, "big")
+    def xy(key):
+        numbers = key.public_key().public_numbers()
+        return numbers.x.to_bytes(32, "big") + numbers.y.to_bytes(32, "big")
+    case("ecdh_public", [secret], xy(ours).hex(), "ECDH P-256, öffentlicher Punkt")
+    case("ecdh_shared", [secret, xy(theirs)],
+         ours.exchange(ec.ECDH(), theirs.public_key()).hex(),
+         "ECDH P-256, gemeinsames Geheimnis")
+    wrong = bytearray(xy(theirs))
+    wrong[40] ^= 1
+    case("ecdh_shared", [secret, bytes(wrong)], "FAIL", "ECDH: Punkt nicht auf der Kurve")
+case("ecdh_public", [bytes(32)], "FAIL", "ECDH: Geheimnis 0 abgelehnt")
+
 # --- X25519 -------------------------------------------------------------------------
 BASE = bytes([9]) + bytes(31)
 for _ in range(40):
@@ -358,7 +397,7 @@ def main():
         binary = os.path.join(tmp, "crypto_test")
         sources = [os.path.join(HERE, "crypto_test.c")] + [
             os.path.join(KERNEL, name)
-            for name in ("crypto_hash.c", "crypto_aead.c", "crypto_curve.c",
+            for name in ("crypto_hash.c", "crypto_aead.c", "crypto_aes.c", "crypto_curve.c",
                          "crypto_pk.c", "x509.c")]
         subprocess.run(["cc", "-O2", "-Wall", "-o", binary] + sources, check=True)
         result = subprocess.run([binary], input="\n".join(c[0] for c in cases) + "\n",

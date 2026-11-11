@@ -90,6 +90,35 @@ int main(void)
                 print_hex(out, len);
             else
                 printf("FAIL\n");
+        } else if (strcmp(command, "chacha20") == 0) {
+            /* Schlüssel, Nonce, Zähler (1 Byte), Daten */
+            chacha20_crypt(field[0], field[1], field[2][0], field[3], out,
+                           field_len[3]);
+            print_hex(out, field_len[3]);
+        } else if (strcmp(command, "poly1305") == 0) {
+            poly1305_mac(field[0], field[1], field_len[1], out);
+            print_hex(out, 16);
+        } else if (strcmp(command, "aesctr") == 0) {
+            /* Schlüssel, IV, Daten - in zwei Teilen, um den Zustand zu prüfen */
+            aes_ctr_t aes;
+            if (!aes_ctr_init(&aes, field[0], field_len[0], field[1])) {
+                printf("FAIL\n");
+            } else {
+                size_t half = field_len[2] / 3;
+                aes_ctr_crypt(&aes, field[2], out, half);
+                aes_ctr_crypt(&aes, field[2] + half, out + half, field_len[2] - half);
+                print_hex(out, field_len[2]);
+            }
+        } else if (strcmp(command, "ecdh_public") == 0) {
+            if (ecdh_p256_public(field[0], out))
+                print_hex(out, 64);
+            else
+                printf("FAIL\n");
+        } else if (strcmp(command, "ecdh_shared") == 0) {
+            if (ecdh_p256_shared(field[0], field[1], out))
+                print_hex(out, 32);
+            else
+                printf("FAIL\n");
         } else if (strcmp(command, "x25519") == 0) {
             x25519(out, field[0], field[1]);
             print_hex(out, 32);

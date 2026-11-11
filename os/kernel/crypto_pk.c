@@ -8,7 +8,8 @@
  * dabei Multiplikationen und Verschiebungen. Zahlen liegen dafür in einer
  * umgerechneten "Montgomery-Form" vor.
  *
- * Es wird nur geprüft, nie signiert - geheime Werte kommen hier nicht vor.
+ * Signaturen werden nur geprüft. Der Schlüsselaustausch am Ende (ECDH) rechnet
+ * dagegen mit einem geheimen Wert - ohne Schutz vor Laufzeitmessungen.
  */
 #include "crypto.h"
 #include "string.h"
@@ -613,4 +614,77 @@ bool ecdsa_verify(const public_key_t *key, const uint8_t *hash, size_t hash_len,
     while (bn_cmp(&x, &order.m, LIMBS) >= 0)
         bn_sub(&x, &x, &order.m, LIMBS);
     return bn_cmp(&x, &r, LIMBS) == 0;
+}
+
+/* --- Schlüsselaustausch über P-256 ------------------------------------------------------------ */
+
+/* Rechnet secret * P aus und liefert den Punkt in gewöhnlichen Koordinaten. */
+static bool p256_multiply(const uint8_t secret[32], const uint8_t *peer,
+                          uint8_t out_x[32], uint8_t out_y[32])
+{
+    const curve_t *curve = &curve_p256;
+    mont_t field, order;
+    bn_t scalar, two;
+    point_t p, result;
+
+    if (!mont_init(&field, curve->p, 32) || !mont_init(&order, curve->n, 32) ||
+        !bn_from_bytes(&scalar, secret, 32))
+        return false;
+    if (bn_is_zero(&scalar, LIMBS) || bn_cmp(&scalar, &order.m, LIMBS) >= 0)
+        return false;
+
+    const uint8_t *px = peer ? peer : curve->gx;
+    const uint8_t *py = peer ? peer + 32 : curve->gy;
+    if (!bn_from_bytes(&p.x, px, 32) || !bn_from_bytes(&p.y, py, 32) ||
+        bn_cmp(&p.x, &field.m, LIMBS) >= 0 || bn_cmp(&p.y, &field.m, LIMBS) >= 0)
+        return false;
+    to_mont(&field, &p.x, &p.x);
+    to_mont(&field, &p.y, &p.y);
+    p.z = field.one;
+
+    /* Liegt der Punkt auf der Kurve? y^2 = x^3 - 3x + b */
+    bn_t b, lhs, rhs, three;
+    bn_from_bytes(&b, curve->b, 32);
+    to_mont(&field, &b, &b);
+    mont_mul(&field, &lhs, &p.y, &p.y);
+    mont_mul(&field, &rhs, &p.x, &p.x);
+    mont_mul(&field, &rhs, &rhs, &p.x);
+    mod_add(&field, &three, &p.x, &p.x);
+    mod_add(&field, &three, &three, &p.x);
+    mod_sub(&field, &rhs, &rhs, &three);
+    mod_add(&field, &rhs, &rhs, &b);
+    if (bn_cmp(&lhs, &rhs, field.n) != 0)
+        return false;
+
+    point_multiply(&field, &result, &p, &scalar);
+    if (bn_is_zero(&result.z, field.n))
+        return false;
+
+    /* x = X / Z^2, y = Y / Z^3; Kehrwert über die Potenz p - 2 */
+    bn_t exponent, inverse, z2, z3, x, y;
+    memset(&two, 0, sizeof(two));
+    two.v[0] = 2;
+    bn_sub(&exponent, &field.m, &two, LIMBS);
+    mont_exp(&field, &inverse, &result.z, &exponent);
+    mont_mul(&field, &z2, &inverse, &inverse);
+    mont_mul(&field, &z3, &z2, &inverse);
+    mont_mul(&field, &x, &result.x, &z2);
+    mont_mul(&field, &y, &result.y, &z3);
+    from_mont(&field, &x, &x);
+    from_mont(&field, &y, &y);
+    bn_to_bytes(&x, out_x, 32);
+    bn_to_bytes(&y, out_y, 32);
+    return true;
+}
+
+bool ecdh_p256_public(const uint8_t secret[32], uint8_t point[64])
+{
+    return p256_multiply(secret, NULL, point, point + 32);
+}
+
+bool ecdh_p256_shared(const uint8_t secret[32], const uint8_t peer[64],
+                      uint8_t shared[32])
+{
+    uint8_t y[32];
+    return p256_multiply(secret, peer, shared, y);
 }

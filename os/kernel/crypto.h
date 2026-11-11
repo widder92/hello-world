@@ -64,6 +64,28 @@ bool chacha20poly1305_decrypt(const uint8_t key[32], const uint8_t nonce[12],
                               const uint8_t *cipher, size_t len,
                               const uint8_t tag[16], uint8_t *plain);
 
+/* Die beiden Bausteine einzeln - SSH setzt sie anders zusammen als TLS. */
+void chacha20_crypt(const uint8_t key[32], const uint8_t nonce[12],
+                    uint32_t counter, const uint8_t *in, uint8_t *out, size_t len);
+void poly1305_mac(const uint8_t key[32], const void *data, size_t len,
+                  uint8_t tag[16]);
+
+/* --- AES im Zählermodus (für SSH-Server ohne ChaCha20) ----------------------------- */
+
+typedef struct {
+    uint8_t round_keys[15][16];
+    int rounds;
+    uint8_t counter[16];
+    uint8_t stream[16];                 /* aktueller Block des Schlüsselstroms */
+    int used;
+} aes_ctr_t;
+
+/* key_len: 16, 24 oder 32 Bytes (AES-128/192/256). */
+bool aes_ctr_init(aes_ctr_t *ctx, const uint8_t *key, size_t key_len,
+                  const uint8_t iv[16]);
+/* Ver- und Entschlüsseln sind dasselbe; der Zustand läuft über Aufrufe weiter. */
+void aes_ctr_crypt(aes_ctr_t *ctx, const uint8_t *in, uint8_t *out, size_t len);
+
 /* --- Elliptische Kurve 25519 ------------------------------------------------------ */
 
 /* Schlüsselaustausch: out = scalar * point (X25519, RFC 7748). */
@@ -94,6 +116,15 @@ bool rsa_pss_verify(const public_key_t *key, hash_alg_t alg, const uint8_t *hash
 /* signature ist DER-kodiert: SEQUENCE { r, s }. */
 bool ecdsa_verify(const public_key_t *key, const uint8_t *hash, size_t hash_len,
                   const uint8_t *signature, size_t len);
+
+/*
+ * Schlüsselaustausch über P-256 (ECDH). Punkte sind X und Y hintereinander
+ * (64 Bytes). Liefert false, wenn secret kein gültiger Wert ist bzw. der
+ * Punkt der Gegenseite nicht auf der Kurve liegt.
+ */
+bool ecdh_p256_public(const uint8_t secret[32], uint8_t point[64]);
+bool ecdh_p256_shared(const uint8_t secret[32], const uint8_t peer[64],
+                      uint8_t shared[32]);
 
 /* --- Zufall ------------------------------------------------------------------------ */
 

@@ -13,6 +13,7 @@
 #include "input.h"
 #include "memory.h"
 #include "net.h"
+#include "sftp.h"
 #include "storage.h"
 #include "string.h"
 #include "task.h"
@@ -640,6 +641,7 @@ static void cmd_web(shell_t *sh, char *args)
 }
 
 static void warn_if_unsaved(const char *name);
+static void cmd_ls(shell_t *sh, char *args);
 
 static void cmd_get(shell_t *sh, char *args)
 {
@@ -842,6 +844,286 @@ static void cmd_claude(shell_t *sh, char *args)
     }
 }
 
+/* --- Dateien übertragen (SFTP) ------------------------------------------------------ */
+
+static bool yes_no(void)
+{
+    int answer = console_getchar();
+    bool yes = answer == 'j' || answer == 'J';
+    kprintf("%s\n", yes ? "ja" : "nein");
+    return yes;
+}
+
+/* Fragt beim ersten Verbinden (oder nach einem Wechsel), ob der Server der richtige ist. */
+static bool sftp_trust(void *ctx, const char *server, const char *type,
+                       const char *fingerprint, bool changed)
+{
+    (void)ctx;
+    if (changed) {
+        console_set_color(COLOR_RED);
+        kprintf("ACHTUNG: Der Schlüssel von %s hat sich geändert!\n", server);
+        console_set_color(COLOR_DEFAULT);
+        kprintf("Das passiert, wenn der Server neu eingerichtet wurde - oder wenn sich\n"
+                "jemand zwischen dich und den Server geschaltet hat. Im Zweifel abbrechen\n"
+                "und beim Anbieter nachfragen.\n");
+    } else {
+        kprintf("Mit %s wird zum ersten Mal verbunden.\n", server);
+    }
+    kprintf("Fingerabdruck des Serverschlüssels (%s):\n  %s\n", type, fingerprint);
+    kprintf(changed ? "Trotzdem verbinden und den neuen Schlüssel merken? (j/n) "
+                    : "Stimmt er mit der Angabe deines Anbieters überein? (j/n) ");
+    return yes_no();
+}
+
+/* Liest eine Zeile, ohne sie anzuzeigen; false bei Abbruch. */
+static bool read_secret(char *out, size_t size)
+{
+    size_t len = 0;
+    for (;;) {
+        int c = console_getchar();
+        if (c < 0 || c == 3) {
+            memset(out, 0, size);
+            kprintf("\n");
+            return false;
+        }
+        if (c == '\n')
+            break;
+        if (c == '\b') {
+            while (len > 0 && ((uint8_t)out[len - 1] & 0xC0) == 0x80)
+                len--;
+            if (len > 0)
+                len--;
+        } else if (c >= 32 && c < 0x80 && c != 127 && len + 1 < size) {
+            out[len++] = (char)c;
+        } else if (c >= 0x80 && c < 0x800 && len + 2 < size) {
+            out[len++] = (char)(0xC0 | (c >> 6));
+            out[len++] = (char)(0x80 | (c & 0x3F));
+        }
+    }
+    out[len] = '\0';
+    kprintf("\n");
+    return true;
+}
+
+static void sftp_progress(void *ctx, uint64_t done, uint64_t total)
+{
+    int *shown = ctx;
+    if (total < 512 * 1024)
+        return;                         /* kleine Dateien sind sofort fertig */
+    int percent = (int)(done * 100 / total);
+    while (*shown + 25 <= percent) {
+        *shown += 25;
+        kprintf(" %d%%", *shown);
+    }
+}
+
+/* Letzter Teil eines Pfads: "/var/www/index.html" -> "index.html" */
+static const char *base_name(const char *path)
+{
+    const char *base = path;
+    for (const char *p = path; *p; p++) {
+        if (*p == '/' && p[1])
+            base = p + 1;
+    }
+    return base;
+}
+
+static void sftp_command(sftp_t *s, char *cwd, size_t cwd_size, char *line)
+{
+    char path[1024], other[1024];
+    char *rest = line;
+    char *command = next_token(&rest);
+
+    if (strcmp(command, "pwd") == 0) {
+        kprintf("%s\n", cwd);
+    } else if (strcmp(command, "ls") == 0 || strcmp(command, "dir") == 0) {
+        sftp_entry_t *entries;
+        int count;
+        sftp_join(cwd, rest, path, sizeof(path));
+        if (!sftp_list(s, path, &entries, &count)) {
+            kprintf("Fehler: %s\n", sftp_error(s));
+            return;
+        }
+        for (int i = 0; i < count; i++) {
+            if (entries[i].directory)
+                kprintf("    <Ordner>  %s/\n", entries[i].name);
+            else
+                kprintf("%12llu  %s\n", entries[i].size, entries[i].name);
+        }
+        kprintf("%d Einträge in %s\n", count, path);
+        kfree(entries);
+    } else if (strcmp(command, "cd") == 0) {
+        sftp_entry_t *entries;
+        int count;
+        sftp_join(cwd, *rest ? rest : ".", path, sizeof(path));
+        /* Nur wechseln, wenn sich das Ziel wirklich auflisten lässt. */
+        if (!sftp_realpath(s, path, other, sizeof(other)) ||
+            !sftp_list(s, other, &entries, &count)) {
+            kprintf("Fehler: %s\n", sftp_error(s));
+            return;
+        }
+        kfree(entries);
+        strlcpy(cwd, other, cwd_size);
+    } else if (strcmp(command, "get") == 0) {
+        char *remote = next_token(&rest);
+        const char *local = *rest ? next_token(&rest) : base_name(remote);
+        char *data;
+        size_t size;
+        int shown = 0;
+        if (!*remote) {
+            kprintf("Aufruf: get <datei auf dem server> [name hier]\n");
+            return;
+        }
+        sftp_join(cwd, remote, path, sizeof(path));
+        if (!sftp_download(s, path, FS_FILE_MAX, &data, &size, sftp_progress, &shown)) {
+            kprintf("Fehler: %s\n", sftp_error(s));
+            return;
+        }
+        int err = fs_write(local, data, size, false);
+        kfree(data);
+        if (err != FS_OK) {
+            kprintf("%sNicht gespeichert: %s. Gib einen eigenen Namen an: "
+                    "get %s <name>\n", shown ? "\n" : "", fs_error_text(err), remote);
+            return;
+        }
+        kprintf("%s%zu Bytes geholt: %s\n", shown ? "\n" : "", size, local);
+        warn_if_unsaved(local);
+    } else if (strcmp(command, "put") == 0) {
+        char *local = next_token(&rest);
+        const char *remote = *rest ? rest : local;
+        char *data;
+        size_t size;
+        int shown = 0;
+        if (!*local) {
+            kprintf("Aufruf: put <datei hier> [name auf dem server]\n");
+            return;
+        }
+        if (fs_read(local, &data, &size) != FS_OK) {
+            kprintf("Datei nicht gefunden: %s\n", local);
+            return;
+        }
+        sftp_join(cwd, remote, path, sizeof(path));
+        bool ok = sftp_upload(s, path, data, size, sftp_progress, &shown);
+        kfree(data);
+        if (ok)
+            kprintf("%s%zu Bytes übertragen: %s\n", shown ? "\n" : "", size, path);
+        else
+            kprintf("%sFehler: %s\n", shown ? "\n" : "", sftp_error(s));
+    } else if (strcmp(command, "rm") == 0 || strcmp(command, "mkdir") == 0 ||
+               strcmp(command, "rmdir") == 0) {
+        if (!*rest) {
+            kprintf("Aufruf: %s <name>\n", command);
+            return;
+        }
+        sftp_join(cwd, rest, path, sizeof(path));
+        bool ok = command[0] == 'm' ? sftp_mkdir(s, path)
+                : command[1] == 'm' && command[2] == 'd' ? sftp_rmdir(s, path)
+                : sftp_remove(s, path);
+        if (!ok)
+            kprintf("Fehler: %s\n", sftp_error(s));
+    } else if (strcmp(command, "mv") == 0) {
+        char *from = next_token(&rest);
+        if (!*from || !*rest) {
+            kprintf("Aufruf: mv <alter name> <neuer name>\n");
+            return;
+        }
+        sftp_join(cwd, from, path, sizeof(path));
+        sftp_join(cwd, rest, other, sizeof(other));
+        if (!sftp_rename(s, path, other))
+            kprintf("Fehler: %s\n", sftp_error(s));
+    } else if (strcmp(command, "lls") == 0) {
+        cmd_ls(NULL, rest);
+    } else {
+        kprintf("Befehle auf dem Server:\n"
+                "  ls [ordner]            auflisten\n"
+                "  cd <ordner>, pwd       Ordner wechseln, anzeigen\n"
+                "  get <datei> [name]     Datei holen (landet bei den eigenen Dateien)\n"
+                "  put <datei> [name]     eigene Datei auf den Server legen\n"
+                "  rm <datei>             Datei löschen\n"
+                "  mkdir / rmdir <ordner> Ordner anlegen / leeren Ordner löschen\n"
+                "  mv <alt> <neu>         umbenennen\n"
+                "  lls                    eigene Dateien auflisten\n"
+                "  ende                   Verbindung trennen\n");
+    }
+}
+
+static void cmd_sftp(shell_t *sh, char *args)
+{
+    (void)sh;
+    char *target = next_token(&args);
+    char *at = NULL, *colon = NULL;
+    for (char *p = target; *p; p++) {
+        if (*p == '@')
+            at = p;                     /* das letzte @ trennt (Benutzernamen mit @ gibt es) */
+    }
+    for (char *p = at ? at : target; *p; p++) {
+        if (*p == ':')
+            colon = p;
+    }
+    uint32_t port = 22;
+    if (!at || at == target || !at[1] ||
+        (colon && (!parse_uint(colon + 1, &port) || port == 0 || port > 65535))) {
+        kprintf("Aufruf: sftp <benutzer>@<server>[:port]\n"
+                "Verbindet verschlüsselt mit einem Server, um Dateien zu holen und\n"
+                "abzulegen - etwa die einer Webseite.\n");
+        return;
+    }
+    *at = '\0';
+    if (colon)
+        *colon = '\0';
+    if (!need_network())
+        return;
+
+    char password[128];
+    kprintf("Passwort für %s (wird nicht angezeigt): ", target);
+    if (!read_secret(password, sizeof(password)))
+        return;
+
+    char error[200];
+    ssh_options_t options = {
+        .host = at + 1, .port = (uint16_t)port, .user = target,
+        .password = password, .trust = sftp_trust,
+    };
+    kprintf("Verbinde mit %s ...\n", at + 1);
+    sftp_t *s = sftp_connect(&options, error, sizeof(error));
+    memset(password, 0, sizeof(password));
+    if (!s) {
+        kprintf("Fehler: %s\n", error);
+        return;
+    }
+
+    char cwd[1024];
+    if (!sftp_realpath(s, ".", cwd, sizeof(cwd)))
+        strlcpy(cwd, "/", sizeof(cwd));
+    kprintf("Verbunden. \"hilfe\" zeigt die Befehle, \"ende\" trennt.\n");
+
+    shell_t *session = kzalloc(sizeof(*session));   /* eigener Befehlsverlauf */
+    while (session && sftp_alive(s)) {
+        console_set_color(COLOR_CYAN);
+        kprintf("sftp:%s", cwd);
+        console_set_color(COLOR_DEFAULT);
+        kprintf("> ");
+        if (!read_line(session))
+            break;
+        char *line = session->line;
+        while (*line == ' ')
+            line++;
+        if (!*line)
+            continue;
+        if (strcmp(line, "ende") == 0 || strcmp(line, "exit") == 0 ||
+            strcmp(line, "quit") == 0 || strcmp(line, "bye") == 0)
+            break;
+        history_add(session, line);
+        sftp_command(s, cwd, sizeof(cwd), line);
+    }
+    if (!sftp_alive(s))
+        kprintf("Die Verbindung ist beendet: %s\n", sftp_error(s));
+    else
+        kprintf("Verbindung getrennt.\n");
+    kfree(session);
+    sftp_close(s);
+}
+
 /* --- Dateien ---------------------------------------------------------------------- */
 
 /* Hinweis, wenn eine Datei nicht auf dem Stick gesichert werden konnte. */
@@ -1030,6 +1312,7 @@ static const struct command commands[] = {
     { "dns",      "dns <name>",          "Namen in eine Adresse auflösen", cmd_dns },
     { "web",      "web <adresse>",       "Webseite als Text anzeigen", cmd_web },
     { "get",      "get <adresse> <datei>", "Datei aus dem Netz laden", cmd_get },
+    { "sftp",     "sftp <benutzer>@<server>", "Dateien verschlüsselt mit einem Server austauschen", cmd_sftp },
     { "claude",   "claude <frage>",      "Mit dem KI-Assistenten Claude sprechen", cmd_claude },
     { "update",   "update",              "Nach Updates suchen (fragt vor der Installation)", cmd_update },
     { "news",     "news",                "Was ist neu in dieser Version", cmd_news },
@@ -1091,7 +1374,8 @@ shell_risk_t shell_command_risk(const char *line)
      */
     /* Ohne Angaben zeigen diese beiden nur an; mit Angaben ändern sie etwas. */
     static const char *const safe_without_arguments[] = { "net", "keymap", NULL };
-    static const char *const forbidden[] = { "panic", "claude", NULL };
+    /* sftp fragt nach Passwort und Befehlen - das geht nur mit einem Menschen. */
+    static const char *const forbidden[] = { "panic", "claude", "sftp", NULL };
 
     char copy[LINE_MAX];
     char *cursor = copy;

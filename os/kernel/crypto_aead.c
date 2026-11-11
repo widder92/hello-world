@@ -231,6 +231,21 @@ static void poly1305_final(poly1305_t *p, uint8_t tag[16])
     store32(tag + 12, (uint32_t)f3);
 }
 
+void chacha20_crypt(const uint8_t key[32], const uint8_t nonce[12],
+                    uint32_t counter, const uint8_t *in, uint8_t *out, size_t len)
+{
+    chacha20_xor(key, nonce, counter, in, out, len);
+}
+
+void poly1305_mac(const uint8_t key[32], const void *data, size_t len,
+                  uint8_t tag[16])
+{
+    poly1305_t poly;
+    poly1305_init(&poly, key);
+    poly1305_update(&poly, data, len);
+    poly1305_final(&poly, tag);
+}
+
 /* --- Beides zusammen --------------------------------------------------------------- */
 
 static void compute_tag(const uint8_t key[32], const uint8_t nonce[12],
