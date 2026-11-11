@@ -661,7 +661,7 @@ auf den Branch `helloos-updates`. Dort sucht HelloOS standardmäßig
 (`UPDATE_URL` im `Makefile`). Geprüft ist dieser Weg einmal von Anfang bis
 Ende: Der Workflow hat Build 21 veröffentlicht, und ein älteres HelloOS in
 QEMU hat das Paket von GitHub geholt, geprüft, installiert und danach in der
-neuen Version gestartet. Auf einem echten PC ist noch kein Update gelaufen.
+neuen Version gestartet. Auch auf einem echten PC hat ein Update über das Netzwerk funktioniert (von Build 26 auf 27, vom USB-Stick gestartet). GitHub liefert die Build-Nummer bis zu fünf Minuten aus einem Zwischenspeicher – direkt nach einer Veröffentlichung meldet `update` deshalb unter Umständen noch „ist aktuell".
 
 Es geht auch von Hand: `make update-package` erzeugt
 `build/update/helloos.upd` (samt dem Text aus `NEUES.txt`) und
