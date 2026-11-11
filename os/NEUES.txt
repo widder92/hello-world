@@ -3,3 +3,4 @@ HelloOS 0.12
 - Findet HelloOS weder Tastatur noch Maus, zeigt es von selbst ein Diagnosefenster mit dem Startprotokoll; im Terminal gibt es dafür den Befehl log.
 - net zeigt die Zähler der Netzwerkkarte; bleibt die Adresszuteilung aus, steht das im Startprotokoll.
 - Aus 0.11: Netzwerk auch mit Intels 2,5-Gigabit-Anschlüssen I225 und I226.
+- Netzwerk und andere Geräte hinter einer PCI-Brücke: HelloOS schaltet die Brücke selbst ein, falls die Firmware das nicht getan hat.

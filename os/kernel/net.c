@@ -452,9 +452,15 @@ static void dhcp_timer(void)
         if (dhcp.attempts == 4 && !dhcp_complained) {
             /* Einmal melden - mit Zählern, die zeigen, wo es hakt */
             dhcp_complained = true;
-            char card[112] = "";
+            char card[280] = "";
             if (nic->stats)
                 nic->stats(nic, card, sizeof(card));
+            for (char *c = card; *c; c++) {     /* ins Protokoll nur die Zähler */
+                if (*c == '\n') {
+                    *c = '\0';
+                    break;
+                }
+            }
             klog("Netzwerk: noch keine Antwort auf die Adressanfrage (DHCP); "
                  "%llu Pakete gesendet, %llu empfangen\n", tx_packets, rx_packets);
             if (card[0])

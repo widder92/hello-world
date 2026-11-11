@@ -1556,9 +1556,7 @@ static const char *controller_start(xhci_t *x)
     if (!bar)
         return "kein Speicherbereich";
 
-    /* Gerät einschalten: Speicherzugriff + Busmaster, kein Interrupt-Pin */
-    uint16_t pci_command = pci_read16(pci, 0x04);
-    pci_write16(pci, 0x04, pci_command | 0x0006 | 0x0400);
+    pci_enable(pci);
 
     /*
      * Ältere Intel-Chipsätze: Anschlüsse vom USB-2-Controller herüberholen.

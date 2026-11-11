@@ -252,7 +252,7 @@ static bool start(nvme_t *n, const pci_device_t *pci, int index)
     if (bar == 0)
         return false;
     /* Speicherzugriffe und eigene Buszugriffe erlauben, Interrupt-Leitung aus */
-    pci_write16(pci, 0x04, (uint16_t)((pci_read16(pci, 0x04) | 0x0006 | 0x0400)));
+    pci_enable(pci);
     vmm_map(bar, 0x4000);
     n->regs = (volatile uint8_t *)bar;
 

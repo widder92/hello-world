@@ -118,6 +118,7 @@ typedef struct {
     rx_desc_t *rx;
     tx_desc_t *tx;
     uint8_t *rx_buffers, *tx_buffers;
+    pci_device_t pci;
     uint32_t rx_next, tx_next;
     uint32_t sent, received, missed, bad;   /* Zähler der Karte, aufsummiert */
     bool modern;                        /* I225/I226 (sonst: 82576, I210, I211) */
@@ -190,7 +191,8 @@ static bool start_port(port_t *p, const pci_device_t *pci)
     bar &= ~0xFull;
     if (!bar)
         return false;
-    pci_write16(pci, 0x04, (uint16_t)(pci_read16(pci, 0x04) | 0x0006 | 0x0400));
+    pci_enable(pci);
+    p->pci = *pci;
     vmm_map(bar, 0x20000);
     p->mmio = (volatile uint8_t *)bar;
 
@@ -394,9 +396,24 @@ static void igc_stats(nic_t *self, char *text, size_t size)
     p->bad += reg_read(p, REG_CRCERRS) + reg_read(p, REG_RXERRC);
     uint32_t head = reg_read(p, REG_TDH), tail = reg_read(p, REG_TDT);
     irq_restore(flags);
-    ksnprintf(text, size,
+    int used = ksnprintf(text, size,
               "%u gesendet, %u empfangen, %u verpasst, %u fehlerhaft, Sendering %u/%u",
               p->sent, p->received, p->missed, p->bad, head, tail);
+
+    /* Zweite Zeile: der Zustand der Karte in Zahlen, für die Fehlersuche */
+    if (used < 0 || (size_t)used + 2 >= size)
+        return;
+    pci_device_t bridge;
+    uint16_t bridge_command = 0xFFFF;
+    if (pci_parent_bridge(&p->pci, &bridge))
+        bridge_command = pci_read16(&bridge, 0x04);
+    ksnprintf(text + used, size - (size_t)used,
+              "\nRegister: CTRL %08x STATUS %08x TCTL %08x TXDCTL %08x RCTL %08x "
+              "RXDCTL %08x RDH %u RDT %u PCI %04x Bruecke %04x",
+              reg_read(p, REG_CTRL), reg_read(p, REG_STATUS), reg_read(p, REG_TCTL),
+              reg_read(p, REG_TXDCTL), reg_read(p, REG_RCTL), reg_read(p, REG_RXDCTL),
+              reg_read(p, REG_RDH), reg_read(p, REG_RDT),
+              pci_read16(&p->pci, 0x04), bridge_command);
 }
 
 nic_t *igc_probe(void)

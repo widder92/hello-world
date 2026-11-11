@@ -41,7 +41,7 @@ typedef struct {
     uint8_t mac[6];
     ip4_t ip, netmask, gateway, dns;
     uint64_t rx_packets, tx_packets;
-    char card_stats[112];               /* Zähler der Karte, falls sie welche führt */
+    char card_stats[280];               /* Zähler der Karte, falls sie welche führt */
 } net_info_t;
 
 /* Netzwerkkarte suchen und den Netzwerk-Task starten. */

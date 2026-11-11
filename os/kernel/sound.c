@@ -277,7 +277,7 @@ static bool start_controller(const pci_device_t *pci)
         klog("Ton: Soundkarte ohne nutzbare Register - bleibt stumm\n");
         return false;
     }
-    pci_write16(pci, 0x04, (uint16_t)(pci_read16(pci, 0x04) | 0x0006 | 0x0400));
+    pci_enable(pci);
     if (pci->vendor_id == 0x8086)       /* Intel: Vorrangklasse der Daten auf den Normalwert */
         pci_write32(pci, 0x44, pci_read32(pci, 0x44) & ~0x07u);
     vmm_map(bar, 0x4000);

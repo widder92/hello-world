@@ -1,6 +1,7 @@
 /* PCI: Geräte am Systembus finden und ihre Konfigurationsregister lesen */
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 typedef struct {
@@ -19,3 +20,13 @@ void pci_write16(const pci_device_t *dev, uint8_t offset, uint16_t value);
  */
 int pci_find(uint8_t class_code, uint8_t subclass, uint8_t interface,
              pci_device_t *out, int max);
+
+/*
+ * Schaltet ein Gerät ein (Speicherzugriff und Busmaster) - und ebenso alle
+ * Brücken zwischen ihm und dem Prozessor, ohne die es nicht an den Speicher
+ * käme. Treiber rufen das auf, bevor sie ihr Gerät benutzen.
+ */
+void pci_enable(const pci_device_t *dev);
+
+/* Liefert die Brücke direkt vor dem Gerät; false, wenn es an Bus 0 hängt. */
+bool pci_parent_bridge(const pci_device_t *dev, pci_device_t *out);

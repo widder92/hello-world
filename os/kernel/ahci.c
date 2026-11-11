@@ -324,8 +324,7 @@ void ahci_init(void)
         uint64_t bar = pci_read32(&found[c], 0x24) & ~0xFull;
         if (bar == 0)
             continue;
-        pci_write16(&found[c], 0x04,
-                    (uint16_t)(pci_read16(&found[c], 0x04) | 0x0006 | 0x0400));
+        pci_enable(&found[c]);
         vmm_map(bar, 0x2000);
         volatile uint8_t *hba = (volatile uint8_t *)bar;
 

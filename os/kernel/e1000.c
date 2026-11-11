@@ -211,7 +211,7 @@ nic_t *e1000_probe(void)
     bar &= ~0xFull;
     if (!bar)
         return NULL;
-    pci_write16(pci, 0x04, pci_read16(pci, 0x04) | 0x0006 | 0x0400);
+    pci_enable(pci);
     vmm_map(bar, 0x20000);
 
     static e1000_t device;
