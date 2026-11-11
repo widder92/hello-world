@@ -85,27 +85,15 @@ bool claude_load_key(void)
 {
     static const char *const names[] = { "CLAUDE.KEY", "CLAUDE.TXT", NULL };
 
-    storage_lock();
-    for (int i = 0; i < BLOCK_DEVICES_MAX && !claude_has_key(); i++) {
-        block_device_t *dev = block_get(i);
-        fat_t fs;
-        if (!dev || !fat_mount(&fs, dev))
+    for (int n = 0; names[n] && !claude_has_key(); n++) {
+        char *text;
+        size_t size;
+        if (!storage_load_root(names[n], 511, &text, &size))
             continue;
-        for (int n = 0; names[n] && !claude_has_key(); n++) {
-            fat_file_t file;
-            if (!fat_find(&fs, names[n], &file) || file.directory ||
-                file.size == 0 || file.size >= 512)
-                continue;
-            char text[512];
-            if (fat_read(&fs, &file, text)) {
-                text[file.size] = '\0';
-                claude_set_key(text);
-            }
-            memset(text, 0, sizeof(text));
-        }
-        fat_unmount(&fs);
+        claude_set_key(text);
+        memset(text, 0, size);
+        kfree(text);
     }
-    storage_unlock();
     return claude_has_key();
 }
 
@@ -220,7 +208,7 @@ static void append_system_prompt(strbuf_t *sb)
     }
     sb_append(&text,
         "\nGut zu wissen: Die eigenen Dateien des Benutzers bilden eine flache Liste "
-        "ohne Verzeichnisse; sie werden auf dem USB-Stick gesichert, von dem HelloOS "
+        "ohne Verzeichnisse; sie werden auf dem Datenträger gesichert, von dem HelloOS "
         "gestartet wurde (\"ls\" zeigt, ob das geklappt hat). Mit \"start\" öffnest du "
         "Fenster-Programme (terminal, monitor, malen, info, editor, transfer, browser); "
         "\"edit <datei>\" öffnet eine Datei im Editor, \"browse <adresse>\" eine "

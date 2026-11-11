@@ -228,7 +228,7 @@ void fs_init(void)
     static const char welcome[] =
         "Willkommen bei HelloOS!\n"
         "\n"
-        "Deine Dateien liegen im Arbeitsspeicher und werden auf dem USB-Stick\n"
+        "Deine Dateien liegen im Arbeitsspeicher und werden auf dem Datenträger\n"
         "gesichert, von dem HelloOS gestartet wurde (Ordner DATEIEN). \"ls\"\n"
         "zeigt, ob eine Datei gesichert ist.\n"
         "\n"

@@ -1,5 +1,6 @@
 #include "storage.h"
 #include "block.h"
+#include "bootinfo.h"
 #include "console.h"
 #include "cpu.h"
 #include "fat.h"
@@ -7,6 +8,7 @@
 #include "memory.h"
 #include "string.h"
 #include "task.h"
+#include "time.h"
 
 #define BOOT_FILE "EFI/BOOT/BOOTX64.EFI"
 
@@ -40,19 +42,106 @@ void storage_unlock(void)
 
 /* --- Zugriff auf den Stick ------------------------------------------------------------ */
 
-/* Hängt den Datenträger ein, von dem HelloOS gestartet wurde. */
-static bool mount_stick(fat_t *fs)
+/*
+ * Wo HelloOS zu Hause ist, wird einmal festgestellt und dann gemerkt - die
+ * Prüfung liest die ganze Startdatei.
+ */
+static struct {
+    block_device_t *dev;
+    uint64_t start, device_sectors;
+    bool valid;
+} home;
+
+static bool contains_marker(const uint8_t *data, size_t len)
 {
-    for (int i = 0; i < BLOCK_DEVICES_MAX; i++) {
-        block_device_t *dev = block_get(i);
-        fat_file_t boot;
-        if (!dev || !fat_mount(fs, dev))
-            continue;
-        if (fat_find(fs, BOOT_FILE, &boot) && !boot.directory)
+    static const char marker[] = HELLOOS_IMAGE_MARKER;
+    size_t n = sizeof(marker) - 1;
+    for (size_t i = 0; i + n <= len; i++) {
+        if (data[i] == (uint8_t)marker[0] && memcmp(data + i, marker, n) == 0)
             return true;
-        fat_unmount(fs);
     }
     return false;
+}
+
+/* Ist dieses Dateisystem eines von HelloOS? */
+static bool is_helloos_volume(fat_t *fs)
+{
+    fat_file_t boot;
+    char label[12];
+
+    if (fs->dev->internal) {
+        /* Auf internen Platten zählt nur eine Partition, die auch so heißt. */
+        fat_label(fs, label);
+        if (!fat_same_name(label, HELLOOS_VOLUME_LABEL))
+            return false;
+    }
+    if (!fat_find(fs, BOOT_FILE, &boot) || boot.directory || boot.size == 0 ||
+        boot.size > 16 * 1024 * 1024)
+        return false;
+    uint8_t *image = kmalloc(boot.size);
+    bool ours = image && fat_read(fs, &boot, image) && contains_marker(image, boot.size);
+    kfree(image);
+    return ours;
+}
+
+static void remember_home(fat_t *fs)
+{
+    home.dev = fs->dev;
+    home.start = fs->start;
+    home.device_sectors = fs->dev->sectors;
+    home.valid = true;
+    /* Auf einer internen Platte darf ab jetzt genau diese Partition beschrieben werden. */
+    if (fs->dev->internal)
+        block_allow_writes(fs->dev, fs->start, fs->sectors);
+}
+
+bool storage_mount_home(fat_t *fs)
+{
+    if (home.valid) {
+        if (home.dev->present && home.dev->sectors == home.device_sectors &&
+            fat_mount_at(fs, home.dev, home.start))
+            return true;
+        home.valid = false;             /* abgezogen oder ausgetauscht: neu suchen */
+    }
+
+    /*
+     * Erst die Partition, von der gestartet wurde. Irgendeine andere passende
+     * kommt nur in Frage, wenn die sich nach einigen Sekunden nicht gezeigt hat
+     * (USB-Sticks melden sich spät) oder der Startweg unbekannt ist.
+     */
+    int last_pass = !boot_info.boot_known || time_ms() > 12000 ? 1 : 0;
+    for (int pass = boot_info.boot_known ? 0 : 1; pass <= last_pass; pass++) {
+        for (int i = 0; i < BLOCK_DEVICES_MAX; i++) {
+            block_device_t *dev = block_get(i);
+            for (int n = 0; dev && n < 16 && fat_mount_nth(fs, dev, n); n++) {
+                bool wanted = pass == 1 ||
+                              (fs->start == boot_info.boot_partition_start &&
+                               dev->internal == boot_info.boot_internal);
+                if (wanted && is_helloos_volume(fs)) {
+                    remember_home(fs);
+                    return true;
+                }
+                fat_unmount(fs);
+            }
+        }
+    }
+    return false;
+}
+
+const char *storage_home_name(bool *internal)
+{
+    if (!home.valid || !home.dev->present)
+        return NULL;
+    *internal = home.dev->internal;
+    return home.dev->name;
+}
+
+/* Beendet einen Zugriff: Geschriebenes muss auf dem Datenträger angekommen sein. */
+static void release(fat_t *fs, bool wrote)
+{
+    if (wrote)
+        block_flush(fs->dev);
+    fat_unmount(fs);
 }
 
 static bool open_folder(fat_t *fs, const char *folder, bool create, fat_file_t *out)
@@ -77,14 +166,14 @@ bool storage_save(const char *folder, const char *name, const void *data,
     if (size > 0xFFFFFFFFu)
         return false;
     storage_lock();
-    available = mount_stick(&fs);
+    available = storage_mount_home(&fs);
     if (available) {
         ok = open_folder(&fs, folder, true, &dir) &&
              (fat_lookup(&fs, dir.first_cluster, name, &file)
                   ? !file.directory
                   : fat_create(&fs, dir.first_cluster, name, false, &file)) &&
              fat_replace(&fs, &file, data, (uint32_t)size);
-        fat_unmount(&fs);
+        release(&fs, true);
     }
     storage_unlock();
     return ok;
@@ -97,14 +186,14 @@ bool storage_remove(const char *folder, const char *name)
     bool ok = false;
 
     storage_lock();
-    available = mount_stick(&fs);
+    available = storage_mount_home(&fs);
     if (available) {
         if (!open_folder(&fs, folder, false, &dir) ||
             !fat_lookup(&fs, dir.first_cluster, name, &file))
             ok = true;                  /* gibt es dort gar nicht */
         else
             ok = fat_delete(&fs, &file);
-        fat_unmount(&fs);
+        release(&fs, true);
     }
     storage_unlock();
     return ok;
@@ -120,10 +209,39 @@ bool storage_load(const char *folder, const char *name, size_t max, char **data,
     *data = NULL;
     *size = 0;
     storage_lock();
-    available = mount_stick(&fs);
+    available = storage_mount_home(&fs);
     if (available) {
         if (open_folder(&fs, folder, false, &dir) &&
             fat_lookup(&fs, dir.first_cluster, name, &file) && !file.directory &&
+            file.size <= max) {
+            *data = kmalloc((size_t)file.size + 1);
+            ok = *data && fat_read(&fs, &file, *data);
+            if (ok) {
+                (*data)[file.size] = '\0';
+                *size = file.size;
+            } else {
+                kfree(*data);
+                *data = NULL;
+            }
+        }
+        fat_unmount(&fs);
+    }
+    storage_unlock();
+    return ok;
+}
+
+bool storage_load_root(const char *name, size_t max, char **data, size_t *size)
+{
+    fat_t fs;
+    fat_file_t file;
+    bool ok = false;
+
+    *data = NULL;
+    *size = 0;
+    storage_lock();
+    available = storage_mount_home(&fs);
+    if (available) {
+        if (fat_lookup(&fs, fs.root_cluster, name, &file) && !file.directory &&
             file.size <= max) {
             *data = kmalloc((size_t)file.size + 1);
             ok = *data && fat_read(&fs, &file, *data);
@@ -193,7 +311,7 @@ static void storage_task(void *arg)
         load_t l = { &fs, NULL, 0 };
 
         storage_lock();
-        bool found = mount_stick(&fs);
+        bool found = storage_mount_home(&fs);
         if (found) {
             available = true;
             if (open_folder(&fs, STORAGE_FILES, false, &dir))
@@ -215,7 +333,8 @@ static void storage_task(void *arg)
                 kfree(item);
                 item = next;
             }
-            klog("Dateien: %d vom USB-Stick geladen (Ordner %s)\n", loaded,
+            klog("Dateien: %d vom %s geladen (Ordner %s)\n", loaded,
+                 home.valid && home.dev->internal ? "internen Datenträger" : "USB-Stick",
                  STORAGE_FILES);
             if (l.skipped)
                 klog("Dateien: %d übersprungen (zu groß, zu viele oder Name "

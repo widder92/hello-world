@@ -141,9 +141,9 @@ static bool save_file(editor_t *e)
     e->edit.modified = false;
     const file_t *f = fs_find(e->name);
     if (f && f->saved)
-        set_message(e, false, "Gespeichert (auf dem USB-Stick gesichert)");
+        set_message(e, false, "Gespeichert und auf dem Datenträger gesichert");
     else
-        set_message(e, true, "Gespeichert - aber nur im Arbeitsspeicher, kein USB-Stick");
+        set_message(e, true, "Gespeichert - aber nur im Arbeitsspeicher, kein Datenträger");
     return true;
 }
 

@@ -347,7 +347,7 @@ void claude_app(void *arg)
         add_entry(app, ENTRY_NOTE,
                   "Um mit Claude zu sprechen, braucht HelloOS einen API-Schlüssel von "
                   "console.anthropic.com (die Nutzung wird dort abgerechnet).\n\n"
-                  "Am einfachsten: Lege auf dem USB-Stick, von dem HelloOS startet, im "
+                  "Am einfachsten: Lege auf dem Datenträger, von dem HelloOS startet, im "
                   "Hauptverzeichnis eine Textdatei claude.key an, die nur den Schlüssel "
                   "enthält, und öffne dieses Fenster neu.\n\n"
                   "Oder tippe hier: /key <dein Schlüssel>");

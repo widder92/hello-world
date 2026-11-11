@@ -10,7 +10,7 @@
 
 #include <stddef.h>
 
-typedef struct {
+typedef struct fat {
     block_device_t *dev;
     uint64_t start;                     /* erster Sektor der Partition */
     uint32_t sectors_per_cluster;
@@ -21,6 +21,7 @@ typedef struct {
     uint32_t root_cluster;
     uint32_t cluster_count;
     uint32_t info_sector;
+    uint64_t sectors;                   /* Größe des Dateisystems in Sektoren */
 
     /* Zwischenspeicher für einen Abschnitt der Zuordnungstabelle */
     uint8_t *cache;
@@ -45,6 +46,12 @@ typedef struct {
 
 /* Sucht auf dem Datenträger eine FAT32-Partition (GPT, MBR oder ohne Tabelle). */
 bool fat_mount(fat_t *fs, block_device_t *dev);
+/* Wie fat_mount(), liefert aber die n-te FAT32-Partition (ab 0 gezählt). */
+bool fat_mount_nth(fat_t *fs, block_device_t *dev, int n);
+/* Hängt das Dateisystem ein, das genau bei diesem Sektor beginnt. */
+bool fat_mount_at(fat_t *fs, block_device_t *dev, uint64_t start);
+/* Name ("Label") des Dateisystems, wie ihn Windows anzeigt; out fasst 12 Bytes. */
+void fat_label(fat_t *fs, char out[12]);
 void fat_unmount(fat_t *fs);
 
 /* Pfad mit '/' getrennt, Groß/Klein egal: "EFI/BOOT/BOOTX64.EFI". */

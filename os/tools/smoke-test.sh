@@ -65,7 +65,7 @@ expect "Multitasking gestartet" 30
 expect "helloos> " 30
 
 printf 'info\nmem\ndate\n' >&3
-expect "HelloOS 0.8 (x86-64, UEFI"
+expect "HelloOS 0.9 (x86-64, UEFI"
 expect "Speicherkarte der Firmware"
 
 printf 'write test.txt Hallo Welt\nappend test.txt Zeile zwei\ncat test.txt\nls\n' >&3
@@ -107,7 +107,7 @@ expect "Es ist kein API-Schlüssel hinterlegt"
 # Eigene Dateien werden auf dem Stick gesichert ...
 expect "Dateien: 0 vom USB-Stick geladen" 30
 printf 'write bleibt.txt dauerhaft gespeichert\nls\n' >&3
-expect "2 Datei(en), gesichert auf dem USB-Stick"
+expect "2 Datei(en), gesichert auf dem Datenträger"
 
 printf 'shutdown\n' >&3
 expect "System wird heruntergefahren"

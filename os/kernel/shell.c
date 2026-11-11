@@ -739,19 +739,34 @@ static void cmd_disk(shell_t *sh, char *args)
         if (!dev)
             continue;
         count++;
-        kprintf("%s: %llu MiB", dev->name, dev->sectors / 2048);
-        if (!fat_mount(&fs, dev)) {
-            kprintf(", kein FAT32-Dateisystem gefunden\n");
-            continue;
+        kprintf("%s: %llu MiB%s\n", dev->name, dev->sectors / 2048,
+                dev->internal ? ", fest eingebaut" : "");
+        int volumes = 0;
+        for (int n = 0; n < 16 && fat_mount_nth(&fs, dev, n); n++, volumes++) {
+            char label[12];
+            fat_label(&fs, label);
+            kprintf("  FAT32 \"%s\" ab Sektor %llu, %llu MiB", label, fs.start,
+                    fs.sectors / 2048);
+            if (fat_find(&fs, "EFI/BOOT/BOOTX64.EFI", &file))
+                kprintf(", Startdatei EFI/BOOT/BOOTX64.EFI: %u Bytes", file.size);
+            kprintf("\n");
+            fat_unmount(&fs);
         }
-        kprintf(", FAT32 ab Sektor %llu, %u Cluster zu %u Bytes\n", fs.start,
-                fs.cluster_count, fs.sectors_per_cluster * SECTOR_SIZE);
-        if (fat_find(&fs, "EFI/BOOT/BOOTX64.EFI", &file))
-            kprintf("  Startdatei EFI/BOOT/BOOTX64.EFI: %u Bytes\n", file.size);
-        fat_unmount(&fs);
+        if (volumes == 0)
+            kprintf("  kein FAT32-Dateisystem gefunden\n");
+        if (dev->internal && dev->write_count == 0)
+            kprintf("  schreibgeschützt (keine HelloOS-Partition in Benutzung)\n");
+        else if (dev->internal)
+            kprintf("  Schreiben erlaubt nur in der HelloOS-Partition: Sektor %llu bis %llu\n",
+                    dev->write_first, dev->write_first + dev->write_count - 1);
     }
     if (count == 0)
-        kprintf("Kein Datenträger gefunden (unterstützt werden USB-Sticks).\n");
+        kprintf("Kein Datenträger gefunden.\n");
+    bool internal = false;
+    const char *name = storage_home_name(&internal);
+    if (name)
+        kprintf("HelloOS speichert auf: %s%s\n", name,
+                internal ? " (eigene Partition auf der internen Platte)" : " (USB-Stick)");
 }
 
 /* --- Claude im Terminal ---------------------------------------------------------------- */
@@ -851,7 +866,7 @@ static void cmd_claude(shell_t *sh, char *args)
         kprintf("Fehler: %s\n", error);
         if (!claude_has_key())
             kprintf("Schlüssel hinterlegen: \"claude key <schlüssel>\" oder eine Datei\n"
-                    "claude.key im Hauptverzeichnis des USB-Sticks.\n");
+                    "claude.key im Hauptverzeichnis des HelloOS-Datenträgers.\n");
     }
 }
 
@@ -1145,8 +1160,8 @@ static void warn_if_unsaved(const char *name)
         return;
     console_set_color(COLOR_YELLOW);
     kprintf(storage_available()
-                ? "Hinweis: %s konnte nicht auf dem USB-Stick gesichert werden.\n"
-                : "Hinweis: %s liegt nur im Arbeitsspeicher - kein USB-Stick zum "
+                ? "Hinweis: %s konnte nicht auf dem Datenträger gesichert werden.\n"
+                : "Hinweis: %s liegt nur im Arbeitsspeicher - kein Datenträger zum "
                   "Sichern gefunden.\n", f->name);
     console_set_color(COLOR_DEFAULT);
 }
@@ -1165,9 +1180,9 @@ static void cmd_ls(shell_t *sh, char *args)
         count++;
     }
     kprintf("%d Datei(en)%s\n", count,
-            storage_available() ? ", gesichert auf dem USB-Stick im Ordner "
+            storage_available() ? ", gesichert auf dem Datenträger im Ordner "
                                   STORAGE_FILES
-                                : " - kein USB-Stick zum Sichern gefunden");
+                                : " - kein Datenträger zum Sichern gefunden");
 }
 
 static void cmd_cat(shell_t *sh, char *args)

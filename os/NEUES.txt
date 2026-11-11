@@ -1,4 +1,5 @@
-HelloOS 0.8
-- Fenster lassen sich in der Größe ändern: am Griff unten rechts ziehen.
-- Maximieren mit dem neuen Knopf in der Titelleiste oder Alt+F10 - noch einmal, und das Fenster ist wieder wie vorher.
-- Das gilt für Browser, Terminal, Texteditor, Dateiübertragung und Claude; der Browser bricht die Seite dabei neu um.
+HelloOS 0.9
+- HelloOS lässt sich auf der internen Platte einrichten - auf einer eigenen Partition namens HELLOOS, neben Windows.
+- Beim Start vom Stick fragt ein Assistent, sobald es eine solche Partition gibt, und legt den Eintrag "HelloOS" im Startmenü des PCs an.
+- Unterstützt werden NVMe-SSDs und SATA-Platten (AHCI). Geschrieben wird ausschließlich in die eigene Partition.
+- "disk" zeigt alle Datenträger, ihre Partitionen und wo HelloOS speichert.

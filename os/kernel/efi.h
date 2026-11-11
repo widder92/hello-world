@@ -12,6 +12,7 @@ typedef void *efi_handle_t;
 #define EFI_SUCCESS          0
 #define EFI_ERROR(status)    ((int64_t)(status) < 0)
 #define EFI_BUFFER_TOO_SMALL (0x8000000000000000ull | 5)
+#define EFI_NOT_FOUND        (0x8000000000000000ull | 14)
 
 typedef struct {
     uint32_t data1;
@@ -77,6 +78,90 @@ typedef struct efi_text_output {
                                   const uint16_t *string);
 } efi_text_output_t;
 
+/* --- Tastatur der Firmware (nur für die Rückfrage des Start-Assistenten) ----- */
+
+typedef struct {
+    uint16_t scan_code;
+    uint16_t character;
+} efi_input_key_t;
+
+typedef struct efi_text_input {
+    void *reset;
+    efi_status_t (*read_key)(struct efi_text_input *self, efi_input_key_t *key);
+    void *wait_for_key;
+} efi_text_input_t;
+
+/* --- Dateien über die Firmware (nur für den Start-Assistenten) ---------------- */
+
+#define EFI_LOADED_IMAGE_GUID \
+    { 0x5b1b31a1, 0x9562, 0x11d2, { 0x8e, 0x3f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b } }
+#define EFI_DEVICE_PATH_GUID \
+    { 0x09576e91, 0x6d3f, 0x11d2, { 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b } }
+#define EFI_FILE_SYSTEM_GUID \
+    { 0x964e5b22, 0x6459, 0x11d2, { 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b } }
+#define EFI_FILE_INFO_GUID \
+    { 0x09576e92, 0x6d3f, 0x11d2, { 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b } }
+#define EFI_VOLUME_LABEL_GUID \
+    { 0xdb47d7d3, 0xfe81, 0x11d3, { 0x9a, 0x35, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d } }
+#define EFI_PCI_IO_GUID \
+    { 0x4cf5b200, 0x68b8, 0x4ca5, { 0x9e, 0xec, 0xb2, 0x3e, 0x3f, 0x50, 0x02, 0x9a } }
+#define EFI_GLOBAL_VARIABLE_GUID \
+    { 0x8be4df61, 0x93ca, 0x11d2, { 0xaa, 0x0d, 0x00, 0xe0, 0x98, 0x03, 0x2b, 0x8c } }
+
+typedef struct {
+    uint32_t revision;
+    efi_handle_t parent;
+    void *system_table;
+    efi_handle_t device;                /* Datenträger, von dem das Programm geladen wurde */
+    void *file_path;
+    void *reserved;
+    uint32_t load_options_size;
+    void *load_options;
+    void *image_base;
+    uint64_t image_size;
+} efi_loaded_image_t;
+
+/* Ein Glied eines "Gerätepfads": beschreibt, wie die Firmware etwas erreicht. */
+typedef struct {
+    uint8_t type, subtype;
+    uint8_t length[2];
+} efi_device_path_t;
+
+#define EFI_FILE_MODE_READ   0x0000000000000001ull
+#define EFI_FILE_MODE_WRITE  0x0000000000000002ull
+#define EFI_FILE_MODE_CREATE 0x8000000000000000ull
+#define EFI_FILE_DIRECTORY   0x0000000000000010ull
+
+typedef struct efi_file {
+    uint64_t revision;
+    efi_status_t (*open)(struct efi_file *self, struct efi_file **result,
+                         const uint16_t *name, uint64_t mode, uint64_t attributes);
+    efi_status_t (*close)(struct efi_file *self);
+    efi_status_t (*remove)(struct efi_file *self);
+    efi_status_t (*read)(struct efi_file *self, uint64_t *size, void *buffer);
+    efi_status_t (*write)(struct efi_file *self, uint64_t *size, const void *buffer);
+    void *get_position;
+    void *set_position;
+    efi_status_t (*get_info)(struct efi_file *self, const efi_guid_t *type,
+                             uint64_t *size, void *buffer);
+    void *set_info;
+    efi_status_t (*flush)(struct efi_file *self);
+} efi_file_t;
+
+typedef struct efi_file_system {
+    uint64_t revision;
+    efi_status_t (*open_volume)(struct efi_file_system *self, efi_file_t **root);
+} efi_file_system_t;
+
+typedef struct {
+    uint64_t size;                      /* Größe dieser Auskunft */
+    uint64_t file_size;
+    uint64_t physical_size;
+    efi_time_t created, accessed, modified;
+    uint64_t attribute;
+    uint16_t name[1];
+} efi_file_info_t;
+
 /* --- Grafik (Graphics Output Protocol) -------------------------------------- */
 
 #define EFI_GOP_GUID \
@@ -134,8 +219,8 @@ typedef struct {
                                    uint64_t *map_key,
                                    uint64_t *descriptor_size,
                                    uint32_t *descriptor_version);
-    void *allocate_pool;
-    void *free_pool;
+    efi_status_t (*allocate_pool)(uint32_t memory_type, uint64_t size, void **buffer);
+    efi_status_t (*free_pool)(void *buffer);
     void *create_event;
     void *set_timer;
     void *wait_for_event;
@@ -145,7 +230,8 @@ typedef struct {
     void *install_protocol_interface;
     void *reinstall_protocol_interface;
     void *uninstall_protocol_interface;
-    void *handle_protocol;
+    efi_status_t (*handle_protocol)(efi_handle_t handle, const efi_guid_t *protocol,
+                                    void **interface);
     void *reserved;
     void *register_protocol_notify;
     void *locate_handle;
@@ -160,13 +246,16 @@ typedef struct {
     efi_status_t (*stall)(uint64_t microseconds);
     efi_status_t (*set_watchdog_timer)(uint64_t timeout, uint64_t code,
                                        uint64_t data_size, uint16_t *data);
-    void *connect_controller;
+    efi_status_t (*connect_controller)(efi_handle_t controller, efi_handle_t *driver,
+                                       void *remaining_path, uint8_t recursive);
     void *disconnect_controller;
     void *open_protocol;
     void *close_protocol;
     void *open_protocol_information;
     void *protocols_per_handle;
-    void *locate_handle_buffer;
+    efi_status_t (*locate_handle_buffer)(uint32_t search_type, const efi_guid_t *protocol,
+                                         void *search_key, uint64_t *count,
+                                         efi_handle_t **buffer);
     efi_status_t (*locate_protocol)(const efi_guid_t *protocol,
                                     void *registration, void **interface);
 } efi_boot_services_t;
@@ -187,9 +276,11 @@ typedef struct {
     void *set_wakeup_time;
     void *set_virtual_address_map;
     void *convert_pointer;
-    void *get_variable;
+    efi_status_t (*get_variable)(const uint16_t *name, const efi_guid_t *vendor,
+                                 uint32_t *attributes, uint64_t *size, void *data);
     void *get_next_variable_name;
-    void *set_variable;
+    efi_status_t (*set_variable)(const uint16_t *name, const efi_guid_t *vendor,
+                                 uint32_t attributes, uint64_t size, const void *data);
     void *get_next_high_monotonic_count;
     void (*reset_system)(uint32_t type, efi_status_t status,
                          uint64_t data_size, void *data);
@@ -210,7 +301,7 @@ typedef struct {
     uint16_t *firmware_vendor;
     uint32_t firmware_revision;
     efi_handle_t console_in_handle;
-    void *con_in;
+    struct efi_text_input *con_in;
     efi_handle_t console_out_handle;
     efi_text_output_t *con_out;
     efi_handle_t standard_error_handle;

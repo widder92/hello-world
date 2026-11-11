@@ -46,7 +46,7 @@
  * HelloOS (einfach weil sie hier im Code steht). Daran erkennt der Updater
  * den richtigen Datenträger und ob ein Paket wirklich HelloOS enthält.
  */
-static const char image_marker[] = "HelloOS-Startdatei-Kennung-7f3a";
+static const char image_marker[] = HELLOOS_IMAGE_MARKER;
 
 static uint8_t public_key[32];
 static bool enabled;
@@ -282,52 +282,36 @@ bool update_check(bool verbose)
 /* Sucht den Datenträger mit der Startdatei von HelloOS und tauscht sie aus. */
 static bool install_unlocked(bool verbose, const uint8_t *image, uint32_t size)
 {
-    bool any_device = false;
+    fat_t fs;
+    fat_file_t file;
 
-    for (int i = 0; i < BLOCK_DEVICES_MAX; i++) {
-        block_device_t *dev = block_get(i);
-        fat_t fs;
-        fat_file_t file;
-        if (!dev)
-            continue;
-        any_device = true;
-        if (!fat_mount(&fs, dev))
-            continue;
-
-        bool ours = false;
-        if (fat_find(&fs, BOOT_FILE, &file) && !file.directory &&
-            file.size > 0 && file.size <= PACKAGE_MAX) {
-            uint8_t *current = kmalloc(file.size);
-            if (current && fat_read(&fs, &file, current))
-                ours = contains(current, file.size, image_marker);
-            kfree(current);
-        }
-        if (!ours) {
-            fat_unmount(&fs);
-            continue;
-        }
-
-        set_state(verbose, "Schreibe neue Startdatei auf %s ...", dev->name);
-        bool ok = fat_replace(&fs, &file, image, size);
-
-        /* Zur Kontrolle zurücklesen und vergleichen */
-        if (ok) {
-            uint8_t *check_buffer = kmalloc(size);
-            ok = check_buffer && fat_find(&fs, BOOT_FILE, &file) &&
-                 file.size == size && fat_read(&fs, &file, check_buffer) &&
-                 memcmp(check_buffer, image, size) == 0;
-            kfree(check_buffer);
-        }
+    /* Dieselbe Stelle, an der auch die eigenen Dateien liegen - und nur die. */
+    if (!storage_mount_home(&fs)) {
+        set_state(verbose, "Kein Datenträger mit der HelloOS-Startdatei gefunden");
+        return false;
+    }
+    if (!fat_find(&fs, BOOT_FILE, &file) || file.directory) {
         fat_unmount(&fs);
-        if (!ok)
-            set_state(verbose, "Schreiben auf %s fehlgeschlagen", dev->name);
-        return ok;
+        set_state(verbose, "Die Startdatei ist verschwunden");
+        return false;
     }
 
-    set_state(verbose, any_device
-                  ? "Kein Datenträger mit der HelloOS-Startdatei gefunden"
-                  : "Kein USB-Stick gefunden - Updates brauchen HelloOS auf einem Stick");
-    return false;
+    set_state(verbose, "Schreibe neue Startdatei auf %s ...", fs.dev->name);
+    bool ok = fat_replace(&fs, &file, image, size);
+    block_flush(fs.dev);
+
+    /* Zur Kontrolle zurücklesen und vergleichen */
+    if (ok) {
+        uint8_t *check_buffer = kmalloc(size);
+        ok = check_buffer && fat_find(&fs, BOOT_FILE, &file) &&
+             file.size == size && fat_read(&fs, &file, check_buffer) &&
+             memcmp(check_buffer, image, size) == 0;
+        kfree(check_buffer);
+    }
+    fat_unmount(&fs);
+    if (!ok)
+        set_state(verbose, "Schreiben auf %s fehlgeschlagen", fs.dev->name);
+    return ok;
 }
 
 static bool install(bool verbose, const uint8_t *image, uint32_t size)

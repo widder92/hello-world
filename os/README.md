@@ -23,8 +23,10 @@ fremde Bibliothek: rund 24 000 Zeilen C und etwas Assembler.
 - **Browser**: zeigt Webseiten als Text mit Links und Formularen, meldet sich
   an (Cookies) und prüft bei https den Server – ohne JavaScript, Gestaltung
   und Bilder
-- **Eigene Dateien bleiben erhalten**: Sie werden auf dem USB-Stick gesichert,
-  von dem HelloOS startet, und sind dort auch unter Windows zu sehen
+- **Eigene Dateien bleiben erhalten**: Sie werden auf dem Datenträger
+  gesichert, von dem HelloOS startet, und sind dort auch unter Windows zu sehen
+- **Neben Windows**: vom USB-Stick – oder fest eingerichtet in einer eigenen
+  Partition der internen Platte (NVMe, SATA), mit Eintrag im Startmenü des PCs
 - **Dateien mit einem Server austauschen** über SFTP – verschlüsselt, mit
   Prüfung des Serverschlüssels; als Fenster mit zwei Spalten oder im Terminal
 - **Eingabegeräte**: USB-Tastaturen und -Mäuse (xHCI, auch An- und Abstecken
@@ -37,7 +39,7 @@ fremde Bibliothek: rund 24 000 Zeilen C und etwas Assembler.
   beantwortet Fragen und kann in HelloOS nachsehen und Befehle ausführen
 - **Updates**: HelloOS sucht regelmäßig nach neuen Versionen, prüft deren
   Signatur, zeigt, was neu ist, und installiert sie nach deiner Zustimmung auf
-  dem USB-Stick, von dem es gestartet wurde
+  dem Datenträger, von dem es gestartet wurde
 - 34 Shell-Befehle
 - **Serielle Konsole** mit eigener Shell – praktisch für Tests ohne Bildschirm
 
@@ -73,10 +75,11 @@ Unter macOS liefert Homebrew alles Nötige (`brew install llvm lld nasm qemu`);
 
 ## Auf einem echten PC starten – auch neben Windows
 
-> HelloOS wurde bisher nur in QEMU getestet, nicht auf echter Hardware. Es
-> schreibt nur auf den USB-Stick, von dem es gestartet wurde (und das nur bei
-> einem Update) – ein Versuch ist ungefährlich, aber es kann sein, dass es auf
-> einem bestimmten Rechner nicht startet.
+> HelloOS wurde bisher nur in QEMU getestet, nicht auf echter Hardware. Vom
+> Stick gestartet, schreibt es nur auf diesen Stick – die interne Platte ist
+> für HelloOS schreibgeschützt, solange du es dort nicht ausdrücklich
+> einrichtest (siehe unten). Ein Versuch vom Stick ist also ungefährlich, aber
+> es kann sein, dass es auf einem bestimmten Rechner nicht startet.
 
 1. USB-Stick vorbereiten – eine der beiden Möglichkeiten:
    - Stick mit FAT32 formatieren und `build/BOOTX64.EFI` als
@@ -88,32 +91,106 @@ Unter macOS liefert Homebrew alles Nötige (`brew install llvm lld nasm qemu`);
    **Vorher unbedingt lesen:** den Hinweis zu BitLocker weiter unten.
 3. Vom Stick starten (Boot-Menü, meist F12, F11, F8 oder Esc).
 
-### Neben Windows
+### Neben Windows: zwei Wege
 
-Der USB-Stick **ist** die Installation neben Windows: Steckt er und wählst du
-ihn im Boot-Menü, startet HelloOS; sonst startet Windows wie immer. HelloOS
-liest und schreibt ausschließlich auf dem Stick – die Festplatte mit Windows
-fasst es nie an, es hat nicht einmal Treiber dafür. Deine Dateien, Updates und
-gemerkten Server liegen alle auf dem Stick und wandern mit ihm mit.
+**Weg 1 – der USB-Stick (einfach und ohne Risiko für Windows).** Steckt der
+Stick und wählst du ihn im Boot-Menü, startet HelloOS; sonst startet Windows
+wie immer. Deine Dateien, Updates und gemerkten Server liegen auf dem Stick.
+Die interne Platte wird dabei nicht beschrieben.
 
-> **BitLocker / Geräteverschlüsselung:** Auf den meisten PCs mit Windows 11
-> (und vielen mit Windows 10) ist die Festplatte verschlüsselt, und der
-> Schlüssel ist an Secure Boot gebunden. Schaltest du Secure Boot aus,
-> verlangt Windows beim nächsten Start den **BitLocker-Wiederherstellungs-
-> schlüssel** (48 Ziffern). Besorge ihn dir vorher – er steht in deinem
-> Microsoft-Konto unter „Geräte" → „BitLocker-Schlüssel" – oder halte den
-> Schutz in Windows vor der Umstellung an („BitLocker verwalten" → „Schutz
-> anhalten"). Ohne diesen Schlüssel kommst du nicht mehr an deine Daten.
-> Schaltest du Secure Boot wieder ein, ist alles wie vorher.
+**Weg 2 – auf der internen Platte, in einer eigenen Partition.** Dann startet
+HelloOS ohne Stick aus dem Startmenü des PCs und speichert auf der internen
+Platte. Das ist der nächste Abschnitt.
 
-Eine feste Installation **auf** der Festplatte, mit Auswahl beim Einschalten
-ohne Stick, gibt es bewusst nicht:
+> **BitLocker / Geräteverschlüsselung – gilt für beide Wege:** Auf den meisten
+> PCs mit Windows 11 (und vielen mit Windows 10) ist die Festplatte
+> verschlüsselt, und der Schlüssel ist an Secure Boot gebunden. Schaltest du
+> Secure Boot aus, verlangt Windows beim nächsten Start den **BitLocker-
+> Wiederherstellungsschlüssel** (48 Ziffern). Besorge ihn dir vorher – er
+> steht in deinem Microsoft-Konto unter „Geräte" → „BitLocker-Schlüssel" –
+> oder halte den Schutz in Windows vor der Umstellung an („BitLocker
+> verwalten" → „Schutz anhalten"). Ohne diesen Schlüssel kommst du nicht mehr
+> an deine Daten. Schaltest du Secure Boot wieder ein, ist alles wie vorher.
 
-- HelloOS kann interne Festplatten und SSDs gar nicht ansprechen. Von dort
-  gestartet, könnte es weder Dateien speichern noch sich aktualisieren.
-- Dafür müsste man den Startbereich des Windows-PCs verändern. Geht dabei
-  etwas schief, startet womöglich auch Windows nicht mehr – ein Risiko, das
-  ein ungetestetes Hobby-System nicht wert ist.
+### Auf der internen Platte einrichten
+
+> **Bitte zuerst lesen.** Dieser Teil ist in QEMU gründlich geprüft (siehe
+> unten), aber **noch nie auf einem echten PC gelaufen**. HelloOS schreibt
+> dann mit eigenen Treibern auf dieselbe Platte, auf der Windows liegt. Es ist
+> so gebaut, dass es nur seine eigene Partition anfassen kann – ein Fehler,
+> der sich erst auf echter Hardware zeigt, lässt sich trotzdem nicht
+> ausschließen. **Mach vorher eine Sicherung deiner wichtigen Daten** auf
+> einen anderen Datenträger. Wer das nicht kann oder will, bleibt bei Weg 1.
+
+Was du brauchst: einen PC mit UEFI, eine NVMe-SSD oder eine SATA-Platte (im
+Modus „AHCI"), den HelloOS-Stick und – wegen Secure Boot – den
+BitLocker-Schlüssel (siehe oben).
+
+**1. In Windows eine Partition für HelloOS anlegen**
+
+1. Rechtsklick auf den Startknopf → „Datenträgerverwaltung".
+2. Rechtsklick auf das Laufwerk C: → „Volume verkleinern…" und zum Beispiel
+   4000 MB abgeben. (Windows verschiebt dabei nichts Wichtiges; das dauert
+   kurz.)
+3. Rechtsklick auf den neuen Bereich „Nicht zugeordnet" → „Neues einfaches
+   Volume…". Dateisystem **FAT32**, Volumebezeichnung **HELLOOS** – genau so
+   geschrieben. An diesem Namen erkennt HelloOS seine Partition.
+4. Empfohlen: In Windows den **Schnellstart ausschalten** (Systemsteuerung →
+   Energieoptionen → „Auswählen, was beim Drücken von Netzschaltern geschehen
+   soll" → Häkchen bei „Schnellstart aktivieren" entfernen). Sonst kann
+   Windows beim nächsten Start einen veralteten Stand dieser Partition im
+   Gedächtnis haben und dort Dateien von HelloOS durcheinanderbringen.
+
+**2. Vom Stick starten und einrichten lassen**
+
+Starte den PC vom HelloOS-Stick. Findet HelloOS eine Partition namens
+HELLOOS, auf der es noch nicht eingerichtet ist, erscheint – noch vor der
+Oberfläche, als Text – die Frage, ob es das jetzt tun soll. Mit **J**:
+
+- wird die Startdatei auf diese Partition kopiert und zur Kontrolle
+  zurückgelesen,
+- entsteht im Startmenü des PCs der Eintrag **„HelloOS"** – hinten angestellt,
+  sodass **Windows weiterhin von allein startet**.
+
+Beides erledigt die Firmware des PCs mit ihren eigenen Treibern; HelloOS
+selbst schreibt in diesem Schritt keinen einzigen Sektor. Jede andere Taste
+(oder 30 Sekunden Warten) lässt alles, wie es ist.
+
+**3. Ohne Stick starten**
+
+Stick abziehen, PC einschalten, das Startmenü des PCs aufrufen (meist F12,
+F11, F8 oder Esc) und „HelloOS" wählen. `disk` zeigt dann, wo HelloOS
+speichert: in der eigenen Partition auf der internen Platte. Auch Updates
+landen ab jetzt dort.
+
+**Wie die Trennung von Windows gesichert ist**
+
+- Interne Platten sind für HelloOS zunächst **komplett schreibgeschützt**.
+  Freigegeben wird nur der Bereich der einen Partition, die HELLOOS heißt
+  *und* die HelloOS-Startdatei enthält. Jeder Schreibversuch außerhalb wird
+  an der letzten Stelle vor dem Treiber abgewiesen – unabhängig davon, was
+  der Rest des Systems vorhat.
+- Der Windows-Startbereich (die EFI-Partition) wird nie beschrieben; der
+  Starteintrag liegt im Speicher der Firmware, nicht auf der Platte.
+- Geprüft in QEMU mit nachgestellter Windows-Platte (Startbereich, „Windows"
+  als Zufallsdaten, Wiederherstellungspartition), jeweils mit NVMe und SATA:
+  einrichten, ohne Stick starten, Dateien schreiben, 3-MB-Datei laden, Update
+  installieren, neu starten. Danach war **alles außerhalb der
+  HelloOS-Partition Bit für Bit unverändert** (Prüfsumme über die ganze
+  Platte) und das Dateisystem der Partition laut `fsck` in Ordnung.
+
+**Was nicht geht oder zu beachten ist**
+
+- PCs, deren SSD im Modus „Intel RST" / „RAID" / „VMD" läuft (bei vielen
+  Notebooks mit Intel-Prozessor die Werkseinstellung): HelloOS sieht die
+  Platte dann nicht. Es startet zwar, speichert aber nur mit eingestecktem
+  Stick. Den Modus im UEFI-Setup umzustellen, kann Windows am Starten hindern
+  – das bitte nicht ohne Anleitung des Herstellers tun.
+- Platten mit 4096-Byte-Sektoren („4Kn") und Partitionen, die über Windows
+  als „BitLocker To Go" verschlüsselt wurden, werden nicht unterstützt.
+- Wieder entfernen: In der Datenträgerverwaltung das Volume HELLOOS löschen
+  und C: wieder „erweitern". Der Eintrag „HelloOS" im Startmenü des PCs läuft
+  dann ins Leere; er lässt sich im UEFI-Setup löschen oder einfach ignorieren.
 
 Was dabei zu beachten ist:
 
@@ -173,7 +250,7 @@ Was dabei zu beachten ist:
 | `update` | sucht jetzt nach einem Update und fragt, ob es installiert werden soll |
 | `news` | zeigt, was in der laufenden Version neu ist |
 | `claude <frage>` | mit Claude sprechen (siehe [Claude](#claude)) |
-| `disk` | zeigt angeschlossene USB-Datenträger |
+| `disk` | zeigt alle Datenträger, ihre FAT32-Partitionen und wo HelloOS speichert |
 | `ls`, `cat <datei>`, `rm <datei>` | Dateien auflisten, anzeigen, löschen |
 | `edit [datei]` | Datei im Texteditor öffnen (oder neu anlegen) |
 | `sha256 <datei>` | Prüfsumme einer Datei |
@@ -251,12 +328,13 @@ Millionen Zeilen Code.
 
 Was du in HelloOS anlegst – mit `write`, dem Editor, `get` oder per
 Dateiübertragung –, liegt im Arbeitsspeicher und wird bei jeder Änderung
-sofort auf dem USB-Stick gesichert, von dem HelloOS gestartet wurde. Beim
-nächsten Start ist alles wieder da.
+sofort auf dem Datenträger gesichert, von dem HelloOS gestartet wurde – dem
+USB-Stick oder der eigenen Partition auf der internen Platte. Beim nächsten
+Start ist alles wieder da.
 
-- Auf dem Stick liegen die Dateien im Ordner **`DATEIEN`**. Steckst du den
-  Stick an einen Windows-PC, kannst du sie dort ganz normal öffnen, kopieren
-  und neue dazulegen – HelloOS lädt sie beim nächsten Start mit.
+- Dort liegen die Dateien im Ordner **`DATEIEN`**. Unter Windows kannst du sie
+  ganz normal öffnen, kopieren und neue dazulegen (Stick einstecken bzw. das
+  Laufwerk HELLOOS öffnen) – HelloOS lädt sie beim nächsten Start mit.
 - `ls` zeigt hinter jeder Datei, ob sie gesichert ist. Steckt kein Stick
   (etwa in QEMU ohne USB-Laufwerk), arbeitet HelloOS nur im Arbeitsspeicher
   und sagt das auch.
@@ -408,7 +486,7 @@ Die Nutzung wird dort nach Verbrauch abgerechnet – ein Abo von claude.ai
 Den Schlüssel bekommt HelloOS auf einem von drei Wegen:
 
 - als Datei `claude.key` (oder `claude.txt`) im Hauptverzeichnis des
-  USB-Sticks, von dem HelloOS startet – einfach den Schlüssel als einzige
+  Datenträgers, von dem HelloOS startet (Stick oder Partition HELLOOS) – einfach den Schlüssel als einzige
   Zeile hineinschreiben; er wird beim ersten Gebrauch gelesen
 - im Chatfenster mit `/key sk-ant-...`
 - im Terminal mit `claude key sk-ant-...`
@@ -477,7 +555,7 @@ zu fragen.
    Version nicht noch einmal von selbst gefragt; in der Taskleiste bleibt der
    Knopf „Update verfügbar" stehen, bis das Update installiert ist. Im
    Terminal fragt der Befehl `update` mit „(j/n)".
-3. **Installieren.** Auf dem USB-Stick, von dem HelloOS gestartet wurde, wird
+3. **Installieren.** Auf dem Datenträger, von dem HelloOS gestartet wurde, wird
    `EFI/BOOT/BOOTX64.EFI` ausgetauscht – zuerst wird die neue Datei komplett
    geschrieben, dann mit einem einzigen Schreibzugriff umgeschaltet. Ein
    Stromausfall mittendrin hinterlässt also die alte oder die neue Version,
@@ -530,8 +608,9 @@ Es geht auch von Hand: `make update-package` erzeugt
 sein, die beim Bauen als `UPDATE_URL` galt.
 
 Die Build-Nummer ist die Anzahl der Commits (`git rev-list --count HEAD`).
-Updates funktionieren nur, wenn HelloOS von einem USB-Stick läuft, der direkt
-am Rechner steckt – interne Festplatten kann es nicht ansprechen.
+Updates brauchen einen Datenträger, den HelloOS beschreiben kann: den
+USB-Stick (direkt am Rechner, ohne Hub) oder die eigene Partition auf einer
+internen NVMe- oder SATA-Platte.
 
 ## Wie es funktioniert
 
@@ -591,8 +670,10 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `kernel/console.c`, `kernel/serial.c` | Konsolen, `kprintf`, serielle Schnittstelle |
 | `kernel/keyboard.c`, `kernel/ps2.c` | Tastaturbelegungen, PS/2-Tastatur und -Maus |
 | `kernel/pci.c`, `kernel/usb.c` | PCI-Bus, xHCI-Treiber (Tastatur, Maus, Massenspeicher) |
-| `kernel/block.c`, `kernel/fat.c` | Blockgeräte, FAT32 (auch lange Dateinamen, Anlegen, Löschen) |
-| `kernel/fs.c`, `kernel/storage.c` | eigene Dateien im Arbeitsspeicher, Sicherung auf dem Stick |
+| `kernel/nvme.c`, `kernel/ahci.c` | interne Datenträger: NVMe-SSDs und SATA-Platten |
+| `kernel/install.c` | Start-Assistent: Einrichten auf der internen Platte über die Firmware |
+| `kernel/block.c`, `kernel/fat.c` | Blockgeräte samt Schreibsperre für interne Platten, FAT32 |
+| `kernel/fs.c`, `kernel/storage.c` | eigene Dateien im Arbeitsspeicher; Sicherung auf dem HelloOS-Datenträger |
 | `kernel/e1000.c` | Treiber für Intel-Netzwerkkarten |
 | `kernel/net.c`, `kernel/tcp.c` | ARP, IPv4, ICMP, UDP, DHCP, DNS; TCP |
 | `kernel/crypto_*.c` | SHA-2, HMAC/HKDF, ChaCha20-Poly1305, AES-CTR, X25519, Ed25519, RSA, ECDSA, ECDH |
@@ -615,6 +696,7 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `tools/smoke-test.sh` | automatischer Boot-Test in QEMU |
 | `tests/crypto_test.py` | Kryptografie gegen `hashlib` und `cryptography` prüfen |
 | `tests/web_test.c` | Web-Adressen und HTML-Umsetzung prüfen, auch mit beschädigten Seiten |
+| `tests/block_test.c` | Schreibsperre für interne Platten prüfen |
 
 ## Grenzen und Ideen zum Weiterbauen
 

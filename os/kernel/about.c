@@ -1,5 +1,6 @@
 /* Kleine Dialogfenster: "Über HelloOS" und "Ausschalten" */
 #include "apps.h"
+#include "disk.h"
 #include "bootinfo.h"
 #include "console.h"
 #include "cpu.h"
@@ -106,6 +107,7 @@ void about_app(void *arg)
 
 void power_reboot(void)
 {
+    disk_shutdown();
     irq_disable();
     boot_info.runtime->reset_system(EFI_RESET_COLD, EFI_SUCCESS, 0, NULL);
 
@@ -118,6 +120,7 @@ void power_reboot(void)
 
 void power_shutdown(void)
 {
+    disk_shutdown();
     irq_disable();
     boot_info.runtime->reset_system(EFI_RESET_SHUTDOWN, EFI_SUCCESS, 0, NULL);
     for (;;)
@@ -299,7 +302,7 @@ void update_app(void *arg)
         if (stage == ASK && yes) {
             gfx_fill(s, 0, 0, UPDATE_W, UPDATE_H, C_BACKGROUND);
             gfx_text(s, 20, 20, "Das Update wird installiert ...", C_TEXT, true);
-            gfx_text(s, 20, 46, "Bitte den USB-Stick nicht abziehen.", C_MUTED,
+            gfx_text(s, 20, 46, "Bitte nicht ausschalten und nichts abziehen.", C_MUTED,
                      false);
             window_invalidate(win, 0, 0, UPDATE_W, UPDATE_H);
             stage = update_install(false) ? DONE : FAILED;

@@ -240,7 +240,7 @@ static void worker(void *arg)
         const file_t *f = fs_find(app->job_name);
         set_status(app, !(f && f->saved), f && f->saved
                        ? "%s geholt (%zu Bytes)"
-                       : "%s geholt (%zu Bytes) - aber nur im Arbeitsspeicher, kein USB-Stick",
+                       : "%s geholt (%zu Bytes) - aber nur im Arbeitsspeicher, kein Datenträger",
                    app->job_name, size);
         break;
     }
@@ -522,7 +522,7 @@ static void draw(app_t *app)
     ui_button(s, connect_rect(), app->connected ? "Trennen" : "Verbinden", !app->connected);
 
     /* Links: eigene Dateien */
-    draw_pane(app, s, LEFT_X, storage_available() ? "Eigene Dateien (USB-Stick)"
+    draw_pane(app, s, LEFT_X, storage_available() ? "Eigene Dateien"
                                              : "Eigene Dateien (nur Arbeitsspeicher!)",
               app->focus == FOCUS_LOCAL);
     clamp(app, app->local_count, &app->local_selected, &app->local_top);
@@ -714,7 +714,7 @@ static void action_delete_local(app_t *app)
         return;
     strlcpy(app->job_name, f->name, sizeof(app->job_name));
     ksnprintf(line, sizeof(line), "Eigene Datei %s löschen?", f->name);
-    ask(app, JOB_DELETE, "Löschen", line, "Sie wird auch vom USB-Stick entfernt.");
+    ask(app, JOB_DELETE, "Löschen", line, "Sie wird auch vom Datenträger entfernt.");
     app->confirm_local = true;
 }
 

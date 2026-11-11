@@ -26,6 +26,13 @@ typedef struct {
     uint64_t rsdp;                      /* ACPI-Wurzeltabelle (oder 0) */
     efi_runtime_services_t *runtime;
     char firmware_vendor[32];
+
+    /* Von welcher Partition wurde gestartet? (Anfangssektor; nur gültig mit boot_known) */
+    bool boot_known;
+    uint64_t boot_partition_start;
+    bool boot_internal;                 /* von einer fest eingebauten Platte (nicht USB) */
+    /* Was der Start-Assistent getan hat - als Meldung für den Benutzer (oder leer) */
+    char install_note[96];
 } boot_info_t;
 
 extern boot_info_t boot_info;

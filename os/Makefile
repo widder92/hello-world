@@ -120,6 +120,8 @@ check: | $(BUILD)
 	    -Wno-format-truncation \
 	    -o $(BUILD)/web_test tests/web_test.c kernel/html.c kernel/url.c
 	$(BUILD)/web_test
+	cc -O1 -g -fsanitize=address,undefined -Wall -o $(BUILD)/block_test tests/block_test.c
+	$(BUILD)/block_test
 
 clean:
 	rm -rf $(BUILD)

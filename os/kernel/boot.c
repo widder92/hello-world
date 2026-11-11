@@ -8,6 +8,7 @@
  */
 #include "bootinfo.h"
 #include "cpu.h"
+#include "install.h"
 #include "serial.h"
 #include "string.h"
 
@@ -170,6 +171,7 @@ efi_status_t efi_main(efi_handle_t image, efi_system_table_t *st)
     copy_vendor(st);
     find_acpi(st);
     st->runtime_services->get_time(&boot_info.boot_time, NULL);
+    install_assistant(image, st);       /* fragt nur, wenn es etwas einzurichten gibt */
     calibrate_tsc(bs);
     setup_graphics(bs);
 

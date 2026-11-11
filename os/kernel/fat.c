@@ -73,6 +73,9 @@ static bool try_volume(fat_t *fs, block_device_t *dev, uint64_t start)
     fs->root_cluster = rd32(boot + 44);
     fs->cluster_count = (total - data_start) / per_cluster;
     fs->info_sector = rd16(boot + 48);
+    fs->sectors = total;
+    if (start > dev->sectors || total > dev->sectors - start)
+        return false;                   /* reicht über den Datenträger hinaus */
 
     /* Die FAT muss für alle Cluster einen Eintrag haben. */
     if ((uint64_t)(fs->cluster_count + 2) * 4 >
@@ -82,14 +85,26 @@ static bool try_volume(fat_t *fs, block_device_t *dev, uint64_t start)
     return fs->cache != NULL;
 }
 
-bool fat_mount(fat_t *fs, block_device_t *dev)
+/* Zählt Fundstellen herunter, bis die gewünschte erreicht ist. */
+static bool nth_volume(fat_t *fs, block_device_t *dev, uint64_t start, int *skip)
+{
+    if (!try_volume(fs, dev, start))
+        return false;
+    if (*skip == 0)
+        return true;
+    (*skip)--;
+    fat_unmount(fs);
+    return false;
+}
+
+bool fat_mount_nth(fat_t *fs, block_device_t *dev, int n)
 {
     uint8_t sector[SECTOR_SIZE];
     memset(fs, 0, sizeof(*fs));
 
     /* 1. Datenträger ohne Partitionstabelle */
     if (try_volume(fs, dev, 0))
-        return true;
+        return n == 0 ? true : (fat_unmount(fs), false);
     if (!block_read(dev, 0, 1, sector) || sector[510] != 0x55 ||
         sector[511] != 0xAA)
         return false;
@@ -101,7 +116,7 @@ bool fat_mount(fat_t *fs, block_device_t *dev)
         uint32_t first = rd32(entry + 8);
         if (entry[4] == 0xEE)
             gpt = true;                 /* Schutzeintrag: eigentlich GPT */
-        else if (entry[4] != 0 && first != 0 && try_volume(fs, dev, first))
+        else if (entry[4] != 0 && first != 0 && nth_volume(fs, dev, first, &n))
             return true;
     }
     if (!gpt)
@@ -130,10 +145,21 @@ bool fat_mount(fat_t *fs, block_device_t *dev)
         if (first == 0)
             continue;
 
-        if (try_volume(fs, dev, first))
+        if (nth_volume(fs, dev, first, &n))
             return true;
     }
     return false;
+}
+
+bool fat_mount(fat_t *fs, block_device_t *dev)
+{
+    return fat_mount_nth(fs, dev, 0);
+}
+
+bool fat_mount_at(fat_t *fs, block_device_t *dev, uint64_t start)
+{
+    memset(fs, 0, sizeof(*fs));
+    return try_volume(fs, dev, start);
 }
 
 void fat_unmount(fat_t *fs)
@@ -1008,4 +1034,41 @@ bool fat_delete(fat_t *fs, const fat_file_t *file)
         forget_free_count(fs);
     }
     return ok;
+}
+
+void fat_label(fat_t *fs, char out[12])
+{
+    uint8_t name[11];
+    bool found = false;
+    dir_t d;
+
+    /* Maßgeblich ist der Eintrag im Wurzelverzeichnis - den ändert Windows beim Umbenennen. */
+    if (dir_load(fs, fs->root_cluster, &d)) {
+        for (uint32_t offset = 0; offset + 32 <= d.bytes && !found; offset += 32) {
+            const uint8_t *entry = d.data + offset;
+            if (entry[0] == 0x00)
+                break;
+            if (entry[0] != 0xE5 && entry[11] != ATTR_LONG_NAME &&
+                (entry[11] & ATTR_LABEL)) {
+                memcpy(name, entry, 11);
+                found = true;
+            }
+        }
+        dir_free(&d);
+    }
+    if (!found) {                       /* sonst das Feld im Startsektor */
+        uint8_t boot[SECTOR_SIZE];
+        if (block_read(fs->dev, fs->start, 1, boot)) {
+            memcpy(name, boot + 71, 11);
+            found = true;
+        }
+    }
+    size_t n = 0;
+    for (int i = 0; found && i < 11; i++) {
+        uint8_t c = name[i];
+        out[n++] = (c >= 32 && c < 127) ? (char)c : '?';
+    }
+    while (n > 0 && out[n - 1] == ' ')
+        n--;
+    out[n] = '\0';
 }

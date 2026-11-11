@@ -17,6 +17,7 @@
 #include "net.h"
 #include "serial.h"
 #include "shell.h"
+#include "disk.h"
 #include "storage.h"
 #include "task.h"
 #include "time.h"
@@ -58,6 +59,8 @@ void kmain(void *unused)
     random_stir(&boot_info.boot_time, sizeof(boot_info.boot_time));
     random_stir(&boot_info.tsc_hz, sizeof(boot_info.tsc_hz));
 
+    if (boot_info.install_note[0])
+        klog("%s\n", boot_info.install_note);
     keyboard_init();
     ps2_init();
     fs_init();
@@ -65,6 +68,8 @@ void kmain(void *unused)
 
     tls_init();
     usb_init();
+    nvme_init();
+    ahci_init();
     storage_init();
     net_init();
     update_init();
