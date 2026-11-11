@@ -1,6 +1,6 @@
 HelloOS 0.12
+- Dies ist das erste Update, das über das Netzwerk auf einen echten PC kommt - ein Test, ob der ganze Weg funktioniert.
 - USB-Hubs werden unterstützt: Tastatur, Maus und Stick funktionieren auch an Buchsen, die im PC über einen Hub laufen.
-- Findet HelloOS weder Tastatur noch Maus, zeigt es von selbst ein Diagnosefenster mit dem Startprotokoll; im Terminal gibt es dafür den Befehl log.
-- net zeigt die Zähler der Netzwerkkarte; bleibt die Adresszuteilung aus, steht das im Startprotokoll.
-- Aus 0.11: Netzwerk auch mit Intels 2,5-Gigabit-Anschlüssen I225 und I226.
-- Netzwerk und andere Geräte hinter einer PCI-Brücke: HelloOS schaltet die Brücke selbst ein, falls die Firmware das nicht getan hat.
+- Netzwerk mit Intels 2,5-Gigabit-Anschlüssen I225 und I226; HelloOS schaltet dafür auch die PCI-Brücke davor ein.
+- Neuer Befehl log: das Startprotokoll mit den Meldungen der Treiber. Findet HelloOS weder Tastatur noch Maus, erscheint es von selbst als Fenster.
+- net zeigt die Zähler der Netzwerkkarte.

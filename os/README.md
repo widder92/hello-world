@@ -77,7 +77,10 @@ Unter macOS liefert Homebrew alles Nötige (`brew install llvm lld nasm qemu`);
 
 ## Auf einem echten PC starten – auch neben Windows
 
-> HelloOS wurde bisher nur in QEMU getestet, nicht auf echter Hardware. Vom
+> HelloOS ist fast nur in QEMU getestet. Auf echter Hardware lief es bisher
+> auf genau einem PC (Mini-PC mit Intel Core Ultra): Start vom Stick,
+> Funk-Tastatur und -Maus hinter dem eingebauten USB-Hub, Netzwerk mit einer
+> I226 samt Adresszuteilung. Vom
 > Stick gestartet, schreibt es nur auf diesen Stick – die interne Platte ist
 > für HelloOS schreibgeschützt, solange du es dort nicht ausdrücklich
 > einrichtest (siehe unten). Ein Versuch vom Stick ist also ungefährlich, aber
@@ -206,9 +209,9 @@ Was dabei zu beachten ist:
 - Stick, Tastatur und Maus dürfen direkt am Rechner oder hinter einem
   **USB-Hub** stecken – auch hinter den fest eingebauten Hubs, an denen in
   manchen PCs die Buchsen hängen, und hinter mehreren Hubs in Reihe. Geprüft
-  ist das in QEMU mit dessen (langsamem) USB-1.1-Hub; die Besonderheiten
-  schneller USB-2- und USB-3-Hubs folgen dem Standard, sind in QEMU aber
-  nicht nachstellbar.
+  ist das in QEMU mit dessen (langsamem) USB-1.1-Hub und auf einem echten PC
+  mit langsamen Geräten an einem USB-2-Hub. Geräte an einem USB-3-Hub sind
+  ungeprüft.
 - Unterstützt werden gewöhnliche USB-Tastaturen und -Mäuse (HID
   „Boot-Protokoll"). Bluetooth-Geräte und Touchpads, die nur über I²C
   angebunden sind, funktionieren nicht – dann hilft eine USB-Maus oder die
@@ -221,7 +224,8 @@ Was dabei zu beachten ist:
   Getestet sind die Treiber mit den Modellen, die QEMU nachbildet (zwei aus
   der e1000-Familie und der 82576). I225 und I226 bildet QEMU nicht nach: Der
   Treiber folgt für sie Intels Unterlagen und teilt sich den geprüften Code
-  mit dem 82576, ist auf echter Hardware aber **noch nie gelaufen**. Hat der
+  mit dem 82576; auf einem echten PC mit zwei I226-Anschlüssen hat er eine
+  Adresse bezogen, mehr ist dort noch nicht geprüft. Hat der
   PC mehrere Anschlüsse, wird der benutzt, an dem ein Kabel steckt.
   **WLAN und Realtek-Karten werden nicht unterstützt.** `net` zeigt, ob eine
   Karte erkannt wurde; eine nicht unterstützte nennt HelloOS beim Start mit
