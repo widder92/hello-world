@@ -17,6 +17,7 @@ enum {
     KEY_DELETE,
     KEY_F1,                             /* F1 bis F12 folgen direkt aufeinander */
     KEY_F12 = KEY_F1 + 11,
+    KEY_SUPER,                          /* Windows-Taste: öffnet das Startmenü */
 };
 
 /* Zustand der Umschalttasten, wird mit jedem Tastendruck mitgeliefert. */

@@ -4,7 +4,7 @@
 #   make run      startet HelloOS in QEMU (Fenster)
 #   make run-usb  wie run, aber mit USB-Tastatur und -Maus statt PS/2
 #   make test     bootet ohne Bildschirm und prüft die wichtigsten Befehle
-#   make check    prüft die Kryptografie gegen eine Referenzbibliothek
+#   make check    prüft Kryptografie (gegen eine Referenzbibliothek) und Browser-Unterbau
 #   make update-key      erzeugt das Schlüsselpaar für signierte Updates
 #   make update-package  baut build/update/helloos.upd und helloos.version
 #   make clean    räumt auf
@@ -114,8 +114,12 @@ test: $(IMAGE)
 	QEMU="$(QEMU)" OVMF="$(OVMF)" ./tools/smoke-test.sh $(IMAGE)
 
 # Läuft auf dem Entwicklungsrechner; braucht das Python-Paket "cryptography".
-check:
+check: | $(BUILD)
 	$(PYTHON) tests/crypto_test.py
+	cc -O1 -g -fsanitize=address,undefined -Wall -Wno-builtin-declaration-mismatch \
+	    -Wno-format-truncation \
+	    -o $(BUILD)/web_test tests/web_test.c kernel/html.c kernel/url.c
+	$(BUILD)/web_test
 
 clean:
 	rm -rf $(BUILD)

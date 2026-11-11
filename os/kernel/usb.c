@@ -321,7 +321,7 @@ static const uint16_t usage_to_scancode[0x65] = {
 
 /* Umschalttasten in der Reihenfolge der Bits im Tastaturbericht */
 static const uint16_t modifier_scancode[8] = {
-    0x1D, 0x2A, 0x38, 0, 0x11D, 0x36, 0x138, 0,
+    0x1D, 0x2A, 0x38, 0x15B, 0x11D, 0x36, 0x138, 0x15C,     /* 0x15B/C: Windows-Tasten */
 };
 
 static void send_key(uint16_t code, bool released)

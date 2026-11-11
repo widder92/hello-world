@@ -20,6 +20,16 @@ typedef struct {
  */
 bool http_get(const char *url, size_t max_body, http_response_t *out);
 
+/*
+ * Für den Browser: Wer das mitgibt, bekommt Weiterleitungen und Cookies selbst
+ * in die Hand - es wird dann keiner Weiterleitung von allein gefolgt.
+ */
+typedef struct {
+    char location[2048];                /* Ziel einer Weiterleitung, wie vom Server genannt */
+    char *cookies;                      /* alle Set-Cookie-Zeilen, je mit \n; kfree() */
+    size_t cookies_len;
+} http_extra_t;
+
 /* Für alles, was über ein einfaches GET hinausgeht. */
 typedef struct {
     const char *method;                 /* "GET" oder "POST" */
@@ -28,6 +38,7 @@ typedef struct {
     size_t body_len;
     size_t max_body;                    /* größte akzeptierte Antwort */
     uint32_t timeout_ms;                /* Geduld beim Warten auf Daten */
+    http_extra_t *extra;                /* siehe oben; sonst NULL */
 } http_options_t;
 
 /* Wie http_get(); Weiterleitungen werden nur bei GET verfolgt. */

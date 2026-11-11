@@ -245,11 +245,15 @@ static bool request(const char *url, const http_options_t *options,
         return false;
     }
 
+    /* Die Anfrage kann lang werden (Adresse, Cookies) - der Puffer richtet sich danach. */
+    size_t request_size = strlen(u.path) +
+                          (options->headers ? strlen(options->headers) : 0) + 512;
     stream_t *s = kmalloc(sizeof(*s));
     char *line = kmalloc(LINE_MAX);
+    char *head = kmalloc(request_size);
     body_t body = { NULL, 0, 0, max_body };
     bool ok = false;
-    if (!s || !line) {
+    if (!s || !line || !head) {
         strlcpy(out->error, "Nicht genug Speicher", sizeof(out->error));
         goto done;
     }
@@ -266,7 +270,7 @@ static bool request(const char *url, const http_options_t *options,
     if (options->body)
         ksnprintf(length, sizeof(length), "Content-Length: %zu\r\n",
                   options->body_len);
-    int n = ksnprintf(line, LINE_MAX,
+    int n = ksnprintf(head, request_size,
                       "%s %s%s HTTP/1.1\r\n"
                       "Host: %s%s\r\n"
                       "User-Agent: " OS_NAME "/" OS_VERSION "\r\n"
@@ -275,7 +279,7 @@ static bool request(const char *url, const http_options_t *options,
                       "Connection: close\r\n\r\n",
                       options->method, *path == '/' ? "" : "/", path, u.host,
                       port, options->headers ? options->headers : "", length);
-    if (n >= LINE_MAX || !stream_write(s, line, (size_t)n) ||
+    if (n >= (int)request_size || !stream_write(s, head, (size_t)n) ||
         (options->body && options->body_len &&
          !stream_write(s, options->body, options->body_len))) {
         strlcpy(out->error, "Anfrage konnte nicht gesendet werden",
@@ -319,13 +323,32 @@ static bool request(const char *url, const http_options_t *options,
             strlcpy(out->content_type, value, sizeof(out->content_type));
         } else if ((value = header_value(line, "location")) != NULL) {
             strlcpy(location, value, URL_MAX);
+            if (options->extra)
+                strlcpy(options->extra->location, value,
+                        sizeof(options->extra->location));
+        } else if (options->extra &&
+                   (value = header_value(line, "set-cookie")) != NULL) {
+            /* Cookies sammeln: jede Zeile hinten an den Text hängen */
+            http_extra_t *extra = options->extra;
+            size_t add = strlen(value) + 1;
+            char *grown = kmalloc(extra->cookies_len + add + 1);
+            if (grown) {
+                if (extra->cookies_len)
+                    memcpy(grown, extra->cookies, extra->cookies_len);
+                memcpy(grown + extra->cookies_len, value, add - 1);
+                extra->cookies_len += add;
+                grown[extra->cookies_len - 1] = '\n';
+                grown[extra->cookies_len] = '\0';
+                kfree(extra->cookies);
+                extra->cookies = grown;
+            }
         }
     }
 
     bool redirect = out->status == 301 || out->status == 302 ||
                     out->status == 303 || out->status == 307 ||
                     out->status == 308;
-    if (redirect && location[0]) {
+    if (redirect && location[0] && !options->extra) {
         /* Relative Ziele ("/pfad") auf denselben Server beziehen */
         if (location[0] == '/') {
             char *absolute = kmalloc(URL_MAX);
@@ -369,6 +392,7 @@ close:
 done:
     kfree(body.data);
     kfree(line);
+    kfree(head);
     kfree(s);
     return ok;
 }
@@ -384,12 +408,14 @@ bool http_get(const char *url, size_t max_body, http_response_t *out)
 bool http_request(const char *url, const http_options_t *options,
                   http_response_t *out)
 {
-    bool follow = strcmp(options->method, "GET") == 0;
+    bool follow = strcmp(options->method, "GET") == 0 && !options->extra;
     char *current = kmalloc(URL_MAX);
     char *location = kmalloc(URL_MAX);
     bool ok = false;
 
     memset(out, 0, sizeof(*out));
+    if (options->extra)
+        memset(options->extra, 0, sizeof(*options->extra));
     if (!current || !location) {
         strlcpy(out->error, "Nicht genug Speicher", sizeof(out->error));
         goto done;

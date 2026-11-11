@@ -1,5 +1,4 @@
-HelloOS 0.6
-- Eigene Dateien bleiben erhalten: Sie werden auf dem USB-Stick im Ordner DATEIEN gesichert und sind auch unter Windows lesbar.
-- Neuer Texteditor: Knopf "Editor", F6 oder "edit <datei>" im Terminal.
-- Dateien mit einem Server austauschen (SFTP, verschlüsselt): Knopf "Transfer", F7 oder "sftp benutzer@server".
-- Beim ersten Verbinden zeigt HelloOS den Fingerabdruck des Servers und merkt ihn sich.
+HelloOS 0.7
+- Startmenü wie gewohnt: Knopf "Start" unten links oder die Windows-Taste.
+- Neuer Browser (F8 oder "browse <adresse>"): zeigt Webseiten als Text mit Links, füllt Formulare aus und kann sich anmelden.
+- Der Browser kennt kein JavaScript - viele moderne Seiten funktionieren damit nur eingeschränkt oder gar nicht.

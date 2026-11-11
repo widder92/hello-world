@@ -387,7 +387,17 @@ static void cmd_start(shell_t *sh, char *args)
         kprintf("Es gibt keinen Bildschirm.\n");
     else if (!gui_launch(app))
         kprintf("Aufruf: start terminal | monitor | malen | info | claude | editor |\n"
-                "              transfer | aus\n");
+                "              transfer | browser | aus\n");
+}
+
+static void cmd_browse(shell_t *sh, char *args)
+{
+    (void)sh;
+    char *address = next_token(&args);
+    if (!gui_available())
+        kprintf("Der Browser braucht einen Bildschirm (für Text: \"web <adresse>\").\n");
+    else if (!gui_launch_with("browser", address))
+        kprintf("Der Browser ließ sich nicht starten.\n");
 }
 
 static void cmd_edit(shell_t *sh, char *args)
@@ -1312,6 +1322,7 @@ static const struct command commands[] = {
     { "ping",     "ping <ziel>",         "Erreichbarkeit eines Rechners prüfen", cmd_ping },
     { "dns",      "dns <name>",          "Namen in eine Adresse auflösen", cmd_dns },
     { "web",      "web <adresse>",       "Webseite als Text anzeigen", cmd_web },
+    { "browse",   "browse [adresse]",    "Webseite im Browser-Fenster öffnen", cmd_browse },
     { "get",      "get <adresse> <datei>", "Datei aus dem Netz laden", cmd_get },
     { "sftp",     "sftp <benutzer>@<server>", "Dateien verschlüsselt mit einem Server austauschen", cmd_sftp },
     { "claude",   "claude <frage>",      "Mit dem KI-Assistenten Claude sprechen", cmd_claude },

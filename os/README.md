@@ -1,10 +1,10 @@
 # HelloOS
 
 Ein kleines, von Grund auf selbst geschriebenes Betriebssystem für PCs mit
-64-Bit-Prozessor (x86-64) und UEFI – mit grafischer Oberfläche, Netzwerk,
-Texteditor, verschlüsselter Dateiübertragung (SFTP), signierten Updates und
-eingebautem Claude. Kein Linux, kein GRUB, keine fremde Bibliothek: rund
-21 000 Zeilen C und etwas Assembler.
+64-Bit-Prozessor (x86-64) und UEFI – mit grafischer Oberfläche samt Startmenü,
+Netzwerk, einem einfachen Browser, Texteditor, verschlüsselter Dateiübertragung
+(SFTP), signierten Updates und eingebautem Claude. Kein Linux, kein GRUB, keine
+fremde Bibliothek: rund 24 000 Zeilen C und etwas Assembler.
 
 ![HelloOS mit Terminal, Systemmonitor und Malprogramm](docs/screenshot.png)
 
@@ -14,10 +14,14 @@ eingebautem Claude. Kein Linux, kein GRUB, keine fremde Bibliothek: rund
   einzige Datei (`BOOTX64.EFI`), die die Firmware direkt lädt
 - **64-Bit-Kernel** mit eigenen Seitentabellen, Interrupt-Behandlung,
   Speicherverwaltung und präemptivem Multitasking
-- **Grafische Oberfläche**: verschiebbare Fenster, Taskleiste, Mauszeiger,
-  geglättete Schrift – gezeichnet direkt in den Bildspeicher der Grafikkarte
-- **Programme**: Terminal mit Shell (mehrere gleichzeitig), Texteditor,
+- **Grafische Oberfläche**: verschiebbare Fenster, Taskleiste mit Startmenü,
+  Mauszeiger, geglättete Schrift – gezeichnet direkt in den Bildspeicher der
+  Grafikkarte
+- **Programme**: Browser, Terminal mit Shell (mehrere gleichzeitig), Texteditor,
   Dateiübertragung, Systemmonitor, Malprogramm, Info- und Ausschalten-Dialog
+- **Browser**: zeigt Webseiten als Text mit Links und Formularen, meldet sich
+  an (Cookies) und prüft bei https den Server – ohne JavaScript, Gestaltung
+  und Bilder
 - **Eigene Dateien bleiben erhalten**: Sie werden auf dem USB-Stick gesichert,
   von dem HelloOS startet, und sind dort auch unter Windows zu sehen
 - **Dateien mit einem Server austauschen** über SFTP – verschlüsselt, mit
@@ -33,7 +37,7 @@ eingebautem Claude. Kein Linux, kein GRUB, keine fremde Bibliothek: rund
 - **Updates**: HelloOS sucht regelmäßig nach neuen Versionen, prüft deren
   Signatur, zeigt, was neu ist, und installiert sie nach deiner Zustimmung auf
   dem USB-Stick, von dem es gestartet wurde
-- 33 Shell-Befehle
+- 34 Shell-Befehle
 - **Serielle Konsole** mit eigener Shell – praktisch für Tests ohne Bildschirm
 
 ![Netzwerk: eine Webseite über HTTPS im Terminal](docs/screenshot-netz.png)
@@ -54,18 +58,19 @@ make            # baut build/BOOTX64.EFI und das Disk-Image build/helloos.img
 make run        # startet HelloOS in einem QEMU-Fenster
 make run-usb    # dasselbe mit USB-Tastatur und -Maus statt PS/2
 make test       # bootet ohne Bildschirm und prüft die wichtigsten Befehle
-make check      # prüft die Kryptografie gegen eine Referenzbibliothek
+make check      # prüft Kryptografie und Browser-Unterbau auf dem Entwicklungsrechner
 ```
 
 In QEMU steckt das Image als USB-Stick an einem emulierten USB-3-Controller,
 dazu kommt eine emulierte Netzwerkkarte mit Internetzugang über den
-Wirtsrechner. `make check` braucht zusätzlich das Python-Paket `cryptography`.
+Wirtsrechner. `make check` braucht zusätzlich das Python-Paket `cryptography`
+und einen gewöhnlichen C-Compiler (`cc`).
 
 Liegt die Firmware an einem ungewöhnlichen Ort: `make run OVMF=/pfad/zu/OVMF.fd`.
 Unter macOS liefert Homebrew alles Nötige (`brew install llvm lld nasm qemu`);
 `clang` und `lld-link` gibt man dann mit `make CC=... LD=...` an.
 
-## Auf einem echten PC starten
+## Auf einem echten PC starten – auch neben Windows
 
 > HelloOS wurde bisher nur in QEMU getestet, nicht auf echter Hardware. Es
 > schreibt nur auf den USB-Stick, von dem es gestartet wurde (und das nur bei
@@ -79,7 +84,35 @@ Unter macOS liefert Homebrew alles Nötige (`brew install llvm lld nasm qemu`);
      `sudo dd if=build/helloos.img of=/dev/sdX bs=1M conv=fsync`
      (**Achtung:** `/dev/sdX` muss wirklich der Stick sein, er wird überschrieben).
 2. Im UEFI-Setup des PCs **Secure Boot ausschalten** – HelloOS ist nicht signiert.
+   **Vorher unbedingt lesen:** den Hinweis zu BitLocker weiter unten.
 3. Vom Stick starten (Boot-Menü, meist F12, F11, F8 oder Esc).
+
+### Neben Windows
+
+Der USB-Stick **ist** die Installation neben Windows: Steckt er und wählst du
+ihn im Boot-Menü, startet HelloOS; sonst startet Windows wie immer. HelloOS
+liest und schreibt ausschließlich auf dem Stick – die Festplatte mit Windows
+fasst es nie an, es hat nicht einmal Treiber dafür. Deine Dateien, Updates und
+gemerkten Server liegen alle auf dem Stick und wandern mit ihm mit.
+
+> **BitLocker / Geräteverschlüsselung:** Auf den meisten PCs mit Windows 11
+> (und vielen mit Windows 10) ist die Festplatte verschlüsselt, und der
+> Schlüssel ist an Secure Boot gebunden. Schaltest du Secure Boot aus,
+> verlangt Windows beim nächsten Start den **BitLocker-Wiederherstellungs-
+> schlüssel** (48 Ziffern). Besorge ihn dir vorher – er steht in deinem
+> Microsoft-Konto unter „Geräte" → „BitLocker-Schlüssel" – oder halte den
+> Schutz in Windows vor der Umstellung an („BitLocker verwalten" → „Schutz
+> anhalten"). Ohne diesen Schlüssel kommst du nicht mehr an deine Daten.
+> Schaltest du Secure Boot wieder ein, ist alles wie vorher.
+
+Eine feste Installation **auf** der Festplatte, mit Auswahl beim Einschalten
+ohne Stick, gibt es bewusst nicht:
+
+- HelloOS kann interne Festplatten und SSDs gar nicht ansprechen. Von dort
+  gestartet, könnte es weder Dateien speichern noch sich aktualisieren.
+- Dafür müsste man den Startbereich des Windows-PCs verändern. Geht dabei
+  etwas schief, startet womöglich auch Windows nicht mehr – ein Risiko, das
+  ein ungetestetes Hobby-System nicht wert ist.
 
 Was dabei zu beachten ist:
 
@@ -103,9 +136,12 @@ Was dabei zu beachten ist:
 
 ## Bedienung
 
+![Das Startmenü, dahinter der Browser](docs/screenshot-start.png)
+
 | Aktion | Maus | Tastatur |
 | --- | --- | --- |
-| Programm starten | Knöpfe links in der Taskleiste | F1 Terminal, F2 Monitor, F3 Malen, F4 Info, F5 Claude, F6 Editor, F7 Transfer |
+| Startmenü öffnen | „Start" unten links | Windows-Taste oder Strg+Esc, dann Pfeiltasten und Enter |
+| Programm starten | im Startmenü anklicken | F1 Terminal, F2 Monitor, F3 Malen, F4 Info, F5 Claude, F6 Editor, F7 Transfer, F8 Browser |
 | Fenster wechseln | Fenster oder dessen Knopf in der Taskleiste anklicken | Alt+Tab |
 | Fenster verschieben | an der Titelleiste ziehen | – |
 | Fenster schließen | ✕ in der Titelleiste | Alt+F4 |
@@ -123,11 +159,12 @@ Was dabei zu beachten ist:
 | `spawn counter [n]` | Hintergrund-Task, der im Sekundentakt bis *n* zählt |
 | `spawn burn` | Hintergrund-Task, der pausenlos rechnet (zeigt die Präemption) |
 | `kill <pid>` | Task beenden |
-| `start <programm>` | `terminal`, `monitor`, `malen`, `info`, `claude`, `editor`, `transfer` oder `aus` öffnen |
+| `start <programm>` | `terminal`, `monitor`, `malen`, `info`, `claude`, `editor`, `transfer`, `browser` oder `aus` öffnen |
 | `net` | Netzwerkkarte, Adressen, Paketzähler; `net dns <adresse>` setzt den DNS-Server |
 | `ping <ziel>` | prüft, ob ein Rechner antwortet |
 | `dns <name>` | löst einen Namen in eine IPv4-Adresse auf |
 | `web <adresse>` | holt eine Webseite und zeigt sie als Text |
+| `browse [adresse]` | öffnet eine Webseite im Browser-Fenster (siehe [Browser](#browser)) |
 | `get <adresse> <datei>` | lädt eine Datei aus dem Netz zu den eigenen Dateien |
 | `sftp <benutzer>@<server>` | Dateien verschlüsselt mit einem Server austauschen (siehe [unten](#webseite-bearbeiten-editor-und-dateiübertragung)) |
 | `update` | sucht jetzt nach einem Update und fragt, ob es installiert werden soll |
@@ -147,6 +184,60 @@ Was dabei zu beachten ist:
 
 Pfeil hoch/runter blättert im Verlauf, Strg+C verwirft die Eingabe,
 Strg+L leert das Terminal.
+
+## Browser
+
+![Der Browser mit der Bearbeitungsseite eines WordPress-Beitrags](docs/screenshot-browser.png)
+
+Startmenü → „Browser", F8 oder `browse adresse` im Terminal. Es ist ein
+**einfacher Browser**, in der Art eines Textbrowsers: Er holt eine Seite, lässt
+Gestaltung, Bilder und Skripte weg und zeigt, was übrig bleibt – Überschriften,
+Text, Listen, Tabellen (zeilenweise), Links und Formulare.
+
+Was er kann:
+
+- Links folgen, zurückgehen, neu laden; Adressen eingeben (Strg+L)
+- Formulare ausfüllen und absenden: Textfelder, Passwörter, Häkchen,
+  Auswahllisten, mehrzeilige Textfelder (öffnen einen kleinen Editor)
+- sich anmelden: Cookies bleiben erhalten, solange das Fenster offen ist –
+  danach sind sie weg, gespeichert wird nichts
+- https mit Prüfung des Servers; die Statuszeile zeigt, ob die Verbindung
+  verschlüsselt ist. Soll ein Passwort unverschlüsselt (http) gesendet werden,
+  fragt der Browser vorher nach.
+- Dateien, die keine Webseiten sind, landen bei den eigenen Dateien
+
+Was er **nicht** kann – und das ist bei heutigen Webseiten viel:
+
+- **kein JavaScript.** Seiten und Funktionen, die darauf beruhen, bleiben leer,
+  reagieren nicht oder sagen selbst, dass sie JavaScript brauchen.
+- keine Gestaltung (CSS), keine Bilder, keine Videos, keine Schriften außer
+  der einen eingebauten; nicht-lateinische Schrift erscheint als „?"
+- kein Hochladen von Dateien, keine Lesezeichen, keine Tabs, kein Passwortspeicher
+- Lange Menüs einer Seite stehen als Liste am Seitenanfang. Der Browser
+  springt deshalb beim Laden zur Hauptüberschrift; mit Pos1 geht es nach oben.
+
+### WordPress im Browser von HelloOS
+
+Getestet mit einer echten WordPress-Installation (Version 6.4, lokal, ohne
+weitere Plugins):
+
+| Was | Ergebnis |
+| --- | --- |
+| Anmelden (`wp-login.php`) | funktioniert |
+| Dashboard, Listen der Beiträge, Seiten, Kommentare, Benutzer, Einstellungen | lesbar; Links und einfache Formulare funktionieren |
+| Beitrag bearbeiten mit dem **Block-Editor** (Standard) | **geht nicht** – WordPress meldet „Der Block-Editor benötigt JavaScript" |
+| Beitrag bearbeiten mit dem **klassischen Editor** | funktioniert: Titel und Text geändert, „Aktualisieren" gedrückt, Änderung in der Datenbank geprüft. Der Text erscheint als HTML-Quelltext. |
+| Bilder und andere Dateien hochladen (Mediathek) | geht nicht |
+| Design anpassen (Customizer, Website-Editor), Plugins per Mausklick, alles mit Ziehen und Ablegen | geht nicht |
+| **WooCommerce** (Bestellungen, Produkte) | **nicht getestet.** Teile der Verwaltung sind klassische Formulare und könnten gehen, andere brauchen JavaScript. |
+
+Den klassischen Editor bekommt eine WordPress-Seite über das Plugin „Classic
+Editor" – das muss einmal von einem normalen Browser aus installiert werden.
+Unterm Strich: Nachsehen, Texte korrigieren, einfache Einstellungen – ja. Das
+WordPress, wie man es aus Chrome oder Firefox kennt – nein, und daran ändert
+sich in HelloOS auch nichts Grundsätzliches: Ein Browser, der JavaScript und
+moderne Gestaltung beherrscht, ist ein Projekt in der Größenordnung von
+Millionen Zeilen Code.
 
 ## Eigene Dateien
 
@@ -248,10 +339,9 @@ Onlineshop:**
 - HelloOS hat keinen Speicherschutz; die Kryptografie ist nicht gegen
   Seitenkanäle gehärtet. Für Zugangsdaten zu einem Shop mit Kundendaten ist
   das zu wenig.
-- **WordPress selbst lässt sich hier nicht bedienen.** Das Dashboard
-  (Beiträge, Bestellungen, Plugins, Updates) läuft im Browser und braucht
-  JavaScript – einen solchen Browser hat HelloOS nicht. Möglich ist nur, was
-  über Dateien geht: Theme-Dateien, CSS, einzelne HTML- oder PHP-Dateien.
+- **WordPress lässt sich nur eingeschränkt bedienen.** Der eingebaute Browser
+  kennt kein JavaScript; was damit geht und was nicht, steht unter
+  [Browser](#wordpress-im-browser-von-helloos).
 - Windows-Programme laufen nicht.
 
 Zum Ausprobieren, Lernen und für eine eigene kleine Seite ist es gedacht. Für
@@ -283,7 +373,8 @@ Wichtig zu wissen:
 - Wer in einem Netz arbeitet, das HTTPS mit einer eigenen Zertifizierungsstelle
   aufbricht (manche Firmennetze), kann deren Zertifikat beim Bauen mitgeben:
   `make EXTRA_CA=/pfad/zur/ca.pem`.
-- Es gibt keinen Browser – `web` zeigt den Text einer Seite, mehr nicht.
+- Der [Browser](#browser) ist einfach gehalten und kennt kein JavaScript; `web`
+  zeigt eine Seite als reinen Text im Terminal.
 - Nur IPv4, keine zerteilten Pakete, keine eingehenden Verbindungen.
 - In QEMU beantwortet nur der eingebaute Router (`10.0.2.2`) Pings; Pings ins
   Internet leitet QEMUs Netz nicht weiter. Namensauflösung und Webzugriffe
@@ -325,7 +416,7 @@ Claude arbeitet mit denselben Befehlen wie du im Terminal, in drei Stufen:
 | Stufe | Befehle |
 | --- | --- |
 | ohne Rückfrage | nur Anzeigen: `info`, `mem`, `uptime`, `date`, `ps`, `ls`, `cat`, `sha256`, `disk`, `news`, `history`, `net` und `keymap` ohne Angaben, außerdem `echo` und `start` |
-| erst nach deiner Zustimmung | alles, was etwas verändert oder ins Netz geht: `write`, `append`, `rm`, `edit`, `kill`, `spawn`, `web`, `get`, `ping`, `dns`, `update`, `reboot`, `shutdown`, … |
+| erst nach deiner Zustimmung | alles, was etwas verändert oder ins Netz geht: `write`, `append`, `rm`, `edit`, `kill`, `spawn`, `web`, `browse`, `get`, `ping`, `dns`, `update`, `reboot`, `shutdown`, … |
 | nie | `panic`, `claude` selbst und `sftp` – Verbindungen zu deinem Server baust nur du auf |
 
 Vor einer Rückfrage steht der vollständige Befehl im Verlauf; im Fenster
@@ -498,15 +589,16 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `kernel/net.c`, `kernel/tcp.c` | ARP, IPv4, ICMP, UDP, DHCP, DNS; TCP |
 | `kernel/crypto_*.c` | SHA-2, HMAC/HKDF, ChaCha20-Poly1305, AES-CTR, X25519, Ed25519, RSA, ECDSA, ECDH |
 | `kernel/x509.c`, `kernel/tls_roots.*` | Zertifikate lesen und prüfen, eingebaute Wurzelzertifikate |
-| `kernel/tls.c`, `kernel/http.c` | TLS 1.3, HTTP-Client |
+| `kernel/tls.c`, `kernel/http.c`, `kernel/url.c` | TLS 1.3, HTTP-Client, Web-Adressen |
+| `kernel/html.c`, `kernel/browser.c` | HTML zerlegen und als Text setzen; das Browser-Fenster |
 | `kernel/ssh.c`, `kernel/sftp.c` | SSH-Client, Dateiübertragung per SFTP |
 | `kernel/json.c` | JSON lesen und schreiben |
 | `kernel/claude.c`, `kernel/claude_app.c` | Anbindung an die Claude-API, Chatfenster |
 | `kernel/update.c` | Selbstaktualisierung |
 | `kernel/gfx.c`, `kernel/font_data.c` | Zeichenfunktionen, Schrift |
-| `kernel/gui.c` | Compositor, Fensterverwaltung, Taskleiste |
+| `kernel/gui.c` | Compositor, Fensterverwaltung, Taskleiste, Startmenü |
 | `kernel/terminal.c`, `kernel/shell.c` | Terminalfenster und Kommandozeile |
-| `kernel/editor.c`, `kernel/transfer.c` | Texteditor, Fenster zur Dateiübertragung |
+| `kernel/editor.c`, `kernel/textedit.c`, `kernel/transfer.c` | Texteditor und sein Textfeld, Fenster zur Dateiübertragung |
 | `kernel/sysmon.c`, `kernel/paint.c`, `kernel/about.c` | Systemmonitor, Malprogramm, Dialoge |
 | `tools/mkimage.py` | baut das Disk-Image (GPT, FAT32) |
 | `tools/update-tool.py` | Schlüssel erzeugen, Update-Pakete signieren und prüfen |
@@ -514,6 +606,7 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `tools/mkroots.py` | erzeugt `tls_roots.bin` aus einer Liste von Wurzelzertifikaten |
 | `tools/smoke-test.sh` | automatischer Boot-Test in QEMU |
 | `tests/crypto_test.py` | Kryptografie gegen `hashlib` und `cryptography` prüfen |
+| `tests/web_test.c` | Web-Adressen und HTML-Umsetzung prüfen, auch mit beschädigten Seiten |
 
 ## Grenzen und Ideen zum Weiterbauen
 
@@ -529,7 +622,8 @@ gehalten. Naheliegende nächste Schritte:
 - weitere Netzwerkkarten (Realtek, Intel I225), USB-Hubs
 - User-Modus (Ring 3) mit Systemaufrufen und getrennten Adressräumen
 - Programme aus Dateien laden (ELF), mehrere Prozessorkerne
-- ein grafischer Browser, Fenster in der Größe ändern, ein Texteditor
+- Fenster in der Größe ändern und maximieren, Symbole auf dem Desktop, ein Dateimanager
+- im Browser: Bilder, einfache Gestaltung, Lesezeichen (JavaScript bleibt außer Reichweite)
 
 ## Die ältere 32-Bit-Version
 

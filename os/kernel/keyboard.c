@@ -150,6 +150,8 @@ void keyboard_handle_scancode(uint8_t scancode, bool extended, bool released)
         case 0x53: key = KEY_DELETE; break;
         case 0x1C: key = '\n'; break;                   /* Enter am Ziffernblock */
         case 0x35: key = '/'; break;
+        case 0x5B:
+        case 0x5C: key = KEY_SUPER; break;              /* Windows-Tasten */
         default: return;
         }
         if (!released)

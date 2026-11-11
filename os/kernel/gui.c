@@ -347,19 +347,26 @@ void ui_button(surface_t *s, rect_t r, const char *label, bool highlighted)
 
 /* --- Taskleiste ---------------------------------------------------------------------- */
 
+/* Die Programme; die Reihenfolge bestimmt die Funktionstasten F1, F2, ... */
 static const struct {
-    const char *label;
+    const char *label;                  /* im Startmenü */
     const char *app;
+    color_t color;                      /* Farbe des kleinen Symbols */
+    char letter;                        /* ... und der Buchstabe darin */
 } launchers[] = {
-    { "Terminal", "terminal" },
-    { "Monitor", "monitor" },
-    { "Malen", "malen" },
-    { "Info", "info" },
-    { "Claude", "claude" },
-    { "Editor", "editor" },
-    { "Transfer", "transfer" },
+    { "Terminal", "terminal", RGB(70, 76, 90), '>' },
+    { "Systemmonitor", "monitor", RGB(46, 140, 96), 'S' },
+    { "Malen", "malen", RGB(204, 108, 52), 'M' },
+    { "Über HelloOS", "info", RGB(90, 110, 150), 'i' },
+    { "Claude", "claude", RGB(190, 92, 58), 'C' },
+    { "Texteditor", "editor", RGB(64, 118, 208), 'E' },
+    { "Dateien übertragen", "transfer", RGB(140, 96, 180), 'D' },
+    { "Browser", "browser", RGB(36, 132, 170), 'B' },
 };
 #define LAUNCHER_COUNT ((int)(sizeof(launchers) / sizeof(launchers[0])))
+
+/* Reihenfolge im Startmenü: das Wichtigste oben */
+static const int menu_order[] = { 7, 6, 5, 0, 4, 2, 1, 3 };
 
 #define WINDOW_BUTTON_W 132
 
@@ -368,13 +375,10 @@ static rect_t taskbar_rect(void)
     return rect_make(0, screen.height - TASKBAR_H, screen.width, TASKBAR_H);
 }
 
-static rect_t launcher_rect(int i)
+static rect_t start_rect(void)
 {
-    int x = 8;
-    for (int k = 0; k < i; k++)
-        x += gfx_text_width(launchers[k].label) + 20 + 6;
-    return rect_make(x, screen.height - TASKBAR_H + (TASKBAR_H - BUTTON_H) / 2,
-                     gfx_text_width(launchers[i].label) + 20, BUTTON_H);
+    return rect_make(6, screen.height - TASKBAR_H + (TASKBAR_H - BUTTON_H) / 2,
+                     gfx_text_width("Start") + 44, BUTTON_H);
 }
 
 static rect_t power_rect(void)
@@ -426,9 +430,127 @@ static int windows_by_age(window_t **out)
 
 static rect_t window_button_rect(int i)
 {
-    rect_t last = launcher_rect(LAUNCHER_COUNT - 1);
-    int x = last.x + last.w + 22 + i * (WINDOW_BUTTON_W + 6);
-    return rect_make(x, last.y, WINDOW_BUTTON_W, BUTTON_H);
+    rect_t start = start_rect();
+    int x = start.x + start.w + 20 + i * (WINDOW_BUTTON_W + 6);
+    return rect_make(x, start.y, WINDOW_BUTTON_W, BUTTON_H);
+}
+
+/* --- Startmenü ----------------------------------------------------------------------- */
+
+#define MENU_W       268
+#define MENU_HEADER  40
+#define MENU_ROW     30
+#define MENU_GAP     9                  /* Trennlinie vor "Update" und "Ausschalten" */
+#define C_MENU       RGB(30, 35, 46)
+#define C_MENU_MUTED RGB(140, 148, 164)
+
+static bool menu_open;
+static int menu_selected = -1;          /* Zeile unter Maus oder Tastatur, -1: keine */
+
+/* Zeilen: erst die Programme, dann (falls vorhanden) das Update, zuletzt Ausschalten. */
+static int menu_rows(void)
+{
+    return LAUNCHER_COUNT + (update_waiting() ? 1 : 0) + 1;
+}
+
+/* Die Fläche des Menüs - mit Platz für die Update-Zeile, ob sie da ist oder nicht. */
+static rect_t menu_rect(void)
+{
+    int h = MENU_HEADER + (LAUNCHER_COUNT + 2) * MENU_ROW + MENU_GAP + 6;
+    return rect_make(4, screen.height - TASKBAR_H - h - 2, MENU_W, h);
+}
+
+static rect_t menu_row_rect(int row)
+{
+    rect_t m = menu_rect();
+    int y = m.y + m.h - 6 - (menu_rows() - row) * MENU_ROW;
+    if (row < LAUNCHER_COUNT)
+        y -= MENU_GAP;
+    return rect_make(m.x + 4, y, m.w - 8, MENU_ROW);
+}
+
+static int menu_row_at(int x, int y)
+{
+    for (int row = 0; row < menu_rows(); row++) {
+        if (rect_contains(menu_row_rect(row), x, y))
+            return row;
+    }
+    return -1;
+}
+
+static void menu_set_open(bool open)
+{
+    if (menu_open == open)
+        return;
+    menu_open = open;
+    menu_selected = -1;
+    add_dirty(menu_rect());
+    add_dirty(taskbar_rect());
+}
+
+static void menu_select(int row)
+{
+    if (row != menu_selected) {
+        menu_selected = row;
+        add_dirty(menu_rect());
+    }
+}
+
+static void menu_activate(int row)
+{
+    menu_set_open(false);
+    if (row < 0)
+        return;
+    if (row < LAUNCHER_COUNT)
+        gui_launch(launchers[menu_order[row]].app);
+    else if (row == menu_rows() - 1)
+        gui_launch("aus");
+    else
+        gui_launch("update");
+}
+
+static void draw_menu_row(int row, const char *label, const char *hint, color_t icon,
+                          char letter)
+{
+    rect_t r = menu_row_rect(row);
+    char text[2] = { letter, 0 };
+    if (row == menu_selected)
+        gfx_fill(&back, r.x, r.y, r.w, r.h, C_BUTTON_ACTIVE);
+    gfx_fill(&back, r.x + 8, r.y + 5, 20, 20, icon);
+    gfx_text(&back, r.x + 14, r.y + 7, text, RGB(255, 255, 255), true);
+    gfx_text(&back, r.x + 38, r.y + 7, label, C_TEXT_LIGHT, false);
+    gfx_text(&back, r.x + r.w - 8 - gfx_text_width(hint), r.y + 7, hint,
+             row == menu_selected ? C_TEXT_LIGHT : C_MENU_MUTED, false);
+}
+
+static void draw_start_menu(void)
+{
+    rect_t m = menu_rect();
+    if (!menu_open || rect_empty(rect_intersect(m, back.clip)))
+        return;
+
+    /* Ohne die Update-Zeile ist das Menü eine Zeile niedriger. */
+    int rows = menu_rows();
+    int top = menu_row_rect(0).y - MENU_HEADER;
+    gfx_fill(&back, m.x, top, m.w, m.y + m.h - top, C_MENU);
+    gfx_frame(&back, m.x, top, m.w, m.y + m.h - top, C_BUTTON_BORDER);
+    gfx_gradient(&back, m.x + 1, top + 1, m.w - 2, MENU_HEADER - 6, C_TITLE_TOP,
+                 C_TITLE_BOTTOM);
+    gfx_text(&back, m.x + 14, top + 10, OS_NAME " " OS_VERSION, RGB(255, 255, 255),
+             true);
+
+    for (int row = 0; row < LAUNCHER_COUNT; row++) {
+        int index = menu_order[row];
+        char hint[8];
+        ksnprintf(hint, sizeof(hint), "F%d", index + 1);
+        draw_menu_row(row, launchers[index].label, hint, launchers[index].color,
+                      launchers[index].letter);
+    }
+    rect_t line = menu_row_rect(LAUNCHER_COUNT);
+    gfx_fill(&back, m.x + 10, line.y - MENU_GAP / 2 - 1, m.w - 20, 1, C_TASKBAR_LINE);
+    if (rows == LAUNCHER_COUNT + 2)
+        draw_menu_row(LAUNCHER_COUNT, "Update installieren", "", RGB(46, 140, 96), 'U');
+    draw_menu_row(rows - 1, "Ausschalten ...", "", RGB(200, 70, 70), 'A');
 }
 
 static void draw_taskbar(void)
@@ -440,12 +562,17 @@ static void draw_taskbar(void)
     gfx_fill(&back, bar.x, bar.y, bar.w, bar.h, C_TASKBAR);
     gfx_fill(&back, bar.x, bar.y, bar.w, 1, C_TASKBAR_LINE);
 
-    for (int i = 0; i < LAUNCHER_COUNT; i++)
-        ui_button(&back, launcher_rect(i), launchers[i].label, false);
-
-    rect_t last = launcher_rect(LAUNCHER_COUNT - 1);
-    gfx_fill(&back, last.x + last.w + 10, bar.y + 8, 1, bar.h - 16,
-             C_TASKBAR_LINE);
+    /* Der Start-Knopf mit einem kleinen Fenster-Symbol aus vier Kacheln */
+    rect_t start = start_rect();
+    gfx_fill(&back, start.x, start.y, start.w, start.h,
+             menu_open ? C_BUTTON_ACTIVE : C_BUTTON);
+    gfx_frame(&back, start.x, start.y, start.w, start.h, C_BUTTON_BORDER);
+    for (int i = 0; i < 4; i++)
+        gfx_fill(&back, start.x + 10 + (i % 2) * 8, start.y + 6 + (i / 2) * 8, 6, 6,
+                 RGB(120, 190, 255));
+    gfx_text(&back, start.x + 32, start.y + (BUTTON_H - FONT_H) / 2, "Start",
+             C_TEXT_LIGHT, true);
+    gfx_fill(&back, start.x + start.w + 9, bar.y + 8, 1, bar.h - 16, C_TASKBAR_LINE);
 
     window_t *list[MAX_WINDOWS];
     int n = windows_by_age(list);
@@ -544,6 +671,7 @@ static void compose(rect_t area)
     for (int i = 0; i < n; i++)
         draw_window(list[i], i == n - 1);
     draw_taskbar();
+    draw_start_menu();
     draw_cursor();
     present(back.clip);
 }
@@ -636,11 +764,9 @@ static void send_mouse(window_t *w, event_type_t type)
 
 static void taskbar_click(void)
 {
-    for (int i = 0; i < LAUNCHER_COUNT; i++) {
-        if (rect_contains(launcher_rect(i), mouse_x, mouse_y)) {
-            gui_launch(launchers[i].app);
-            return;
-        }
+    if (rect_contains(start_rect(), mouse_x, mouse_y)) {
+        menu_set_open(true);
+        return;
     }
     if (rect_contains(power_rect(), mouse_x, mouse_y)) {
         gui_launch("aus");
@@ -662,6 +788,18 @@ static void taskbar_click(void)
 
 static void mouse_pressed(void)
 {
+    if (menu_open) {
+        /* Ein Klick wählt aus dem Menü - oder schließt es, wenn er daneben geht. */
+        bool on_start = rect_contains(start_rect(), mouse_x, mouse_y);
+        bool inside = rect_contains(menu_rect(), mouse_x, mouse_y) &&
+                      mouse_y >= menu_row_rect(0).y - MENU_HEADER;
+        int row = menu_row_at(mouse_x, mouse_y);
+        if (inside && row < 0)
+            return;                     /* Kopf oder Trennlinie */
+        menu_activate(row);
+        if (inside || on_start)
+            return;
+    }
     if (rect_contains(taskbar_rect(), mouse_x, mouse_y)) {
         taskbar_click();
         return;
@@ -704,6 +842,8 @@ static void handle_mouse(int dx, int dy, int buttons)
     if (dx || dy) {
         add_dirty(old_cursor);
         add_dirty(cursor_rect());
+        if (menu_open && rect_contains(menu_rect(), mouse_x, mouse_y))
+            menu_select(menu_row_at(mouse_x, mouse_y));
     }
 
     if (drag_win && (dx || dy)) {
@@ -737,6 +877,28 @@ static void handle_mouse(int dx, int dy, int buttons)
 static void handle_key(int key, int mods)
 {
     window_t *focused = window_count ? zorder[window_count - 1] : NULL;
+
+    /* Startmenü: Windows-Taste oder Strg+Esc; darin Pfeile, Enter, Esc */
+    if (key == KEY_SUPER || ((mods & MOD_CTRL) && key == 27)) {
+        menu_set_open(!menu_open);
+        if (menu_open)
+            menu_select(0);
+        return;
+    }
+    if (menu_open) {
+        int rows = menu_rows();
+        if (key == KEY_DOWN)
+            menu_select(menu_selected < 0 ? 0 : (menu_selected + 1) % rows);
+        else if (key == KEY_UP)
+            menu_select(menu_selected <= 0 ? rows - 1 : menu_selected - 1);
+        else if (key == '\n' && menu_selected >= 0)
+            menu_activate(menu_selected);
+        else if (key == 27 || key < KEY_UP)
+            menu_set_open(false);
+        if (key < KEY_F1 || key > KEY_F12)
+            return;
+        menu_set_open(false);           /* Funktionstasten starten wie immer */
+    }
 
     /* Tastenkürzel der Oberfläche */
     if ((mods & MOD_ALT) && key == '\t') {
@@ -880,6 +1042,7 @@ bool gui_launch_with(const char *app, const char *argument)
         { "claude", "claude", claude_app },
         { "editor", "editor", editor_app },
         { "transfer", "transfer", transfer_app },
+        { "browser", "browser", browser_app },
     };
 
     if (!running)
