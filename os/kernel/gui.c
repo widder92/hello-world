@@ -890,7 +890,7 @@ void gui_init(void)
         return;
 
     uint64_t bytes = (uint64_t)boot_info.fb_stride * boot_info.fb_height * 4;
-    vmm_map(boot_info.fb_base, bytes);
+    vmm_map_framebuffer(boot_info.fb_base, bytes);
     surface_init(&screen, (uint32_t *)boot_info.fb_base, (int)boot_info.fb_width,
                  (int)boot_info.fb_height, (int)boot_info.fb_stride);
     screen_bgr = boot_info.fb_bgr;

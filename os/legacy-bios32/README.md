@@ -1,4 +1,7 @@
-# HelloOS
+# HelloOS (32 Bit, BIOS)
+
+> Dies ist die erste Fassung von HelloOS. Die aktuelle 64-Bit-Version mit
+> grafischer Oberfläche liegt eine Ebene höher – siehe [../README.md](../README.md).
 
 Ein kleines, von Grund auf selbst geschriebenes Betriebssystem für x86-PCs
 (32 Bit). Kein Linux, kein GRUB, keine fremde Bibliothek: Bootloader in

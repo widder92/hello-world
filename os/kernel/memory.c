@@ -25,48 +25,92 @@ static uint64_t heap_start, heap_size;
 static uint64_t page_bottom, page_top;  /* Vorrat für alloc_pages() */
 static uint64_t total_bytes;
 
-void memory_init(void)
+/* Ruft visit() für jeden freien Speicherbereich oberhalb von 1 MiB auf. */
+static void for_each_free_region(void (*visit)(uint64_t base, uint64_t limit))
 {
-    uint64_t best_base = 0, best_len = 0;
     uint8_t *p = (uint8_t *)boot_info.mmap;
     uint8_t *end = p + boot_info.mmap_size;
 
     for (; p < end; p += boot_info.mmap_desc_size) {
         const efi_memory_descriptor_t *d = (const efi_memory_descriptor_t *)p;
-        uint64_t base = d->physical_start;
-        uint64_t len = d->number_of_pages * EFI_PAGE_SIZE;
-
-        if (d->type >= EFI_LOADER_CODE && d->type <= EFI_CONVENTIONAL_MEMORY)
-            total_bytes += len;
         if (d->type != EFI_CONVENTIONAL_MEMORY)
             continue;
-
-        /* Für den Kernel: der größte freie Bereich oberhalb von 1 MiB */
-        uint64_t limit = base + len;
+        uint64_t base = d->physical_start;
+        uint64_t limit = base + d->number_of_pages * EFI_PAGE_SIZE;
         if (base < MIB)
             base = MIB;
         if (limit > 512 * GIB)
             limit = 512 * GIB;          /* so weit reichen die Seitentabellen */
-        if (limit > base && limit - base > best_len) {
-            best_base = base;
-            best_len = limit - base;
-        }
+        if (limit > base)
+            visit(base, limit);
     }
-    if (best_len < 16 * MIB)
-        panic("Zu wenig freier Arbeitsspeicher (%llu KiB am Stück).",
-              best_len / 1024);
-    if (best_len > HEAP_MAX)
-        best_len = HEAP_MAX;
+}
 
-    /* Das obere Achtel (höchstens 16 MiB) ist der Vorrat für ganze Seiten. */
-    uint64_t pool = best_len / 8;
+static uint64_t low_base, low_limit;    /* größter Bereich unter 4 GiB */
+static uint64_t best_base, best_limit;  /* größter Bereich für den Heap */
+
+static void consider_low(uint64_t base, uint64_t limit)
+{
+    if (limit > 4 * GIB)
+        limit = 4 * GIB;
+    if (limit > base && limit - base > low_limit - low_base) {
+        low_base = base;
+        low_limit = limit;
+    }
+}
+
+static void consider_piece(uint64_t base, uint64_t limit)
+{
+    if (limit > base && limit - base > best_limit - best_base) {
+        best_base = base;
+        best_limit = limit;
+    }
+}
+
+/* Für den Heap zählt nur, was nicht schon zum Seitenvorrat gehört. */
+static void consider_heap(uint64_t base, uint64_t limit)
+{
+    if (limit <= page_bottom || base >= page_top) {
+        consider_piece(base, limit);
+    } else {
+        consider_piece(base, page_bottom);
+        consider_piece(page_top, limit);
+    }
+}
+
+void memory_init(void)
+{
+    uint8_t *p = (uint8_t *)boot_info.mmap;
+    uint8_t *end = p + boot_info.mmap_size;
+    for (; p < end; p += boot_info.mmap_desc_size) {
+        const efi_memory_descriptor_t *d = (const efi_memory_descriptor_t *)p;
+        if (d->type >= EFI_LOADER_CODE && d->type <= EFI_CONVENTIONAL_MEMORY)
+            total_bytes += d->number_of_pages * EFI_PAGE_SIZE;
+    }
+
+    /*
+     * Seitenvorrat: das obere Ende des größten freien Bereichs unter 4 GiB.
+     * Manche Geräte können nur Speicher mit 32-Bit-Adressen ansprechen.
+     */
+    for_each_free_region(consider_low);
+    if (low_limit - low_base < 8 * MIB)
+        panic("Zu wenig freier Arbeitsspeicher unter 4 GiB.");
+    uint64_t pool = (low_limit - low_base) / 8;
     if (pool > 16 * MIB)
         pool = 16 * MIB;
-    page_top = (best_base + best_len) & ~(PAGE_SIZE - 1);
+    page_top = low_limit & ~(PAGE_SIZE - 1);
     page_bottom = (page_top - pool) & ~(PAGE_SIZE - 1);
 
+    /* Heap: der größte freie Bereich, der dann noch übrig ist */
+    for_each_free_region(consider_heap);
+    if (best_limit - best_base < 16 * MIB)
+        panic("Zu wenig freier Arbeitsspeicher (%llu KiB am Stück).",
+              (best_limit - best_base) / 1024);
+    if (best_limit - best_base > HEAP_MAX)
+        best_limit = best_base + HEAP_MAX;
+
     heap_start = (best_base + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
-    heap_size = page_bottom - heap_start;
+    heap_size = (best_limit - heap_start) & ~(ALIGNMENT - 1);
 
     heap = (block_t *)heap_start;
     heap->size = heap_size - sizeof(block_t);
@@ -161,7 +205,23 @@ static uint64_t *next_table(uint64_t *table, unsigned index)
     return (uint64_t *)(table[index] & 0x000FFFFFFFFFF000ull);
 }
 
-void vmm_map(uint64_t address, uint64_t size)
+/*
+ * Seitenattribut-Tabelle (PAT) des Prozessors: Eintrag 1 auf "Write
+ * Combining" stellen. Seiten mit gesetztem PWT-Bit nutzen dann diese Art.
+ */
+static void enable_write_combining(void)
+{
+    static bool done;
+    if (done)
+        return;
+    const uint32_t MSR_PAT = 0x277;
+    uint64_t pat = rdmsr(MSR_PAT);
+    pat = (pat & ~0xFF00ull) | 0x0100;
+    wrmsr(MSR_PAT, pat);
+    done = true;
+}
+
+static void map_range(uint64_t address, uint64_t size, bool write_combining)
 {
     const uint64_t huge = 2 * MIB;
     uint64_t first = address & ~(huge - 1);
@@ -172,13 +232,26 @@ void vmm_map(uint64_t address, uint64_t size)
         uint64_t *pdpt = next_table(boot_info.pml4, (a >> 39) & 0x1FF);
         uint64_t *pd = next_table(pdpt, (a >> 30) & 0x1FF);
         unsigned i = (a >> 21) & 0x1FF;
-        if (!(pd[i] & 1))
+        if (write_combining)
+            pd[i] = a | 0x8B;           /* wie unten, zusätzlich PWT */
+        else if (!(pd[i] & 1))
             pd[i] = a | 0x83;           /* vorhanden, beschreibbar, 2 MiB */
         if (a == last)
             break;
     }
     write_cr3(read_cr3());              /* Adresspuffer (TLB) leeren */
     irq_restore(flags);
+}
+
+void vmm_map(uint64_t address, uint64_t size)
+{
+    map_range(address, size, false);
+}
+
+void vmm_map_framebuffer(uint64_t address, uint64_t size)
+{
+    enable_write_combining();
+    map_range(address, size, true);
 }
 
 void memory_stats(memory_stats_t *out)

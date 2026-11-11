@@ -30,4 +30,11 @@ void *alloc_pages(size_t count);
  */
 void vmm_map(uint64_t address, uint64_t size);
 
+/*
+ * Wie vmm_map(), aber für den Bildspeicher: Schreibzugriffe werden vom
+ * Prozessor gebündelt ("Write Combining"). Ohne das wäre jeder einzelne
+ * Pixel auf echter Hardware quälend langsam.
+ */
+void vmm_map_framebuffer(uint64_t address, uint64_t size);
+
 void memory_stats(memory_stats_t *out);

@@ -40,7 +40,7 @@ struct idt_entry {
     uint32_t reserved;
 } __attribute__((packed));
 
-extern const uint64_t isr_table[48];
+extern const uint64_t isr_table[256];
 
 static struct idt_entry idt[256];
 
@@ -118,6 +118,11 @@ static void exception(regs_t *r)
 #define LAPIC_TPR        0x080
 #define LAPIC_EOI        0x0B0
 #define LAPIC_SPURIOUS   0x0F0
+#define LAPIC_IN_SERVICE 0x100          /* acht Register, je 32 Vektoren */
+#define LAPIC_LVT_THERMAL 0x330
+#define LAPIC_LVT_PERF   0x340
+#define LAPIC_LVT_LINT0  0x350
+#define LAPIC_LVT_ERROR  0x370
 #define LAPIC_LVT_TIMER  0x320
 #define LAPIC_TIMER_INIT 0x380
 #define LAPIC_TIMER_CUR  0x390
@@ -127,6 +132,7 @@ static void exception(regs_t *r)
 #define TIMER_PERIODIC   (1u << 17)
 
 static bool x2apic;                     /* Zugriff über MSRs statt Speicher */
+static bool lapic_ready;
 static volatile uint32_t *lapic;
 
 static uint32_t lapic_read(uint32_t reg)
@@ -161,6 +167,13 @@ void timer_start(void)
     lapic_write(LAPIC_TPR, 0);
     lapic_write(LAPIC_SPURIOUS, 0x100 | VECTOR_SPURIOUS);  /* APIC einschalten */
 
+    /* Interrupt-Quellen der Firmware abklemmen - wir brauchen nur den Timer. */
+    lapic_write(LAPIC_LVT_LINT0, TIMER_MASKED);
+    lapic_write(LAPIC_LVT_ERROR, TIMER_MASKED);
+    lapic_write(LAPIC_LVT_THERMAL, TIMER_MASKED);
+    lapic_write(LAPIC_LVT_PERF, TIMER_MASKED);
+    lapic_ready = true;
+
     /*
      * Der Timer zählt mit einer unbekannten Frequenz herunter. Wir lassen ihn
      * 10 ms laufen (gemessen am Zeitstempelzähler) und wissen dann, wie viele
@@ -185,8 +198,18 @@ void interrupt_handler(regs_t *r)
     if (r->int_no < 32)
         exception(r);
 
-    if (r->int_no != VECTOR_TIMER)
-        return;                         /* Störimpuls - ignorieren */
+    if (r->int_no != VECTOR_TIMER) {
+        /*
+         * Ein Interrupt, den niemand bestellt hat (z. B. noch von der
+         * Firmware eingerichtet): quittieren, falls nötig, und ignorieren.
+         */
+        uint32_t vector = (uint32_t)r->int_no;
+        if (lapic_ready &&
+            (lapic_read(LAPIC_IN_SERVICE + 0x10 * (vector / 32)) &
+             (1u << (vector % 32))))
+            lapic_write(LAPIC_EOI, 0);
+        return;
+    }
 
     /*
      * Quittung vor der Arbeit senden: task_tick() kann den Task wechseln und
@@ -234,7 +257,7 @@ void interrupts_init(void)
     struct table_pointer gdtr = { sizeof(gdt) - 1, (uint64_t)gdt };
     gdt_load(&gdtr);
 
-    for (int i = 0; i < 48; i++) {
+    for (int i = 0; i < 256; i++) {
         idt[i].offset_low = isr_table[i] & 0xFFFF;
         idt[i].selector = 0x08;
         idt[i].ist = 0;

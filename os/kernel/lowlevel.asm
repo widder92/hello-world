@@ -75,12 +75,12 @@ context_switch:
     ret
 
 ; -----------------------------------------------------------------------------
-; Interrupt-Einsprungpunkte für die Vektoren 0-47. Jeder Stub sorgt für einen
+; Interrupt-Einsprungpunkte für alle 256 Vektoren. Jeder Stub sorgt für einen
 ; einheitlichen Stackaufbau (siehe regs_t in interrupts.h) und ruft dann
 ; interrupt_handler(regs) auf.
 ; -----------------------------------------------------------------------------
 %assign i 0
-%rep 48
+%rep 256
 isr %+ i:
   ; Diese Ausnahmen legen selbst einen Fehlercode auf den Stack,
   ; für alle anderen schieben wir eine 0 nach.
@@ -138,7 +138,7 @@ section .rdata
 global isr_table
 isr_table:
 %assign i 0
-%rep 48
+%rep 256
     dq isr %+ i
 %assign i i+1
 %endrep

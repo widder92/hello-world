@@ -1,7 +1,8 @@
 # Welcome to GitHub
 
 > **HelloOS:** Im Verzeichnis [`os/`](os/) liegt ein kleines, selbst
-> geschriebenes Betriebssystem für x86-PCs – siehe [os/README.md](os/README.md).
+> geschriebenes Betriebssystem für 64-Bit-PCs mit UEFI und grafischer
+> Oberfläche – siehe [os/README.md](os/README.md).
 
 Welcome to GitHub—where millions of developers work together on software. Ready to get started? Let’s learn how this all works by building and publishing your first GitHub Pages website!
 
