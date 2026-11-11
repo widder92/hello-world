@@ -26,6 +26,8 @@ typedef struct nic {
 
 /* Sucht eine unterstützte Intel-Netzwerkkarte (e1000-Familie). */
 nic_t *e1000_probe(void);
+/* Sucht Intels neuere Chips: I225/I226 (2,5 Gbit) sowie 82576, I210, I211. */
+nic_t *igc_probe(void);
 
 /* --- Zustand ------------------------------------------------------------------ */
 

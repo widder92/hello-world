@@ -202,12 +202,8 @@ nic_t *e1000_probe(void)
                 pci = &found[i];
         }
     }
-    if (!pci) {
-        if (count > 0)
-            klog("Netzwerk: Karte %04x:%04x wird nicht unterstützt\n",
-                 found[0].vendor_id, found[0].device_id);
+    if (!pci)
         return NULL;
-    }
 
     uint64_t bar = pci_read32(pci, 0x10);
     if ((bar & 0x6) == 0x4)

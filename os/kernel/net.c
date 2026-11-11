@@ -11,6 +11,7 @@
  * kurzes Sperren der Interrupts geschützt.
  */
 #include "net.h"
+#include "pci.h"
 #include "console.h"
 #include "cpu.h"
 #include "crypto.h"
@@ -689,6 +690,20 @@ static void net_task(void *arg)
 void net_init(void)
 {
     nic = e1000_probe();
+    if (!nic)
+        nic = igc_probe();
+    if (!nic) {
+        /* Sagen, was da ist - das hilft, wenn eine Karte (noch) nicht unterstützt wird. */
+        pci_device_t found[4];
+        int count = pci_find(0x02, 0x00, 0x00, found, 4);
+        for (int i = 0; i < count; i++)
+            klog("Netzwerk: Karte %04x:%04x wird nicht unterstützt\n", found[i].vendor_id,
+                 found[i].device_id);
+        count = pci_find(0x02, 0x80, 0x00, found, 4);
+        for (int i = 0; i < count; i++)
+            klog("Netzwerk: WLAN-Karte %04x:%04x wird nicht unterstützt\n",
+                 found[i].vendor_id, found[i].device_id);
+    }
     if (!nic) {
         klog("Netzwerk: keine unterstützte Netzwerkkarte gefunden\n");
         return;

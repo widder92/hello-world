@@ -32,7 +32,7 @@ fremde Bibliothek: rund 24 000 Zeilen C und etwas Assembler.
 - **Eingabegeräte**: USB-Tastaturen und -Mäuse (xHCI, auch An- und Abstecken
   im Betrieb) sowie PS/2, wie es viele Notebook-Tastaturen intern noch nutzen;
   deutsche und US-Tastaturbelegung
-- **Netzwerk**: Treiber für Intel-Netzwerkkarten, eigener Stack mit ARP, IPv4,
+- **Netzwerk**: Treiber für Intel-Netzwerkkarten (auch I225/I226), eigener Stack mit ARP, IPv4,
   ICMP, UDP, DHCP, DNS und TCP, dazu HTTP und HTTPS (TLS 1.3 mit
   Zertifikatsprüfung)
 - **Claude eingebaut**: ein Chatfenster und der Befehl `claude` – Claude
@@ -202,12 +202,19 @@ Was dabei zu beachten ist:
   „Boot-Protokoll"). Bluetooth-Geräte und Touchpads, die nur über I²C
   angebunden sind, funktionieren nicht – dann hilft eine USB-Maus oder die
   Bedienung per Tastatur.
-- **Netzwerk gibt es nur per Kabel** und nur mit Intel-Netzwerkkarten der
-  e1000-Familie. Getestet ist der Treiber mit den beiden Modellen, die QEMU
-  emuliert; die verwandten Karten in echten PCs („Intel Ethernet Connection
-  I217/I218/I219") erkennt er, ob sie damit laufen, ist ungeprüft. WLAN,
-  Realtek-Karten und Intels 2,5-Gigabit-Karten (I225/I226) werden nicht
-  unterstützt. `net` zeigt, ob eine Karte erkannt wurde.
+- **Netzwerk gibt es nur per Kabel** und nur mit Netzwerkchips von Intel:
+  - die e1000-Familie („Intel Ethernet Connection I217/I218/I219" und ältere),
+  - die 2,5-Gigabit-Chips **I225 und I226** aktueller PCs und Mini-PCs,
+  - deren 1-Gigabit-Verwandte 82576, I210 und I211.
+
+  Getestet sind die Treiber mit den Modellen, die QEMU nachbildet (zwei aus
+  der e1000-Familie und der 82576). I225 und I226 bildet QEMU nicht nach: Der
+  Treiber folgt für sie Intels Unterlagen und teilt sich den geprüften Code
+  mit dem 82576, ist auf echter Hardware aber **noch nie gelaufen**. Hat der
+  PC mehrere Anschlüsse, wird der benutzt, an dem ein Kabel steckt.
+  **WLAN und Realtek-Karten werden nicht unterstützt.** `net` zeigt, ob eine
+  Karte erkannt wurde; eine nicht unterstützte nennt HelloOS beim Start mit
+  ihrer Kennung.
 - Es wird nur ein Prozessorkern benutzt und ohne Grafikbeschleunigung
   gezeichnet. Bei sehr hohen Auflösungen wählt HelloOS, wenn die Firmware das
   anbietet, einen Modus bis 1920 × 1200.
@@ -705,7 +712,7 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `kernel/install.c` | Start-Assistent: Einrichten auf der internen Platte über die Firmware |
 | `kernel/block.c`, `kernel/fat.c` | Blockgeräte samt Schreibsperre für interne Platten, FAT32 |
 | `kernel/fs.c`, `kernel/storage.c` | eigene Dateien im Arbeitsspeicher; Sicherung auf dem HelloOS-Datenträger |
-| `kernel/e1000.c` | Treiber für Intel-Netzwerkkarten |
+| `kernel/e1000.c`, `kernel/igc.c` | Treiber für Intel-Netzwerkkarten: e1000-Familie; I225/I226 und Verwandte |
 | `kernel/net.c`, `kernel/tcp.c` | ARP, IPv4, ICMP, UDP, DHCP, DNS; TCP |
 | `kernel/crypto_*.c` | SHA-2, HMAC/HKDF, ChaCha20-Poly1305, AES-CTR, X25519, Ed25519, RSA, ECDSA, ECDH |
 | `kernel/x509.c`, `kernel/tls_roots.*` | Zertifikate lesen und prüfen, eingebaute Wurzelzertifikate |
@@ -741,7 +748,7 @@ gehalten. Naheliegende nächste Schritte:
 - Claudes Antworten Wort für Wort anzeigen (Streaming), Gespräche speichern
 - Unterordner für eigene Dateien, ganze Ordner übertragen, Anmeldung mit Schlüsseldatei
 - im Editor: Markieren, Kopieren und Einfügen, Suchen, Rückgängig
-- weitere Netzwerkkarten (Realtek, Intel I225), USB-Hubs
+- weitere Netzwerkkarten (Realtek), WLAN, USB-Hubs
 - User-Modus (Ring 3) mit Systemaufrufen und getrennten Adressräumen
 - Programme aus Dateien laden (ELF), mehrere Prozessorkerne
 - Symbole auf dem Desktop, ein Dateimanager, Fenster an den Kanten ziehen und minimieren
