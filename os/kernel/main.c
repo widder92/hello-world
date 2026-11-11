@@ -8,6 +8,7 @@
 #include "bootinfo.h"
 #include "console.h"
 #include "cpu.h"
+#include "crypto.h"
 #include "fs.h"
 #include "gui.h"
 #include "input.h"
@@ -50,6 +51,9 @@ void kmain(void *unused)
     timer_start();
     klog("Systemtakt: %u Hz (Zeitstempelzähler: %llu MHz)\n", TICK_HZ,
          boot_info.tsc_hz / 1000000);
+
+    random_stir(&boot_info.boot_time, sizeof(boot_info.boot_time));
+    random_stir(&boot_info.tsc_hz, sizeof(boot_info.tsc_hz));
 
     keyboard_init();
     ps2_init();

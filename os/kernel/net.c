@@ -13,6 +13,7 @@
 #include "net.h"
 #include "console.h"
 #include "cpu.h"
+#include "crypto.h"
 #include "string.h"
 #include "task.h"
 #include "time.h"
@@ -416,6 +417,7 @@ static void dhcp_input(const uint8_t *msg, size_t len)
         if (!dns_server || first)
             dns_server = dns;
         configured = true;
+        random_stir(msg, len);
         dhcp.state = DHCP_BOUND;
         dhcp.next_ms = time_ms() + (uint64_t)(lease < 60 ? 60 : lease) * 500;
         if (first) {

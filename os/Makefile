@@ -4,6 +4,7 @@
 #   make run      startet HelloOS in QEMU (Fenster)
 #   make run-usb  wie run, aber mit USB-Tastatur und -Maus statt PS/2
 #   make test     bootet ohne Bildschirm und prüft die wichtigsten Befehle
+#   make check    prüft die Kryptografie gegen eine Referenzbibliothek
 #   make clean    räumt auf
 
 BUILD   := build
@@ -38,7 +39,7 @@ OBJS     := $(patsubst kernel/%.c,$(BUILD)/%.obj,$(C_SRCS)) \
 QEMU_FLAGS := -machine q35 -m 512 -bios $(OVMF) \
               -drive format=raw,file=$(IMAGE) -net none
 
-.PHONY: all run run-usb test clean
+.PHONY: all run run-usb test check clean
 
 all: $(IMAGE)
 
@@ -67,6 +68,10 @@ run-usb: $(IMAGE)
 
 test: $(IMAGE)
 	QEMU="$(QEMU)" OVMF="$(OVMF)" ./tools/smoke-test.sh $(IMAGE)
+
+# Läuft auf dem Entwicklungsrechner; braucht das Python-Paket "cryptography".
+check:
+	$(PYTHON) tests/crypto_test.py
 
 clean:
 	rm -rf $(BUILD)

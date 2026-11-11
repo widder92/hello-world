@@ -3,6 +3,7 @@
 #include "bootinfo.h"
 #include "console.h"
 #include "cpu.h"
+#include "crypto.h"
 #include "fs.h"
 #include "gui.h"
 #include "http.h"
@@ -571,7 +572,10 @@ static void print_as_text(const char *html, size_t length, int max_lines)
             continue;
         }
 
-        if (newline && column > 0) {
+        /* Zeilen an Wortgrenzen umbrechen, sehr lange Wörter notfalls hart */
+        bool wrap = (space && column >= 68) ||
+                    (column >= 78 && ((uint8_t)c & 0xC0) != 0x80);
+        if ((newline || wrap) && column > 0) {
             console_putc('\n');
             lines++;
             column = 0;
@@ -580,11 +584,6 @@ static void print_as_text(const char *html, size_t length, int max_lines)
             column++;
         }
         newline = space = false;
-        if (column >= 78 && ((uint8_t)c & 0xC0) != 0x80) {
-            console_putc('\n');         /* lange Zeilen umbrechen */
-            lines++;
-            column = 0;
-        }
         if (replacement) {
             kprintf("%s", replacement);
             column++;
@@ -683,6 +682,23 @@ static void cmd_cat(shell_t *sh, char *args)
     console_write(f->data, f->size);
     if (f->size > 0 && f->data[f->size - 1] != '\n')
         console_putc('\n');
+}
+
+static void cmd_sha256(shell_t *sh, char *args)
+{
+    (void)sh;
+    char *name = next_token(&args);
+    const file_t *f = *name ? fs_find(name) : NULL;
+    if (!f) {
+        kprintf(*name ? "Datei nicht gefunden: %s\n" : "Aufruf: sha256 <datei>\n",
+                name);
+        return;
+    }
+    uint8_t hash[32];
+    sha256(f->data, f->size, hash);
+    for (int i = 0; i < 32; i++)
+        kprintf("%02x", hash[i]);
+    kprintf("  %s\n", name);
 }
 
 static void write_file(char *args, bool append)
@@ -800,6 +816,7 @@ static const struct command commands[] = {
     { "write",    "write <datei> <text>", "Datei (über)schreiben", cmd_write },
     { "append",   "append <datei> <text>", "Zeile an Datei anhängen", cmd_append },
     { "rm",       "rm <datei>",          "Datei löschen", cmd_rm },
+    { "sha256",   "sha256 <datei>",      "Prüfsumme einer Datei", cmd_sha256 },
     { "echo",     "echo <text>",         "Text ausgeben", cmd_echo },
     { "keymap",   "keymap [de|us]",      "Tastaturbelegung anzeigen/ändern", cmd_keymap },
     { "history",  "history",             "Befehlsverlauf anzeigen", cmd_history },

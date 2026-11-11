@@ -5,6 +5,7 @@
  */
 #include "input.h"
 #include "cpu.h"
+#include "crypto.h"
 #include "gui.h"
 #include "string.h"
 
@@ -130,6 +131,9 @@ static int modifiers(void)
 
 void keyboard_handle_scancode(uint8_t scancode, bool extended, bool released)
 {
+    /* Wann genau jemand eine Taste drückt, ist schwer vorherzusagen. */
+    random_stir(&scancode, 1);
+
     if (extended) {
         int key = 0;
         switch (scancode) {
