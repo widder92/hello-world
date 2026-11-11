@@ -634,6 +634,11 @@ sie ein:
 3. HelloOS neu bauen und auf den Stick bringen – erst diese Version kennt den
    Schlüssel.
 
+In diesem Repository ist Schritt 1 erledigt: `update-key.pub` ist eingecheckt,
+jede hier gebaute Version kennt also den Schlüssel. Der geheime Teil gehört
+als Secret zu GitHub (Schritt 2) und sonst nur an einen sicheren Ort beim
+Besitzer des Repositorys.
+
 Von da an baut der Workflow `.github/workflows/helloos-update.yml` bei jeder
 Änderung unter `os/` auf dem Zweig `master` ein signiertes Paket und legt es
 auf den Branch `helloos-updates`. Dort sucht HelloOS standardmäßig
