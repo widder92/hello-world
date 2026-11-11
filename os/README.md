@@ -98,7 +98,7 @@ selbst ein Diagnosefenster mit dem Startprotokoll. Es zeigt für jeden
 USB-Anschluss, welches Gerät dort erkannt wurde und warum es nicht bedient
 wird – ein Foto davon ist die beste Grundlage für eine Fehlermeldung.
 Funkempfänger und Geräte hinter einem USB-Hub sind die häufigsten Fälle
-(siehe [Grenzen](#grenzen)).
+(siehe [Grenzen](#grenzen-und-ideen-zum-weiterbauen)).
 
 ### Neben Windows: zwei Wege
 
