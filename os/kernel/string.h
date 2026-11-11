@@ -1,9 +1,9 @@
 /* Minimale String- und Speicherfunktionen (es gibt keine libc im Kernel) */
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdbool.h>
 
 void *memset(void *dst, int value, size_t n);
 void *memcpy(void *dst, const void *src, size_t n);

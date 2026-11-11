@@ -1,30 +1,47 @@
 #!/bin/sh
-# Bootet HelloOS ohne Bildschirm, bedient die Shell über die serielle
-# Schnittstelle und prüft, ob die erwarteten Ausgaben erscheinen.
+# Bootet HelloOS in QEMU (UEFI, ohne Bildschirmfenster), bedient die Shell über
+# die serielle Schnittstelle und prüft, ob die erwarteten Ausgaben erscheinen.
+#
+# Aufruf: smoke-test.sh [image] [weitere QEMU-Optionen ...]
 set -u
 
 IMAGE="${1:-build/helloos.img}"
-QEMU="${QEMU:-qemu-system-i386}"
-LOG="$(mktemp)"
-trap 'rm -f "$LOG"' EXIT
+[ $# -gt 0 ] && shift
+QEMU="${QEMU:-qemu-system-x86_64}"
+OVMF="${OVMF:-/usr/share/ovmf/OVMF.fd}"
 
-{
-    sleep 3
-    printf 'info\nmem\ndate\n'
-    sleep 1
-    printf 'write test.txt Hallo Welt\nappend test.txt Zeile zwei\ncat test.txt\nls\n'
-    sleep 1
-    printf 'spawn counter 2\nspawn burn\n'
-    sleep 3
-    printf 'ps\nkill 4\nrm test.txt\nls\nuptime\nshutdown\n'
-    sleep 2
-} | timeout 60 "$QEMU" -drive format=raw,file="$IMAGE" -display none \
-        -serial stdio -no-reboot > "$LOG" 2>&1
-status=$?
+if [ ! -f "$OVMF" ]; then
+    echo "UEFI-Firmware nicht gefunden: $OVMF (Paket 'ovmf' installieren" \
+         "oder OVMF=/pfad/zu/OVMF.fd setzen)"
+    exit 1
+fi
+
+DIR="$(mktemp -d)"
+LOG="$DIR/serial.log"
+FIFO="$DIR/input"
+mkfifo "$FIFO"
+: > "$LOG"
+
+timeout 180 "$QEMU" -machine q35 -m 256 -bios "$OVMF" \
+    -drive format=raw,file="$IMAGE" -net none -display none \
+    -serial stdio -no-reboot "$@" < "$FIFO" > "$LOG" 2>&1 &
+QEMU_PID=$!
+exec 3> "$FIFO"
+trap 'exec 3>&-; kill "$QEMU_PID" 2>/dev/null; rm -rf "$DIR"' EXIT
+
+# Wartet (höchstens $2 Sekunden), bis der Text in der Ausgabe auftaucht.
+wait_for() {
+    tries=$(( ${2:-20} * 10 ))
+    until grep -q -- "$1" "$LOG"; do
+        tries=$((tries - 1))
+        [ "$tries" -le 0 ] && return 1
+        sleep 0.1
+    done
+}
 
 failed=0
 expect() {
-    if grep -q -- "$1" "$LOG"; then
+    if wait_for "$1" "${2:-20}"; then
         echo "  ok      $1"
     else
         echo "  FEHLT   $1"
@@ -32,22 +49,42 @@ expect() {
     fi
 }
 
-echo "Prüfe Ausgaben:"
-expect "Multitasking gestartet"
-expect "HelloOS 0.1 (x86, 32 Bit, Protected Mode)"
-expect "Speicherkarte des BIOS"
-expect "Hallo Welt"
+echo "Starte HelloOS in QEMU ..."
+expect "HelloOS: Start über UEFI" 90
+expect "Multitasking gestartet" 30
+expect "helloos> " 30
+
+printf 'info\nmem\ndate\n' >&3
+expect "HelloOS 0.2 (x86-64, UEFI)"
+expect "Speicherkarte der Firmware"
+
+printf 'write test.txt Hallo Welt\nappend test.txt Zeile zwei\ncat test.txt\nls\n' >&3
 expect "Zeile zwei"
 expect "22 Bytes  test.txt"
-expect "PID 3\] 2 von 2"
-expect "heizung"
-expect "Task 4 beendet"
-expect "^1 Datei(en)"
-expect "Laufzeit: 00:00:"
-expect "System wird heruntergefahren"
 
-if [ "$status" -ne 0 ]; then
-    echo "  FEHLT   sauberes Herunterfahren (QEMU-Status $status)"
+printf 'spawn counter 2\n' >&3
+expect "Task gestartet (PID"
+expect "\] 2 von 2"
+
+printf 'spawn burn\nstart monitor\n' >&3
+sleep 2
+printf 'ps\n' >&3
+expect "heizung"
+expect "monitor"
+BURN_PID="$(grep heizung "$LOG" | tail -1 | awk '{print $1}')"
+printf 'kill %s\n' "$BURN_PID" >&3
+expect "Task $BURN_PID beendet"
+
+printf 'rm test.txt\nls\nuptime\n' >&3
+expect "^1 Datei(en)"
+expect "Laufzeit: 00:0"
+
+printf 'shutdown\n' >&3
+expect "System wird heruntergefahren"
+if wait "$QEMU_PID"; then
+    echo "  ok      QEMU hat sich nach dem Herunterfahren beendet"
+else
+    echo "  FEHLT   sauberes Herunterfahren"
     failed=1
 fi
 

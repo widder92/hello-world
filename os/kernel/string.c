@@ -1,35 +1,38 @@
 #include "string.h"
 
+/*
+ * Die Kopierfunktionen nutzen die String-Befehle des Prozessors (rep movsb /
+ * rep stosb). Auf aktuellen CPUs sind die sehr schnell - wichtig, weil die
+ * Oberfläche ständig große Pixelblöcke bewegt.
+ */
+
 void *memset(void *dst, int value, size_t n)
 {
-    uint8_t *d = dst;
-    while (n--)
-        *d++ = (uint8_t)value;
+    void *d = dst;
+    __asm__ volatile("rep stosb"
+                     : "+D"(d), "+c"(n) : "a"(value) : "memory");
     return dst;
 }
 
 void *memcpy(void *dst, const void *src, size_t n)
 {
-    uint8_t *d = dst;
-    const uint8_t *s = src;
-    while (n--)
-        *d++ = *s++;
+    void *d = dst;
+    __asm__ volatile("rep movsb"
+                     : "+D"(d), "+S"(src), "+c"(n) : : "memory");
     return dst;
 }
 
 void *memmove(void *dst, const void *src, size_t n)
 {
-    uint8_t *d = dst;
-    const uint8_t *s = src;
-    if (d < s) {
-        while (n--)
-            *d++ = *s++;
-    } else {
-        d += n;
-        s += n;
-        while (n--)
-            *--d = *--s;
-    }
+    if ((uintptr_t)dst <= (uintptr_t)src ||
+        (uintptr_t)dst >= (uintptr_t)src + n)
+        return memcpy(dst, src, n);
+
+    /* Überlappend und Ziel hinter der Quelle: von hinten nach vorn kopieren */
+    void *d = (uint8_t *)dst + n - 1;
+    const void *s = (const uint8_t *)src + n - 1;
+    __asm__ volatile("std; rep movsb; cld"
+                     : "+D"(d), "+S"(s), "+c"(n) : : "memory");
     return dst;
 }
 

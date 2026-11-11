@@ -1,32 +1,72 @@
 #include "console.h"
-#include "io.h"
+#include "cpu.h"
+#include "memory.h"
 #include "serial.h"
 #include "string.h"
-#include "vga.h"
+#include "task.h"
 
-#include <stdbool.h>
-#include <stdint.h>
+/* --- Konsole des laufenden Tasks -------------------------------------------- */
+
+static console_t *current_console(void)
+{
+    console_t *con = task_console();
+    return con ? con : serial_console();
+}
+
+void console_ref(console_t *con)
+{
+    if (!con)
+        return;
+    uint64_t flags = irq_save();
+    con->refs++;
+    irq_restore(flags);
+}
+
+void console_unref(console_t *con)
+{
+    if (!con)
+        return;
+    uint64_t flags = irq_save();
+    bool last = --con->refs == 0;
+    irq_restore(flags);
+    if (last && con->release)
+        con->release(con);
+}
 
 void console_putc(char c)
 {
-    /* Mehrere Tasks schreiben auf die Konsole - kurz Interrupts sperren. */
-    uint32_t flags = irq_save();
-    vga_putc(c);
-    if (c == '\b') {
-        serial_putc('\b');
-        serial_putc(' ');
-    }
-    serial_putc(c);
-    irq_restore(flags);
+    console_t *con = current_console();
+    con->putc(con, c);
 }
 
 void console_write(const char *data, size_t len)
 {
+    console_t *con = current_console();
     while (len--)
-        console_putc(*data++);
+        con->putc(con, *data++);
 }
 
-/* --- Formatierte Ausgabe --------------------------------------------------- */
+void console_set_color(console_color_t color)
+{
+    console_t *con = current_console();
+    if (con->set_color)
+        con->set_color(con, color);
+}
+
+void console_clear(void)
+{
+    console_t *con = current_console();
+    if (con->clear)
+        con->clear(con);
+}
+
+int console_getchar(void)
+{
+    console_t *con = current_console();
+    return con->getchar(con);
+}
+
+/* --- Formatierte Ausgabe ----------------------------------------------------- */
 
 typedef void (*out_fn)(char c, void *ctx);
 
@@ -36,12 +76,12 @@ static void pad(out_fn out, void *ctx, int count, char ch)
         out(ch, ctx);
 }
 
-static void format_number(out_fn out, void *ctx, uint32_t value, unsigned base,
+static void format_number(out_fn out, void *ctx, uint64_t value, unsigned base,
                           bool negative, bool upper, int width, bool zero,
                           bool left)
 {
     const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
-    char buf[12];
+    char buf[24];
     int len = 0;
 
     do {
@@ -83,31 +123,43 @@ static void format(out_fn out, void *ctx, const char *fmt, va_list ap)
         int width = 0;
         while (*fmt >= '0' && *fmt <= '9')
             width = width * 10 + (*fmt++ - '0');
-        while (*fmt == 'l')             /* long ist hier ebenfalls 32 Bit */
+
+        bool wide = false;              /* 64-Bit-Argument */
+        if (*fmt == 'z') {
+            wide = true;
             fmt++;
+        } else if (fmt[0] == 'l' && fmt[1] == 'l') {
+            wide = true;
+            fmt += 2;
+        } else if (*fmt == 'l') {
+            fmt++;                      /* long ist hier 32 Bit */
+        }
 
         switch (*fmt) {
         case 'd':
         case 'i': {
-            int32_t v = va_arg(ap, int32_t);
-            uint32_t mag = v < 0 ? 0u - (uint32_t)v : (uint32_t)v;
+            int64_t v = wide ? va_arg(ap, int64_t) : va_arg(ap, int32_t);
+            uint64_t mag = v < 0 ? 0 - (uint64_t)v : (uint64_t)v;
             format_number(out, ctx, mag, 10, v < 0, false, width, zero, left);
             break;
         }
-        case 'u':
-            format_number(out, ctx, va_arg(ap, uint32_t), 10, false, false,
-                          width, zero, left);
+        case 'u': {
+            uint64_t v = wide ? va_arg(ap, uint64_t) : va_arg(ap, uint32_t);
+            format_number(out, ctx, v, 10, false, false, width, zero, left);
             break;
+        }
         case 'x':
-        case 'X':
-            format_number(out, ctx, va_arg(ap, uint32_t), 16, false,
-                          *fmt == 'X', width, zero, left);
+        case 'X': {
+            uint64_t v = wide ? va_arg(ap, uint64_t) : va_arg(ap, uint32_t);
+            format_number(out, ctx, v, 16, false, *fmt == 'X', width, zero,
+                          left);
             break;
+        }
         case 'p':
             out('0', ctx);
             out('x', ctx);
-            format_number(out, ctx, (uint32_t)va_arg(ap, void *), 16, false,
-                          false, 8, true, false);
+            format_number(out, ctx, (uint64_t)va_arg(ap, void *), 16, false,
+                          false, 16, true, false);
             break;
         case 'c':
             out((char)va_arg(ap, int), ctx);
@@ -140,15 +192,15 @@ static void format(out_fn out, void *ctx, const char *fmt, va_list ap)
 
 static void out_console(char c, void *ctx)
 {
-    (void)ctx;
-    console_putc(c);
+    console_t *con = ctx;
+    con->putc(con, c);
 }
 
 void kprintf(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    format(out_console, NULL, fmt, ap);
+    format(out_console, current_console(), fmt, ap);
     va_end(ap);
 }
 
@@ -166,14 +218,42 @@ static void out_buffer(char c, void *ctx)
     b->len++;
 }
 
-int ksnprintf(char *buf, size_t size, const char *fmt, ...)
+int kvsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
 {
     struct buffer b = { buf, size, 0 };
-    va_list ap;
-    va_start(ap, fmt);
     format(out_buffer, &b, fmt, ap);
-    va_end(ap);
     if (size > 0)
         buf[b.len < size ? b.len : size - 1] = '\0';
     return (int)b.len;
+}
+
+int ksnprintf(char *buf, size_t size, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    int len = kvsnprintf(buf, size, fmt, ap);
+    va_end(ap);
+    return len;
+}
+
+/* --- Kernel-Meldungen -------------------------------------------------------- */
+
+static void (*screen_write)(const char *text);
+
+void klog_set_screen(void (*write)(const char *text))
+{
+    screen_write = write;
+}
+
+void klog(const char *fmt, ...)
+{
+    char line[160];
+    va_list ap;
+    va_start(ap, fmt);
+    kvsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+
+    serial_write(line);
+    if (screen_write)
+        screen_write(line);
 }

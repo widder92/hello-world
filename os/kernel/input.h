@@ -1,13 +1,37 @@
-/* Eingabe: PS/2-Tastatur (und serielle Schnittstelle) -> Zeichenpuffer */
+/* Eingabegeräte: Tastencodes und die gemeinsame Tastaturlogik */
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 /* Normale Zeichen sind Unicode-Codepoints; Sondertasten liegen darüber. */
-#define KEY_UP    0x110001
-#define KEY_DOWN  0x110002
-#define KEY_LEFT  0x110003
-#define KEY_RIGHT 0x110004
+enum {
+    KEY_UP = 0x110001,
+    KEY_DOWN,
+    KEY_LEFT,
+    KEY_RIGHT,
+    KEY_HOME,
+    KEY_END,
+    KEY_PAGE_UP,
+    KEY_PAGE_DOWN,
+    KEY_DELETE,
+    KEY_F1,                             /* F1 bis F12 folgen direkt aufeinander */
+    KEY_F12 = KEY_F1 + 11,
+};
+
+/* Zustand der Umschalttasten, wird mit jedem Tastendruck mitgeliefert. */
+enum {
+    MOD_SHIFT = 1,
+    MOD_CTRL = 2,
+    MOD_ALT = 4,
+};
+
+/* Maustasten */
+enum {
+    MOUSE_LEFT = 1,
+    MOUSE_RIGHT = 2,
+    MOUSE_MIDDLE = 4,
+};
 
 void keyboard_init(void);
 
@@ -15,8 +39,13 @@ void keyboard_init(void);
 bool keyboard_set_layout(const char *name);
 const char *keyboard_layout_name(void);
 
-/* Zeichen in den Eingabepuffer legen (aus einem Interrupt-Handler heraus). */
-void input_push(int c);
+/*
+ * Eine Taste wurde gedrückt oder losgelassen. Treiber (PS/2, USB) melden
+ * Tasten als Scancode aus "Set 1"; extended steht für das Präfix 0xE0.
+ */
+void keyboard_handle_scancode(uint8_t scancode, bool extended, bool released);
 
-/* Nächstes Zeichen holen; blockiert den aufrufenden Task, bis eines da ist. */
-int input_getchar(void);
+/* PS/2-Controller: Tastatur und Maus. */
+void ps2_init(void);
+void ps2_poll(void);                    /* vom Systemtakt aufgerufen */
+bool ps2_present(void);

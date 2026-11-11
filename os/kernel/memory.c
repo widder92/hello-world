@@ -1,75 +1,72 @@
 #include "memory.h"
-#include "io.h"
+#include "bootinfo.h"
+#include "cpu.h"
+#include "interrupts.h"
+#include "string.h"
 
-#include <stdbool.h>
-
-/* Vom Bootloader hinterlegt: Anzahl bei 0x8000, Einträge ab 0x8004. */
-#define MMAP_COUNT   (*(const uint16_t *)0x8000)
-#define MMAP_ENTRIES ((const mmap_entry_t *)0x8004)
-#define MMAP_MAX     64
-
-#define MIB          (1024u * 1024u)
-#define HEAP_MAX     (32u * MIB)
-#define BLOCK_MAGIC  0x48454C4Fu        /* "HELO" */
-#define ALIGNMENT    16u
+#define MIB         (1024ull * 1024)
+#define GIB         (1024 * MIB)
+#define PAGE_SIZE   4096ull
+#define HEAP_MAX    GIB
+#define BLOCK_MAGIC 0x48454C4Fu         /* "HELO" */
+#define ALIGNMENT   16ull
 
 /* Jeder Heap-Block beginnt mit diesem Kopf; die Blöcke bilden eine Liste. */
 typedef struct block {
-    uint32_t size;                      /* Nutzgröße ohne Kopf */
-    uint32_t free;
+    uint64_t size;                      /* Nutzgröße ohne Kopf */
     struct block *next;
+    uint32_t free;
     uint32_t magic;
+    uint64_t pad;                       /* Kopf auf 32 Bytes auffüllen */
 } block_t;
 
 static block_t *heap;
-static uint32_t heap_start, heap_size;
-static uint32_t total_kb;
-
-int memory_map_count(void)
-{
-    return MMAP_COUNT > MMAP_MAX ? MMAP_MAX : MMAP_COUNT;
-}
-
-const mmap_entry_t *memory_map_entry(int index)
-{
-    return &MMAP_ENTRIES[index];
-}
+static uint64_t heap_start, heap_size;
+static uint64_t page_bottom, page_top;  /* Vorrat für alloc_pages() */
+static uint64_t total_bytes;
 
 void memory_init(void)
 {
     uint64_t best_base = 0, best_len = 0;
+    uint8_t *p = (uint8_t *)boot_info.mmap;
+    uint8_t *end = p + boot_info.mmap_size;
 
-    for (int i = 0; i < memory_map_count(); i++) {
-        const mmap_entry_t *e = memory_map_entry(i);
-        if (e->type != 1)
+    for (; p < end; p += boot_info.mmap_desc_size) {
+        const efi_memory_descriptor_t *d = (const efi_memory_descriptor_t *)p;
+        uint64_t base = d->physical_start;
+        uint64_t len = d->number_of_pages * EFI_PAGE_SIZE;
+
+        if (d->type >= EFI_LOADER_CODE && d->type <= EFI_CONVENTIONAL_MEMORY)
+            total_bytes += len;
+        if (d->type != EFI_CONVENTIONAL_MEMORY)
             continue;
-        total_kb += (uint32_t)(e->length >> 10);
 
-        /* Für den Heap: größter freier Bereich zwischen 1 MiB und 4 GiB */
-        uint64_t base = e->base, end = e->base + e->length;
+        /* Für den Kernel: der größte freie Bereich oberhalb von 1 MiB */
+        uint64_t limit = base + len;
         if (base < MIB)
             base = MIB;
-        if (end > 0x100000000ull)
-            end = 0x100000000ull;
-        if (end > base && end - base > best_len) {
+        if (limit > 512 * GIB)
+            limit = 512 * GIB;          /* so weit reichen die Seitentabellen */
+        if (limit > base && limit - base > best_len) {
             best_base = base;
-            best_len = end - base;
+            best_len = limit - base;
         }
     }
-
-    if (best_len < MIB) {
-        /* Keine brauchbare Karte: konservativ 4 MiB oberhalb von 1 MiB annehmen */
-        best_base = MIB;
-        best_len = 4 * MIB;
-        if (total_kb == 0)
-            total_kb = 5 * 1024;
-    }
+    if (best_len < 16 * MIB)
+        panic("Zu wenig freier Arbeitsspeicher (%llu KiB am Stück).",
+              best_len / 1024);
     if (best_len > HEAP_MAX)
         best_len = HEAP_MAX;
 
-    heap_start = ((uint32_t)best_base + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
-    heap_size = ((uint32_t)best_len - (heap_start - (uint32_t)best_base))
-                & ~(ALIGNMENT - 1);
+    /* Das obere Achtel (höchstens 16 MiB) ist der Vorrat für ganze Seiten. */
+    uint64_t pool = best_len / 8;
+    if (pool > 16 * MIB)
+        pool = 16 * MIB;
+    page_top = (best_base + best_len) & ~(PAGE_SIZE - 1);
+    page_bottom = (page_top - pool) & ~(PAGE_SIZE - 1);
+
+    heap_start = (best_base + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
+    heap_size = page_bottom - heap_start;
 
     heap = (block_t *)heap_start;
     heap->size = heap_size - sizeof(block_t);
@@ -85,7 +82,7 @@ void *kmalloc(size_t size)
     size = (size + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
 
     void *result = NULL;
-    uint32_t flags = irq_save();
+    uint64_t flags = irq_save();
 
     /* First Fit: den ersten freien Block nehmen, der groß genug ist */
     for (block_t *b = heap; b; b = b->next) {
@@ -110,6 +107,14 @@ void *kmalloc(size_t size)
     return result;
 }
 
+void *kzalloc(size_t size)
+{
+    void *ptr = kmalloc(size);
+    if (ptr)
+        memset(ptr, 0, size);
+    return ptr;
+}
+
 void kfree(void *ptr)
 {
     if (!ptr)
@@ -118,7 +123,7 @@ void kfree(void *ptr)
     if (block->magic != BLOCK_MAGIC || block->free)
         return;                         /* ungültiger Zeiger oder doppeltes Free */
 
-    uint32_t flags = irq_save();
+    uint64_t flags = irq_save();
     block->free = 1;
 
     /* Benachbarte freie Blöcke wieder verschmelzen */
@@ -134,10 +139,52 @@ void kfree(void *ptr)
     irq_restore(flags);
 }
 
+void *alloc_pages(size_t count)
+{
+    uint64_t flags = irq_save();
+    uint64_t bytes = count * PAGE_SIZE;
+    if (page_top - page_bottom < bytes)
+        panic("Der Seitenvorrat ist erschöpft.");
+    page_top -= bytes;
+    void *pages = (void *)page_top;
+    irq_restore(flags);
+
+    memset(pages, 0, bytes);
+    return pages;
+}
+
+/* Liefert die Tabelle der nächsten Ebene und legt sie bei Bedarf an. */
+static uint64_t *next_table(uint64_t *table, unsigned index)
+{
+    if (!(table[index] & 1))
+        table[index] = (uint64_t)alloc_pages(1) | 0x03;
+    return (uint64_t *)(table[index] & 0x000FFFFFFFFFF000ull);
+}
+
+void vmm_map(uint64_t address, uint64_t size)
+{
+    const uint64_t huge = 2 * MIB;
+    uint64_t first = address & ~(huge - 1);
+    uint64_t last = (address + size - 1) & ~(huge - 1);
+
+    uint64_t flags = irq_save();
+    for (uint64_t a = first; ; a += huge) {
+        uint64_t *pdpt = next_table(boot_info.pml4, (a >> 39) & 0x1FF);
+        uint64_t *pd = next_table(pdpt, (a >> 30) & 0x1FF);
+        unsigned i = (a >> 21) & 0x1FF;
+        if (!(pd[i] & 1))
+            pd[i] = a | 0x83;           /* vorhanden, beschreibbar, 2 MiB */
+        if (a == last)
+            break;
+    }
+    write_cr3(read_cr3());              /* Adresspuffer (TLB) leeren */
+    irq_restore(flags);
+}
+
 void memory_stats(memory_stats_t *out)
 {
-    uint32_t flags = irq_save();
-    out->total_kb = total_kb;
+    uint64_t flags = irq_save();
+    out->total_bytes = total_bytes;
     out->heap_start = heap_start;
     out->heap_size = heap_size;
     out->heap_used = 0;

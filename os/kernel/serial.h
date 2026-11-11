@@ -1,8 +1,17 @@
-/* Serielle Schnittstelle COM1: Spiegel der Konsole und zweiter Eingabeweg */
+/* Serielle Schnittstelle COM1: Kernel-Protokoll und Konsole ohne Bildschirm */
 #pragma once
+
+#include "console.h"
+
+#include <stdbool.h>
 
 void serial_init(void);
 void serial_putc(char c);
+void serial_write(const char *text);
 
-/* Empfangs-Interrupt einschalten (erst nach idt_init() aufrufen). */
-void serial_enable_input(void);
+/* Empfangene Zeichen abholen - wird vom Systemtakt aufgerufen. */
+void serial_poll(void);
+
+/* Die serielle Schnittstelle als Konsole (für eine Shell ohne Bildschirm). */
+console_t *serial_console(void);
+bool serial_present(void);

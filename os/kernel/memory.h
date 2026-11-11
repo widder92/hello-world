@@ -1,31 +1,33 @@
-/* Speicherverwaltung: BIOS-Speicherkarte und Kernel-Heap */
+/* Speicherverwaltung: Kernel-Heap, Seitenvergabe und Seitentabellen */
 #pragma once
 
 #include <stddef.h>
 #include <stdint.h>
 
-/* Ein Eintrag der BIOS-Speicherkarte (int 15h, E820). */
 typedef struct {
-    uint64_t base;
-    uint64_t length;
-    uint32_t type;                      /* 1 = nutzbarer RAM */
-    uint32_t acpi;
-} __attribute__((packed)) mmap_entry_t;
-
-typedef struct {
-    uint32_t total_kb;                  /* nutzbarer RAM laut BIOS */
-    uint32_t heap_start;
-    uint32_t heap_size;
-    uint32_t heap_used;                 /* inklusive Verwaltungsdaten */
-    uint32_t heap_blocks;
+    uint64_t total_bytes;               /* nutzbarer RAM laut Firmware */
+    uint64_t heap_start;
+    uint64_t heap_size;
+    uint64_t heap_used;                 /* inklusive Verwaltungsdaten */
+    uint64_t heap_blocks;
 } memory_stats_t;
 
 void memory_init(void);
 
 void *kmalloc(size_t size);
+void *kzalloc(size_t size);             /* wie kmalloc, mit Nullen gefüllt */
 void kfree(void *ptr);
 
-void memory_stats(memory_stats_t *out);
+/*
+ * Ganze 4-KiB-Seiten, mit Nullen gefüllt. Für Hardware-Strukturen und
+ * Seitentabellen; sie werden nie wieder freigegeben.
+ */
+void *alloc_pages(size_t count);
 
-int memory_map_count(void);
-const mmap_entry_t *memory_map_entry(int index);
+/*
+ * Sorgt dafür, dass der physische Bereich ansprechbar ist (1:1 abgebildet).
+ * Nötig für Geräte, deren Register außerhalb des RAMs liegen.
+ */
+void vmm_map(uint64_t address, uint64_t size);
+
+void memory_stats(memory_stats_t *out);

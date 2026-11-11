@@ -1,81 +1,72 @@
-# HelloOS - Build
+# HelloOS (x86-64, UEFI) - Build
 #
-#   make          baut build/helloos.img (bootfähiges Disk-Image)
-#   make run      startet das Image in QEMU (Fenster)
-#   make run-tty  startet es im Terminal über die serielle Konsole
+#   make          baut build/BOOTX64.EFI und das Disk-Image build/helloos.img
+#   make run      startet HelloOS in QEMU (Fenster)
+#   make run-usb  wie run, aber mit USB-Tastatur und -Maus statt PS/2
 #   make test     bootet ohne Bildschirm und prüft die wichtigsten Befehle
 #   make clean    räumt auf
 
 BUILD   := build
+EFI     := $(BUILD)/BOOTX64.EFI
 IMAGE   := $(BUILD)/helloos.img
 
-CC      := gcc
+CC      := clang
+LD      := lld-link
 AS      := nasm
-LD      := ld
-OBJCOPY := objcopy
-QEMU    := qemu-system-i386
+PYTHON  := python3
+QEMU    := qemu-system-x86_64
 
-CFLAGS  := -m32 -march=i686 -std=gnu11 -O2 -g -Wall -Wextra \
-           -ffreestanding -fno-pie -fno-pic -fno-stack-protector \
-           -fno-asynchronous-unwind-tables -fno-tree-loop-distribute-patterns \
-           -mgeneral-regs-only -MMD -MP
-LDFLAGS := -m elf_i386 -T linker.ld -nostdlib -z noexecstack --build-id=none
+# UEFI-Firmware für QEMU (Paket "ovmf"); bei Bedarf überschreiben:
+#   make run OVMF=/pfad/zu/OVMF.fd
+OVMF    := $(firstword $(wildcard /usr/share/ovmf/OVMF.fd \
+               /usr/share/OVMF/OVMF.fd /usr/share/edk2/ovmf/OVMF.fd \
+               /usr/share/edk2/x64/OVMF.4m.fd /usr/share/qemu/OVMF.fd \
+               /opt/homebrew/share/qemu/edk2-x86_64-code.fd \
+               /usr/local/share/qemu/edk2-x86_64-code.fd))
 
-# Neuere Linker warnen vor Segmenten, die zugleich schreib- und ausführbar
-# sind - bei einem flachen Kernel-Image ohne Paging ist das Absicht.
-LDFLAGS += $(shell $(LD) --help 2>/dev/null | grep -q no-warn-rwx-segments \
-             && echo --no-warn-rwx-segments)
+# UEFI-Programme sind PE-Dateien wie unter Windows - daher dieses Ziel.
+CFLAGS  := --target=x86_64-unknown-windows -std=gnu11 -O2 -Wall -Wextra \
+           -ffreestanding -fno-stack-protector -fshort-wchar -mno-red-zone \
+           -mgeneral-regs-only -mno-stack-arg-probe -MMD -MP
+LDFLAGS := /subsystem:efi_application /entry:efi_main /nodefaultlib
 
 C_SRCS   := $(wildcard kernel/*.c)
 ASM_SRCS := $(wildcard kernel/*.asm)
-OBJS     := $(patsubst kernel/%.asm,$(BUILD)/%.asm.o,$(ASM_SRCS)) \
-            $(patsubst kernel/%.c,$(BUILD)/%.o,$(C_SRCS))
+OBJS     := $(patsubst kernel/%.c,$(BUILD)/%.obj,$(C_SRCS)) \
+            $(patsubst kernel/%.asm,$(BUILD)/%.asm.obj,$(ASM_SRCS))
 
-# Der Kernel muss zwischen 0x10000 und dem Stack bei 0x80000 Platz finden.
-MAX_KERNEL_SECTORS := 512
+QEMU_FLAGS := -machine q35 -m 512 -bios $(OVMF) \
+              -drive format=raw,file=$(IMAGE) -net none
 
-.PHONY: all run run-tty test clean
+.PHONY: all run run-usb test clean
 
 all: $(IMAGE)
 
 $(BUILD):
 	mkdir -p $@
 
-$(BUILD)/%.o: kernel/%.c | $(BUILD)
+$(BUILD)/%.obj: kernel/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/%.asm.o: kernel/%.asm | $(BUILD)
-	$(AS) -f elf32 $< -o $@
+$(BUILD)/%.asm.obj: kernel/%.asm | $(BUILD)
+	$(AS) -f win64 $< -o $@
 
-$(BUILD)/kernel.elf: $(OBJS) linker.ld
-	$(LD) $(LDFLAGS) -o $@ $(OBJS)
+$(EFI): $(OBJS)
+	$(LD) $(LDFLAGS) /out:$@ $(OBJS)
 
-$(BUILD)/kernel.bin: $(BUILD)/kernel.elf
-	$(OBJCOPY) -O binary $< $@
-
-# Der Bootsektor muss wissen, wie viele Sektoren der Kernel belegt.
-$(BUILD)/boot.bin: boot/boot.asm $(BUILD)/kernel.bin
-	@sectors=$$(( ($$(wc -c < $(BUILD)/kernel.bin) + 511) / 512 )); \
-	if [ $$sectors -gt $(MAX_KERNEL_SECTORS) ]; then \
-		echo "Kernel zu groß: $$sectors Sektoren"; exit 1; \
-	fi; \
-	echo "$(AS) -f bin -DKERNEL_SECTORS=$$sectors $< -o $@"; \
-	$(AS) -f bin -DKERNEL_SECTORS=$$sectors $< -o $@
-
-# Image = Bootsektor + Kernel, aufgefüllt auf die Größe einer 1,44-MB-Diskette.
-$(IMAGE): $(BUILD)/boot.bin $(BUILD)/kernel.bin
-	cat $^ > $@
-	truncate -s 1474560 $@
+# Disk-Image mit GPT und EFI-Systempartition (FAT32), darin \EFI\BOOT\BOOTX64.EFI
+$(IMAGE): $(EFI) tools/mkimage.py
+	$(PYTHON) tools/mkimage.py $(EFI) $@
 
 run: $(IMAGE)
-	$(QEMU) -drive format=raw,file=$(IMAGE) -serial stdio
+	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-run-tty: $(IMAGE)
-	@echo "Beenden mit 'shutdown' oder Strg+A, dann X"
-	$(QEMU) -drive format=raw,file=$(IMAGE) -nographic
+run-usb: $(IMAGE)
+	$(QEMU) $(QEMU_FLAGS) -serial stdio \
+	    -device qemu-xhci -device usb-kbd -device usb-mouse
 
 test: $(IMAGE)
-	./tools/smoke-test.sh $(IMAGE)
+	QEMU="$(QEMU)" OVMF="$(OVMF)" ./tools/smoke-test.sh $(IMAGE)
 
 clean:
 	rm -rf $(BUILD)

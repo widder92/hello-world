@@ -1,11 +1,14 @@
+/*
+ * Tastaturlogik, unabhängig vom Anschluss: Die Treiber für PS/2 und USB
+ * melden gedrückte Tasten als Scancodes; hier werden daraus Zeichen in der
+ * gewählten Tastaturbelegung.
+ */
 #include "input.h"
-#include "idt.h"
-#include "io.h"
+#include "cpu.h"
+#include "gui.h"
 #include "string.h"
-#include "task.h"
 
 #include <stddef.h>
-#include <stdint.h>
 
 /* --- Tastaturbelegungen (Scancode-Set 1 -> Latin-1/Unicode) ---------------- */
 
@@ -38,7 +41,7 @@ static const struct altgr_key altgr_de[] = {
 static const struct layout layouts[] = {
     {
         .name = "de",
-        .digits = { "1234567890\xDF'", "!\"\xA7$%&/()=?`" },
+        .digits = { "1234567890\xDF\xB4", "!\"\xA7$%&/()=?`" },
         .top = { "qwertzuiop\xFC+", "QWERTZUIOP\xDC*" },
         .home = { "asdfghjkl\xF6\xE4^", "ASDFGHJKL\xD6\xC4\xB0" },
         .bottom = { "#yxcvbnm,.-", "'YXCVBNM;:_" },
@@ -91,7 +94,7 @@ bool keyboard_set_layout(const char *name)
 {
     for (size_t i = 0; i < sizeof(layouts) / sizeof(layouts[0]); i++) {
         if (strcmp(layouts[i].name, name) == 0) {
-            uint32_t flags = irq_save();
+            uint64_t flags = irq_save();
             layout = &layouts[i];
             build_keymap();
             irq_restore(flags);
@@ -106,82 +109,47 @@ const char *keyboard_layout_name(void)
     return layout->name;
 }
 
-/* --- Eingabepuffer ---------------------------------------------------------- */
-
-#define BUFFER_SIZE 128
-
-static int buffer[BUFFER_SIZE];
-static unsigned head, tail;             /* head: schreiben, tail: lesen */
-static int waiting_pid;                 /* Task, der auf Eingabe wartet */
-
-void input_push(int c)
+void keyboard_init(void)
 {
-    uint32_t flags = irq_save();
-    unsigned next = (head + 1) % BUFFER_SIZE;
-    if (next != tail) {                 /* voller Puffer: Zeichen verwerfen */
-        buffer[head] = c;
-        head = next;
-    }
-    if (waiting_pid) {
-        task_wake(waiting_pid);
-        waiting_pid = 0;
-    }
-    irq_restore(flags);
+    build_keymap();
 }
 
-int input_getchar(void)
-{
-    for (;;) {
-        uint32_t flags = irq_save();
-        if (head != tail) {
-            int c = buffer[tail];
-            tail = (tail + 1) % BUFFER_SIZE;
-            irq_restore(flags);
-            return c;
-        }
-        /* Nichts da: schlafen legen, bis input_push() uns weckt. */
-        waiting_pid = (int)task_current_pid();
-        task_block();
-        irq_restore(flags);
-    }
-}
+/* --- Vom Scancode zum Zeichen ------------------------------------------------- */
 
-/* --- PS/2-Tastaturtreiber --------------------------------------------------- */
-
-static bool shift, ctrl, altgr, caps_lock;
-static bool extended;                   /* Präfix 0xE0 gesehen */
+static bool shift, ctrl, alt, altgr, caps_lock;
 
 static bool is_letter(uint8_t c)
 {
     return (c >= 'a' && c <= 'z') || (c >= 0xE0 && c != 0xF7);
 }
 
-static void keyboard_irq(regs_t *regs)
+static int modifiers(void)
 {
-    (void)regs;
-    uint8_t scancode = inb(0x60);
+    return (shift ? MOD_SHIFT : 0) | (ctrl ? MOD_CTRL : 0) | (alt ? MOD_ALT : 0);
+}
 
-    if (scancode == 0xE0) {
-        extended = true;
-        return;
-    }
-    bool released = scancode & 0x80;
-    bool ext = extended;
-    scancode &= 0x7F;
-    extended = false;
-
-    if (ext) {
+void keyboard_handle_scancode(uint8_t scancode, bool extended, bool released)
+{
+    if (extended) {
+        int key = 0;
         switch (scancode) {
-        case 0x38: altgr = !released; break;            /* rechte Alt-Taste */
-        case 0x1D: ctrl = !released; break;             /* rechte Strg-Taste */
-        case 0x48: if (!released) input_push(KEY_UP); break;
-        case 0x50: if (!released) input_push(KEY_DOWN); break;
-        case 0x4B: if (!released) input_push(KEY_LEFT); break;
-        case 0x4D: if (!released) input_push(KEY_RIGHT); break;
-        case 0x1C: if (!released) input_push('\n'); break;
-        case 0x35: if (!released) input_push('/'); break;
-        default: break;
+        case 0x38: altgr = !released; return;           /* rechte Alt-Taste */
+        case 0x1D: ctrl = !released; return;            /* rechte Strg-Taste */
+        case 0x48: key = KEY_UP; break;
+        case 0x50: key = KEY_DOWN; break;
+        case 0x4B: key = KEY_LEFT; break;
+        case 0x4D: key = KEY_RIGHT; break;
+        case 0x47: key = KEY_HOME; break;
+        case 0x4F: key = KEY_END; break;
+        case 0x49: key = KEY_PAGE_UP; break;
+        case 0x51: key = KEY_PAGE_DOWN; break;
+        case 0x53: key = KEY_DELETE; break;
+        case 0x1C: key = '\n'; break;                   /* Enter am Ziffernblock */
+        case 0x35: key = '/'; break;
+        default: return;
         }
+        if (!released)
+            gui_post_key(key, modifiers());
         return;
     }
 
@@ -193,6 +161,9 @@ static void keyboard_irq(regs_t *regs)
     case 0x1D:
         ctrl = !released;
         return;
+    case 0x38:
+        alt = !released;
+        return;
     case 0x3A:
         if (!released)
             caps_lock = !caps_lock;
@@ -200,8 +171,18 @@ static void keyboard_irq(regs_t *regs)
     default:
         break;
     }
-    if (released)
+    if (released || scancode >= 128)
         return;
+
+    /* Funktionstasten: F1-F10 ab 0x3B, F11 und F12 bei 0x57 und 0x58 */
+    if (scancode >= 0x3B && scancode <= 0x44) {
+        gui_post_key(KEY_F1 + (scancode - 0x3B), modifiers());
+        return;
+    }
+    if (scancode == 0x57 || scancode == 0x58) {
+        gui_post_key(KEY_F1 + 10 + (scancode - 0x57), modifiers());
+        return;
+    }
 
     uint8_t c;
     if (altgr) {
@@ -216,13 +197,5 @@ static void keyboard_irq(regs_t *regs)
         return;
     if (ctrl && c >= 'a' && c <= 'z')
         c &= 0x1F;                      /* Strg+C -> 3, Strg+L -> 12, ... */
-    input_push(c);
-}
-
-void keyboard_init(void)
-{
-    build_keymap();
-    while (inb(0x64) & 0x01)            /* alte Daten im Controller verwerfen */
-        inb(0x60);
-    irq_register(1, keyboard_irq);
+    gui_post_key(c, modifiers());
 }
