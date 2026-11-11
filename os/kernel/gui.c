@@ -6,6 +6,7 @@
 #include "input.h"
 #include "memory.h"
 #include "serial.h"
+#include "sound.h"
 #include "shell.h"
 #include "string.h"
 #include "task.h"
@@ -506,11 +507,19 @@ static bool update_waiting(void)
     return info.available_build != 0;
 }
 
-static rect_t update_rect(void)
+/* Lautstärke: ein Knopf, der bei jedem Klick eine Stufe weiterschaltet (ohne Soundkarte: nichts) */
+static rect_t volume_rect(void)
 {
     rect_t clock = clock_rect();
+    int w = sound_available() ? 9 * FONT_W + 16 : 0;
+    return rect_make(clock.x - (w ? 8 + w : 0), clock.y, w, BUTTON_H);
+}
+
+static rect_t update_rect(void)
+{
+    rect_t volume = volume_rect();
     int w = gfx_text_width(UPDATE_LABEL) + 20;
-    return rect_make(clock.x - 8 - w, clock.y, w, BUTTON_H);
+    return rect_make(volume.x - 8 - w, volume.y, w, BUTTON_H);
 }
 
 /* Fenster in der Reihenfolge, in der sie geöffnet wurden. */
@@ -680,7 +689,7 @@ static void draw_taskbar(void)
     window_t *focused = window_count ? zorder[window_count - 1] : NULL;
     rect_t clock = clock_rect();
     bool update = update_waiting();
-    int limit = update ? update_rect().x : clock.x;
+    int limit = update ? update_rect().x : sound_available() ? volume_rect().x : clock.x;
     for (int i = 0; i < n; i++) {
         rect_t r = window_button_rect(i);
         if (r.x + r.w > limit - 8)
@@ -692,6 +701,14 @@ static void draw_taskbar(void)
 
     if (update)
         ui_button(&back, update_rect(), UPDATE_LABEL, true);
+    if (sound_available()) {
+        char label[16];
+        if (sound_volume())
+            ksnprintf(label, sizeof(label), "Ton %d%%", sound_volume());
+        else
+            strlcpy(label, "Ton aus", sizeof(label));
+        ui_button(&back, volume_rect(), label, false);
+    }
     gfx_text(&back, clock.x + 8, clock.y + (BUTTON_H - FONT_H) / 2, clock_text,
              C_TEXT_LIGHT, false);
     ui_button(&back, power_rect(), "Aus", false);
@@ -900,6 +917,14 @@ static void taskbar_click(void)
     }
     if (update_waiting() && rect_contains(update_rect(), mouse_x, mouse_y)) {
         gui_launch("update");
+        return;
+    }
+    if (sound_available() && rect_contains(volume_rect(), mouse_x, mouse_y)) {
+        /* 100 -> 75 -> 50 -> 25 -> aus -> 100; der Hinweiston zeigt die neue Lautstärke */
+        int now = sound_volume();
+        sound_set_volume(now > 75 ? 75 : now > 50 ? 50 : now > 25 ? 25 : now > 0 ? 0 : 100);
+        sound_play(SOUND_NOTIFY);
+        add_dirty(taskbar_rect());
         return;
     }
     window_t *list[MAX_WINDOWS];

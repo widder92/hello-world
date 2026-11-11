@@ -9,6 +9,7 @@
 #include "memory.h"
 #include "net.h"
 #include "shell.h"
+#include "sound.h"
 #include "string.h"
 #include "task.h"
 #include "update.h"
@@ -105,8 +106,18 @@ void about_app(void *arg)
 #define POWER_W 420
 #define POWER_H 132
 
+/* Der Abschiedsklang darf noch verklingen, bevor der Strom weg ist. */
+static void farewell(void)
+{
+    if (!sound_available() || sound_volume() == 0)
+        return;
+    sound_play(SOUND_SHUTDOWN);
+    sound_wait(2500);
+}
+
 void power_reboot(void)
 {
+    farewell();
     disk_shutdown();
     irq_disable();
     boot_info.runtime->reset_system(EFI_RESET_COLD, EFI_SUCCESS, 0, NULL);
@@ -120,6 +131,7 @@ void power_reboot(void)
 
 void power_shutdown(void)
 {
+    farewell();
     disk_shutdown();
     irq_disable();
     boot_info.runtime->reset_system(EFI_RESET_SHUTDOWN, EFI_SUCCESS, 0, NULL);
@@ -225,6 +237,7 @@ void update_app(void *arg)
     irq_restore(flags);
     if (already)
         return;
+    sound_play(SOUND_NOTIFY);           /* ein Update wartet auf eine Entscheidung */
 
     window_t *win = window_create("Software-Update", UPDATE_W, UPDATE_H);
     if (!win) {

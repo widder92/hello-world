@@ -2,7 +2,7 @@
 #pragma once
 
 #define OS_NAME    "HelloOS"
-#define OS_VERSION "0.9"
+#define OS_VERSION "0.10"
 
 #include <stdbool.h>
 #include <stddef.h>

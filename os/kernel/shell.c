@@ -14,6 +14,7 @@
 #include "memory.h"
 #include "net.h"
 #include "sftp.h"
+#include "sound.h"
 #include "storage.h"
 #include "string.h"
 #include "task.h"
@@ -1307,6 +1308,54 @@ static void cmd_panic(shell_t *sh, char *args)
                      : : : "eax", "ecx", "edx", "cc");
 }
 
+static void cmd_sound(shell_t *sh, char *args)
+{
+    (void)sh;
+    char *word = next_token(&args);
+    uint32_t percent;
+    static const struct {
+        const char *name;
+        sound_id_t id;
+    } names[] = {
+        { "start", SOUND_STARTUP }, { "ende", SOUND_SHUTDOWN }, { "hinweis", SOUND_NOTIFY },
+        { "fehler", SOUND_ERROR }, { "test", SOUND_NOTIFY },
+    };
+
+    if (!sound_available()) {
+        kprintf("Kein Ton: %s.\n", sound_describe());
+        return;
+    }
+    if (!*word) {
+        kprintf("Soundkarte:  %s\n", sound_describe());
+        if (sound_volume())
+            kprintf("Lautstärke:  %d %%\n", sound_volume());
+        else
+            kprintf("Lautstärke:  aus (stumm)\n");
+        kprintf("Aufruf: sound <0-100> | aus | test | start | hinweis | fehler | ende\n");
+        return;
+    }
+    if (strcmp(word, "aus") == 0) {
+        sound_set_volume(0);
+        kprintf("Ton aus.\n");
+        return;
+    }
+    if (parse_uint(word, &percent) && percent <= 100) {
+        sound_set_volume((int)percent);
+        kprintf("Lautstärke: %u %%\n", percent);
+        sound_play(SOUND_NOTIFY);
+        return;
+    }
+    for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (strcmp(word, names[i].name) == 0) {
+            if (sound_volume() == 0)
+                kprintf("Der Ton ist ausgeschaltet (\"sound 70\" schaltet ihn ein).\n");
+            sound_play(names[i].id);
+            return;
+        }
+    }
+    kprintf("Aufruf: sound <0-100> | aus | test | start | hinweis | fehler | ende\n");
+}
+
 static void cmd_reboot(shell_t *sh, char *args)
 {
     (void)sh;
@@ -1352,6 +1401,7 @@ static const struct command commands[] = {
     { "rm",       "rm <datei>",          "Datei löschen", cmd_rm },
     { "sha256",   "sha256 <datei>",      "Prüfsumme einer Datei", cmd_sha256 },
     { "echo",     "echo <text>",         "Text ausgeben", cmd_echo },
+    { "sound",    "sound [0-100|aus|test]", "Lautstärke und Systemklänge", cmd_sound },
     { "keymap",   "keymap [de|us]",      "Tastaturbelegung anzeigen/ändern", cmd_keymap },
     { "history",  "history",             "Befehlsverlauf anzeigen", cmd_history },
     { "clear",    "clear",               "Bildschirm löschen", cmd_clear },

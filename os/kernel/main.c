@@ -18,6 +18,7 @@
 #include "serial.h"
 #include "shell.h"
 #include "disk.h"
+#include "sound.h"
 #include "storage.h"
 #include "task.h"
 #include "time.h"
@@ -73,6 +74,7 @@ void kmain(void *unused)
     storage_init();
     net_init();
     update_init();
+    sound_init();
     if (serial_present())
         task_create("shell-seriell", serial_shell, NULL, serial_console());
     gui_start();

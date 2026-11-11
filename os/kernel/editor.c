@@ -11,6 +11,7 @@
 #include "gui.h"
 #include "input.h"
 #include "memory.h"
+#include "sound.h"
 #include "string.h"
 #include "textedit.h"
 
@@ -136,6 +137,7 @@ static bool save_file(editor_t *e)
         char text[96];
         ksnprintf(text, sizeof(text), "Speichern fehlgeschlagen: %s", fs_error_text(err));
         set_message(e, true, text);
+        sound_play(SOUND_ERROR);
         return false;
     }
     e->edit.modified = false;
@@ -337,6 +339,7 @@ void editor_app(void *arg)
         } else if (ev.type == EV_CLOSE) {
             if (e->edit.modified && e->mode != MODE_UNSAVED) {
                 e->mode = MODE_UNSAVED;
+                sound_play(SOUND_NOTIFY);
             } else {
                 running = false;
             }

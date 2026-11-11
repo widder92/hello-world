@@ -12,6 +12,7 @@
 #include "memory.h"
 #include "sftp.h"
 #include "storage.h"
+#include "sound.h"
 #include "string.h"
 #include "task.h"
 #include "time.h"
@@ -146,6 +147,7 @@ static bool trust(void *ctx, const char *server, const char *type,
     strlcpy(app->prompt_yes, changed ? "Trotzdem" : "Vertrauen", sizeof(app->prompt_yes));
     app->trust_answer = 0;
     app->prompt = PROMPT_TRUST;
+    sound_play(SOUND_NOTIFY);
     while (app->trust_answer == 0 && !app->closing)
         task_sleep(50);
     app->prompt = PROMPT_NONE;
@@ -285,6 +287,7 @@ static void worker(void *arg)
 
     if (!ok && app->sftp) {
         set_status(app, true, "%s", sftp_error(app->sftp));
+        sound_play(SOUND_ERROR);
         if (!sftp_alive(app->sftp) || !app->connected) {
             sftp_close(app->sftp);
             app->sftp = NULL;
@@ -620,6 +623,7 @@ static void ask(app_t *app, job_t job, const char *yes, const char *line0,
     strlcpy(app->prompt_line[0], line0, sizeof(app->prompt_line[0]));
     strlcpy(app->prompt_line[1], line1, sizeof(app->prompt_line[1]));
     strlcpy(app->prompt_yes, yes, sizeof(app->prompt_yes));
+    sound_play(SOUND_NOTIFY);
     app->confirm_job = job;
     app->confirm_local = false;
     app->job_directory = false;

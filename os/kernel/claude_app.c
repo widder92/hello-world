@@ -13,6 +13,7 @@
 #include "gui.h"
 #include "input.h"
 #include "memory.h"
+#include "sound.h"
 #include "string.h"
 #include "task.h"
 #include "time.h"
@@ -108,6 +109,7 @@ static bool ui_confirm(void *ctx, const char *command)
     /* Der vollständige Befehl steht im Verlauf, bevor gefragt wird. */
     ksnprintf(note, sizeof(note), "Claude möchte ausführen: %s", command);
     add_entry(app, ENTRY_NOTE, note);
+    sound_play(SOUND_NOTIFY);            /* Claude wartet auf eine Erlaubnis */
     app->confirm_answer = 0;
     app->confirm_pending = true;
     app->dirty = true;
@@ -124,8 +126,10 @@ static void worker(void *arg)
     claude_ui_t ui = { ui_text, ui_note, ui_confirm, app };
     char error[200];
 
-    if (!claude_send(app->chat, app->question, &ui, error, sizeof(error)))
+    if (!claude_send(app->chat, app->question, &ui, error, sizeof(error))) {
         add_entry(app, ENTRY_ERROR, error);
+        sound_play(SOUND_ERROR);
+    }
     kfree(app->question);
     app->question = NULL;
     app->busy = false;

@@ -65,7 +65,7 @@ expect "Multitasking gestartet" 30
 expect "helloos> " 30
 
 printf 'info\nmem\ndate\n' >&3
-expect "HelloOS 0.9 (x86-64, UEFI"
+expect "HelloOS 0.10 (x86-64, UEFI"
 expect "Speicherkarte der Firmware"
 
 printf 'write test.txt Hallo Welt\nappend test.txt Zeile zwei\ncat test.txt\nls\n' >&3
@@ -94,6 +94,10 @@ expect "Adresse 10.0.2.15 per DHCP erhalten" 30
 printf 'disk\nping 10.0.2.2\n' >&3
 expect "Startdatei EFI/BOOT/BOOTX64.EFI"
 expect "4 von 4 Paketen beantwortet"
+
+# Ton: Ohne Soundkarte bleibt es still - und der Befehl sagt das
+printf 'sound\n' >&3
+expect "Kein Ton: keine unterstützte Soundkarte"
 
 # Dateiübertragung: ohne Angaben erklärt sich der Befehl
 printf 'sftp\n' >&3

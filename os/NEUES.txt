@@ -1,5 +1,4 @@
-HelloOS 0.9
-- HelloOS lässt sich auf der internen Platte einrichten - auf einer eigenen Partition namens HELLOOS, neben Windows.
-- Beim Start vom Stick fragt ein Assistent, sobald es eine solche Partition gibt, und legt den Eintrag "HelloOS" im Startmenü des PCs an.
-- Unterstützt werden NVMe-SSDs und SATA-Platten (AHCI). Geschrieben wird ausschließlich in die eigene Partition.
-- "disk" zeigt alle Datenträger, ihre Partitionen und wo HelloOS speichert.
+HelloOS 0.10
+- HelloOS hat Ton: ein Klang beim Start und beim Herunterfahren, ein Hinweiston bei Rückfragen und ein Fehlerton.
+- Lautstärke: Knopf "Ton" in der Taskleiste (jeder Klick eine Stufe leiser, bis aus) oder "sound <0-100>" im Terminal.
+- Unterstützt wird Intel HD Audio über die Lautsprecher- und Kopfhörerbuchse - nicht der Ton über HDMI.

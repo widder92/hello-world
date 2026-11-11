@@ -40,7 +40,9 @@ fremde Bibliothek: rund 24 000 Zeilen C und etwas Assembler.
 - **Updates**: HelloOS sucht regelmäßig nach neuen Versionen, prüft deren
   Signatur, zeigt, was neu ist, und installiert sie nach deiner Zustimmung auf
   dem Datenträger, von dem es gestartet wurde
-- 34 Shell-Befehle
+- **Ton**: Klänge beim Start, beim Herunterfahren, bei Rückfragen und Fehlern
+  über Intel HD Audio, mit Lautstärkeknopf in der Taskleiste
+- 35 Shell-Befehle
 - **Serielle Konsole** mit eigener Shell – praktisch für Tests ohne Bildschirm
 
 ![Netzwerk: eine Webseite über HTTPS im Terminal](docs/screenshot-netz.png)
@@ -225,6 +227,7 @@ Was dabei zu beachten ist:
 | Fenstergröße ändern | am Griff in der rechten unteren Ecke ziehen | – |
 | Fenster maximieren / zurück | Knopf mit dem Rechteck neben dem ✕ | Alt+F10 |
 | Fenster schließen | ✕ in der Titelleiste | Alt+F4 |
+| Lautstärke | Knopf „Ton" in der Taskleiste: jeder Klick eine Stufe leiser, zuletzt aus | `sound 50`, `sound aus` im Terminal |
 | Ausschalten / Neustart | „Aus" rechts in der Taskleiste | `shutdown` bzw. `reboot` im Terminal |
 
 ### Befehle im Terminal
@@ -257,6 +260,7 @@ Was dabei zu beachten ist:
 | `write <datei> <text>` | Datei (über)schreiben |
 | `append <datei> <text>` | Zeile anhängen |
 | `echo <text>` | Text ausgeben |
+| `sound [0-100\|aus\|test]` | Soundkarte und Lautstärke anzeigen, Lautstärke setzen, Klang abspielen |
 | `keymap [de\|us]` | Tastaturbelegung anzeigen oder umschalten (Standard: `de`) |
 | `history`, `clear` | Befehlsverlauf, Terminal leeren |
 | `panic` | löst absichtlich eine CPU-Ausnahme aus |
@@ -269,6 +273,33 @@ Fenster folgt, sobald du loslässt.
 
 Pfeil hoch/runter blättert im Verlauf, Strg+C verwirft die Eingabe,
 Strg+L leert das Terminal.
+
+## Ton
+
+HelloOS meldet sich mit Klängen: einem aufsteigenden Akkord beim Start, dem
+gleichen abwärts beim Herunterfahren, einem kurzen Zweiklang, wenn eine
+Rückfrage auf dich wartet (Update, Erlaubnis für Claude, Serverschlüssel,
+Überschreiben, ungesicherte Änderungen), und einem tieferen bei Fehlern. Die
+Klänge sind nicht aufgenommen, sondern werden beim Start aus Sinustönen
+errechnet.
+
+Unterstützt wird **Intel HD Audio**, die Soundkarte fast aller PCs. Der
+Treiber fragt den Wandler-Chip ab, sucht alle analogen Ausgänge (Lautsprecher,
+Kopfhörer, Line-Ausgang) und schaltet sie ein. `sound` zeigt, was er gefunden
+hat; ohne brauchbare Soundkarte bleibt HelloOS still und der Knopf „Ton"
+erscheint nicht.
+
+Was dabei zu wissen ist:
+
+- **Kein Ton über HDMI oder DisplayPort.** Dafür müsste HelloOS auch die
+  Grafikkarte ansteuern. Bei einem PC ohne eigene Lautsprecher kommt der Ton
+  also nur aus der Kopfhörerbuchse – nicht aus den Lautsprechern des Monitors.
+- **Getestet nur in QEMU**, mit drei nachgebildeten Soundkarten; dort wird die
+  Ausgabe mitgeschnitten und auf die erwarteten Tonhöhen und Lautstärken
+  geprüft. Echte Wandler-Chips unterscheiden sich stark – es ist gut möglich,
+  dass ein bestimmter PC stumm bleibt. Die Meldung beim Start (`Ton: …`) sagt
+  dann, wie weit der Treiber gekommen ist.
+- Keine Aufnahme, keine Musik- oder Videowiedergabe, kein Ton aus dem Browser.
 
 ## Browser
 
@@ -688,6 +719,7 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `kernel/gui.c` | Compositor, Fensterverwaltung, Taskleiste, Startmenü |
 | `kernel/terminal.c`, `kernel/shell.c` | Terminalfenster und Kommandozeile |
 | `kernel/editor.c`, `kernel/textedit.c`, `kernel/transfer.c` | Texteditor und sein Textfeld, Fenster zur Dateiübertragung |
+| `kernel/sound.c` | Ton: Treiber für Intel HD Audio, Mischer, errechnete Systemklänge |
 | `kernel/sysmon.c`, `kernel/paint.c`, `kernel/about.c` | Systemmonitor, Malprogramm, Dialoge |
 | `tools/mkimage.py` | baut das Disk-Image (GPT, FAT32) |
 | `tools/update-tool.py` | Schlüssel erzeugen, Update-Pakete signieren und prüfen |

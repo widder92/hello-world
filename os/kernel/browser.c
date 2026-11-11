@@ -16,6 +16,7 @@
 #include "input.h"
 #include "json.h"
 #include "memory.h"
+#include "sound.h"
 #include "string.h"
 #include "task.h"
 #include "textedit.h"
@@ -784,6 +785,7 @@ static void submit(browser_t *b, int form_index, int button, bool insecure_ok)
             memset(data.data, 0, data.len);
         sb_free(&data);
         b->ask_insecure = true;
+        sound_play(SOUND_NOTIFY);
         b->pending_form = form_index;
         b->pending_button = button;
         return;
