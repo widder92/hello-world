@@ -5,6 +5,8 @@
 #   make run-usb  wie run, aber mit USB-Tastatur und -Maus statt PS/2
 #   make test     bootet ohne Bildschirm und prüft die wichtigsten Befehle
 #   make check    prüft die Kryptografie gegen eine Referenzbibliothek
+#   make update-key      erzeugt das Schlüsselpaar für signierte Updates
+#   make update-package  baut build/update/helloos.upd und helloos.version
 #   make clean    räumt auf
 
 BUILD   := build
@@ -25,10 +27,18 @@ OVMF    := $(firstword $(wildcard /usr/share/ovmf/OVMF.fd \
                /opt/homebrew/share/qemu/edk2-x86_64-code.fd \
                /usr/local/share/qemu/edk2-x86_64-code.fd))
 
+# --- Updates ---------------------------------------------------------------
+# Build-Nummer: Anzahl der Commits - wächst mit jeder Änderung von selbst.
+OS_BUILD   := $(shell git rev-list --count HEAD 2>/dev/null || echo 0)
+# Hier sucht HelloOS nach helloos.version und helloos.upd.
+UPDATE_URL := https://raw.githubusercontent.com/widder92/hello-world/helloos-updates
+# Öffentlicher Schlüssel; ohne ihn sind Updates abgeschaltet.
+UPDATE_KEY := $(shell cat update-key.pub 2>/dev/null)
+
 # UEFI-Programme sind PE-Dateien wie unter Windows - daher dieses Ziel.
 CFLAGS  := --target=x86_64-unknown-windows -std=gnu11 -O2 -Wall -Wextra \
            -ffreestanding -fno-stack-protector -fshort-wchar -mno-red-zone \
-           -mgeneral-regs-only -mno-stack-arg-probe -MMD -MP
+           -mgeneral-regs-only -mno-stack-arg-probe -MMD -MP -I$(BUILD)
 LDFLAGS := /subsystem:efi_application /entry:efi_main /nodefaultlib
 
 C_SRCS   := $(wildcard kernel/*.c)
@@ -36,15 +46,28 @@ ASM_SRCS := $(wildcard kernel/*.asm)
 OBJS     := $(patsubst kernel/%.c,$(BUILD)/%.obj,$(C_SRCS)) \
             $(patsubst kernel/%.asm,$(BUILD)/%.asm.obj,$(ASM_SRCS))
 
-QEMU_FLAGS := -machine q35 -m 512 -bios $(OVMF) \
-              -drive format=raw,file=$(IMAGE) -net none
+# QEMU: Das Image steckt als USB-Stick an einem xHCI-Controller (so kann
+# HelloOS es selbst ansprechen und aktualisieren), dazu eine Netzwerkkarte.
+QEMU_FLAGS := -machine q35 -m 512 -bios $(OVMF) -device qemu-xhci \
+              -drive if=none,id=stick,format=raw,file=$(IMAGE) \
+              -device usb-storage,drive=stick \
+              -netdev user,id=net0 -device e1000e,netdev=net0
 
-.PHONY: all run run-usb test check clean
+.PHONY: all run run-usb test check clean update-key update-package FORCE
 
 all: $(IMAGE)
 
 $(BUILD):
 	mkdir -p $@
+
+# Einstellungen für den Updater; die Datei ändert sich nur, wenn sich ein
+# Wert ändert - sonst würde jedes "make" neu übersetzen.
+$(BUILD)/update-config.h: FORCE | $(BUILD)
+	@printf '#define OS_BUILD %s\n#define UPDATE_URL "%s"\n#define UPDATE_KEY_HEX "%s"\n' \
+	    '$(OS_BUILD)' '$(UPDATE_URL)' '$(UPDATE_KEY)' > $@.tmp
+	@cmp -s $@.tmp $@ && rm -f $@.tmp || mv $@.tmp $@
+
+$(BUILD)/update.obj: $(BUILD)/update-config.h
 
 $(BUILD)/%.obj: kernel/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -63,8 +86,13 @@ run: $(IMAGE)
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
 run-usb: $(IMAGE)
-	$(QEMU) $(QEMU_FLAGS) -serial stdio \
-	    -device qemu-xhci -device usb-kbd -device usb-mouse
+	$(QEMU) $(QEMU_FLAGS) -serial stdio -device usb-kbd -device usb-mouse
+
+update-key:
+	$(PYTHON) tools/update-tool.py keygen
+
+update-package: $(EFI)
+	$(PYTHON) tools/update-tool.py pack $(EFI) $(OS_BUILD) $(BUILD)/update
 
 test: $(IMAGE)
 	QEMU="$(QEMU)" OVMF="$(OVMF)" ./tools/smoke-test.sh $(IMAGE)

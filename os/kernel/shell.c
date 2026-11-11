@@ -1,9 +1,11 @@
 #include "shell.h"
 #include "apps.h"
+#include "block.h"
 #include "bootinfo.h"
 #include "console.h"
 #include "cpu.h"
 #include "crypto.h"
+#include "fat.h"
 #include "fs.h"
 #include "gui.h"
 #include "http.h"
@@ -13,6 +15,7 @@
 #include "string.h"
 #include "task.h"
 #include "time.h"
+#include "update.h"
 
 #include <cpuid.h>
 
@@ -212,7 +215,8 @@ static void cmd_info(shell_t *sh, char *args)
     memory_stats_t mem;
     memory_stats(&mem);
 
-    kprintf("System:      %s %s (x86-64, UEFI)\n", OS_NAME, OS_VERSION);
+    kprintf("System:      %s %s (x86-64, UEFI, Build %u)\n", OS_NAME, OS_VERSION,
+            update_current_build());
     kprintf("Prozessor:   %s", vendor);
     if (*model)
         kprintf(" - %s", model);
@@ -649,6 +653,50 @@ static void cmd_get(shell_t *sh, char *args)
     kfree(response.body);
 }
 
+static void cmd_update(shell_t *sh, char *args)
+{
+    (void)sh;
+    (void)args;
+    update_info_t info;
+    update_get_info(&info);
+    kprintf("Laufende Version: %s %s, Build %u\n", OS_NAME, OS_VERSION, info.build);
+    kprintf("Update-Quelle:    %s\n", info.url);
+    if (info.enabled)
+        update_run(true);
+    else
+        kprintf("Stand:            %s\n", info.state);
+    update_get_info(&info);
+    if (info.installed_build)
+        kprintf("Mit \"reboot\" startet HelloOS in der neuen Version.\n");
+}
+
+static void cmd_disk(shell_t *sh, char *args)
+{
+    (void)sh;
+    (void)args;
+    int count = 0;
+    for (int i = 0; i < BLOCK_DEVICES_MAX; i++) {
+        block_device_t *dev = block_get(i);
+        fat_t fs;
+        fat_file_t file;
+        if (!dev)
+            continue;
+        count++;
+        kprintf("%s: %llu MiB", dev->name, dev->sectors / 2048);
+        if (!fat_mount(&fs, dev)) {
+            kprintf(", kein FAT32-Dateisystem gefunden\n");
+            continue;
+        }
+        kprintf(", FAT32 ab Sektor %llu, %u Cluster zu %u Bytes\n", fs.start,
+                fs.cluster_count, fs.sectors_per_cluster * SECTOR_SIZE);
+        if (fat_find(&fs, "EFI/BOOT/BOOTX64.EFI", &file))
+            kprintf("  Startdatei EFI/BOOT/BOOTX64.EFI: %u Bytes\n", file.size);
+        fat_unmount(&fs);
+    }
+    if (count == 0)
+        kprintf("Kein Datenträger gefunden (unterstützt werden USB-Sticks).\n");
+}
+
 /* --- Dateien ---------------------------------------------------------------------- */
 
 static void cmd_ls(shell_t *sh, char *args)
@@ -811,6 +859,8 @@ static const struct command commands[] = {
     { "dns",      "dns <name>",          "Namen in eine Adresse auflösen", cmd_dns },
     { "web",      "web <adresse>",       "Webseite als Text anzeigen", cmd_web },
     { "get",      "get <adresse> <datei>", "Datei aus dem Netz laden", cmd_get },
+    { "update",   "update",              "Nach Updates suchen und installieren", cmd_update },
+    { "disk",     "disk",                "Datenträger anzeigen", cmd_disk },
     { "ls",       "ls",                  "Dateien auflisten", cmd_ls },
     { "cat",      "cat <datei>",         "Datei anzeigen", cmd_cat },
     { "write",    "write <datei> <text>", "Datei (über)schreiben", cmd_write },

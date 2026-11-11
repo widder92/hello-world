@@ -6,9 +6,11 @@
 #include "gui.h"
 #include "input.h"
 #include "memory.h"
+#include "net.h"
 #include "shell.h"
 #include "string.h"
 #include "task.h"
+#include "update.h"
 
 #include <cpuid.h>
 
@@ -20,7 +22,7 @@
 /* --- Über HelloOS -------------------------------------------------------------- */
 
 #define ABOUT_W 440
-#define ABOUT_H 268
+#define ABOUT_H 290
 
 static void cpu_name(char *out, size_t size)
 {
@@ -53,8 +55,9 @@ void about_app(void *arg)
 
     gfx_fill(s, 0, 0, ABOUT_W, ABOUT_H, C_BACKGROUND);
     gfx_text_scaled(s, 24, 20, OS_NAME, C_ACCENT, 3);
-    gfx_text(s, 24 + gfx_text_width(OS_NAME) * 3 + 12, 46, "Version " OS_VERSION,
-             C_MUTED, false);
+    ksnprintf(line, sizeof(line), "Version " OS_VERSION ", Build %u",
+              update_current_build());
+    gfx_text(s, 24 + gfx_text_width(OS_NAME) * 3 + 12, 46, line, C_MUTED, false);
     gfx_text(s, 24, 84, "Ein kleines, selbst geschriebenes Betriebssystem", C_TEXT,
              false);
     gfx_text(s, 24, 102, "für PCs mit 64-Bit-Prozessor und UEFI.", C_TEXT,
@@ -70,6 +73,15 @@ void about_app(void *arg)
     ksnprintf(line, sizeof(line), "Bildschirm  %d x %d", w, h);
     gfx_text(s, 24, y += 20, line, C_TEXT, false);
     ksnprintf(line, sizeof(line), "Firmware    %s", boot_info.firmware_vendor);
+    gfx_text(s, 24, y += 20, line, C_TEXT, false);
+
+    net_info_t net;
+    char address[16] = "nicht verbunden";
+    net_get_info(&net);
+    if (net.configured)
+        ip4_format(net.ip, address);
+    ksnprintf(line, sizeof(line), "Netzwerk    %s",
+              net.present ? address : "keine unterstützte Karte");
     gfx_text(s, 24, y += 20, line, C_TEXT, false);
 
     rect_t ok = rect_make(ABOUT_W - 24 - 88, ABOUT_H - 20 - 28, 88, 28);
@@ -147,6 +159,50 @@ void power_app(void *arg)
         if (rect_contains(reboot, ev.x, ev.y))
             power_reboot();
         if (rect_contains(cancel, ev.x, ev.y))
+            break;
+    }
+    window_destroy(win);
+}
+
+/* --- Hinweis nach einem Update ---------------------------------------------------- */
+
+#define UPDATE_W 440
+#define UPDATE_H 140
+
+void update_app(void *arg)
+{
+    (void)arg;
+    window_t *win = window_create("Update installiert", UPDATE_W, UPDATE_H);
+    if (!win)
+        return;
+    surface_t *s = window_surface(win);
+
+    const rect_t restart = rect_make(20, 86, 164, 32);
+    const rect_t later = rect_make(196, 86, 92, 32);
+    update_info_t info;
+    char line[64];
+    update_get_info(&info);
+
+    gfx_fill(s, 0, 0, UPDATE_W, UPDATE_H, C_BACKGROUND);
+    ksnprintf(line, sizeof(line), "HelloOS wurde auf Build %u aktualisiert.",
+              info.installed_build);
+    gfx_text(s, 20, 22, line, C_TEXT, true);
+    gfx_text(s, 20, 46, "Die neue Version wird beim nächsten Start aktiv.", C_MUTED,
+             false);
+    ui_button(s, restart, "Jetzt neu starten", true);
+    ui_button(s, later, "Später", false);
+    window_invalidate(win, 0, 0, UPDATE_W, UPDATE_H);
+
+    for (;;) {
+        event_t ev;
+        window_get_event(win, &ev, 0);
+        if (ev.type == EV_CLOSE || (ev.type == EV_KEY && ev.key == 27))
+            break;
+        if (ev.type != EV_MOUSE_UP)
+            continue;
+        if (rect_contains(restart, ev.x, ev.y))
+            power_reboot();
+        if (rect_contains(later, ev.x, ev.y))
             break;
     }
     window_destroy(win);

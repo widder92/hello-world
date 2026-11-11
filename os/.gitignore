@@ -1,1 +1,3 @@
 build/
+# Geheimer Schlüssel für Updates - niemals einchecken!
+update-key.private

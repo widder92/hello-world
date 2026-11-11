@@ -7,6 +7,7 @@
  *
  *   - Geräte direkt an den Anschlüssen des Rechners (keine USB-Hubs)
  *   - Tastaturen und Mäuse im einfachen "Boot-Protokoll" (HID)
+ *   - USB-Sticks und -Platten (Massenspeicher, "Bulk-Only" mit SCSI-Befehlen)
  *   - Abfragen statt Interrupts: Jeder Controller hat einen eigenen Task,
  *     der regelmäßig nachsieht, ob es Neuigkeiten gibt
  *
@@ -15,6 +16,7 @@
  * danach liefert das Gerät bei jeder Eingabe einen kleinen Bericht.
  */
 #include "usb.h"
+#include "block.h"
 #include "console.h"
 #include "gui.h"
 #include "input.h"
@@ -134,6 +136,19 @@ typedef struct {
     uint8_t previous[8];                /* Tastatur: letzter Bericht */
 } hid_t;
 
+/* Massenspeicher: zwei Endpunkte, einer je Richtung */
+typedef struct {
+    bool present;
+    uint8_t interface;
+    uint8_t address_in, address_out;    /* Endpunktnummern laut Gerät */
+    uint8_t dci_in, dci_out;
+    uint16_t max_packet;
+    uint8_t max_burst;
+    ring_t ring_in, ring_out;
+    uint32_t tag;
+    block_device_t *block;
+} storage_t;
+
 typedef struct {
     bool used;
     uint8_t slot;
@@ -144,7 +159,19 @@ typedef struct {
     ring_t ep0;
     uint8_t *buffer;                    /* für Steuertransfers */
     hid_t hid[2];
+    storage_t storage;
 } device_t;
+
+/* Ein Lese- oder Schreibauftrag, den ein anderer Task dem USB-Task übergibt */
+typedef struct {
+    bool pending, done, ok;
+    block_device_t *block;
+    bool write;
+    uint64_t lba;
+    uint32_t count;
+    uint8_t *buffer;
+    uint32_t waiter;
+} storage_request_t;
 
 typedef struct {
     pci_device_t pci;
@@ -165,6 +192,14 @@ typedef struct {
     uint32_t control_slot;
     bool control_done;
     uint32_t control_code;
+    uint32_t bulk_slot, bulk_dci;
+    bool bulk_done;
+    uint32_t bulk_code, bulk_residual;
+
+    /* Massenspeicher: gemeinsamer Datenpuffer und der aktuelle Auftrag */
+    uint8_t *storage_buffer;
+    bool storage_busy;
+    storage_request_t request;
 
     device_t devices[MAX_DEVICES];
     uint8_t failures[MAX_PORTS];        /* Fehlversuche je Anschluss */
@@ -390,6 +425,13 @@ static void handle_event(xhci_t *x, const trb_t *ev)
         return;
     }
 
+    if (slot == x->bulk_slot && dci == x->bulk_dci) {
+        x->bulk_code = code;
+        x->bulk_residual = ev->status & 0xFFFFFF;
+        x->bulk_done = true;
+        return;
+    }
+
     device_t *dev = device_by_slot(x, slot);
     if (!dev)
         return;
@@ -500,6 +542,241 @@ static bool control(xhci_t *x, device_t *dev, uint8_t request_type,
     return false;
 }
 
+/* --- Massenspeicher --------------------------------------------------------------------- */
+
+#define STORAGE_CHUNK   (32 * 1024)     /* höchstens so viel pro Befehl */
+#define CBW_SIGNATURE   0x43425355u     /* "USBC" */
+#define CSW_SIGNATURE   0x53425355u     /* "USBS" */
+
+/* Überträgt Daten über einen der beiden Bulk-Endpunkte. */
+static bool bulk(xhci_t *x, device_t *dev, bool in, void *buffer, uint32_t len,
+                 uint32_t *transferred)
+{
+    storage_t *st = &dev->storage;
+    uint32_t dci = in ? st->dci_in : st->dci_out;
+
+    x->bulk_done = false;
+    x->bulk_slot = dev->slot;
+    x->bulk_dci = dci;
+    ring_push(in ? &st->ring_in : &st->ring_out, (uint64_t)buffer, len,
+              TRB_TYPE(TRB_NORMAL) | TRB_IOC | TRB_ISP);
+    x->doorbell[dev->slot] = dci;
+
+    uint64_t deadline = time_ms() + 8000;
+    while (!x->bulk_done) {
+        poll_events(x);
+        if (x->bulk_done || time_ms() > deadline)
+            break;
+        task_sleep(1);
+    }
+    x->bulk_slot = 0;
+    x->bulk_dci = 0;
+    if (!x->bulk_done)
+        return false;
+    if (transferred)
+        *transferred = len - x->bulk_residual;
+    return x->bulk_code == CC_SUCCESS || x->bulk_code == CC_SHORT_PACKET;
+}
+
+/* Nach einem Fehler: Gerät und beide Endpunkte in den Grundzustand bringen. */
+static void storage_recover(xhci_t *x, device_t *dev)
+{
+    storage_t *st = &dev->storage;
+    control(x, dev, 0x21, 0xFF, 0, st->interface, 0);       /* Bulk-Only-Reset */
+
+    const struct {
+        uint8_t dci, address;
+        ring_t *ring;
+    } endpoints[2] = {
+        { st->dci_in, st->address_in, &st->ring_in },
+        { st->dci_out, st->address_out, &st->ring_out },
+    };
+    for (int i = 0; i < 2; i++) {
+        uint32_t target = ((uint32_t)endpoints[i].dci << 16) |
+                          ((uint32_t)dev->slot << 24);
+        command(x, 0, TRB_TYPE(TRB_RESET_ENDPOINT) | target);
+        command(x, (uint64_t)&endpoints[i].ring->trbs[endpoints[i].ring->enqueue] |
+                       endpoints[i].ring->cycle,
+                TRB_TYPE(TRB_SET_DEQUEUE) | target);
+        control(x, dev, 0x02, 1, 0, endpoints[i].address, 0);   /* Halt aufheben */
+    }
+}
+
+/*
+ * Ein SCSI-Befehl im "Bulk-Only"-Verfahren: Befehlsblock hin, Daten (falls
+ * vorhanden) in die gewünschte Richtung, Statusblock zurück.
+ */
+static bool scsi(xhci_t *x, device_t *dev, const uint8_t *command_block,
+                 uint8_t command_len, bool in, void *data, uint32_t len)
+{
+    storage_t *st = &dev->storage;
+    uint8_t *cbw = dev->buffer;
+    uint8_t *csw = dev->buffer + 64;
+
+    memset(cbw, 0, 31);
+    uint32_t tag = ++st->tag;
+    memcpy(cbw, &(uint32_t){ CBW_SIGNATURE }, 4);
+    memcpy(cbw + 4, &tag, 4);
+    memcpy(cbw + 8, &len, 4);
+    cbw[12] = in ? 0x80 : 0x00;
+    cbw[14] = command_len;
+    memcpy(cbw + 15, command_block, command_len);
+
+    bool ok = bulk(x, dev, false, cbw, 31, NULL);
+    if (ok && len)
+        ok = bulk(x, dev, in, data, len, NULL);
+    uint32_t got = 0;
+    if (ok)
+        ok = bulk(x, dev, true, csw, 13, &got);
+    if (!ok) {
+        storage_recover(x, dev);
+        return false;
+    }
+
+    uint32_t signature, csw_tag;
+    memcpy(&signature, csw, 4);
+    memcpy(&csw_tag, csw + 4, 4);
+    return got == 13 && signature == CSW_SIGNATURE && csw_tag == tag &&
+           csw[12] == 0;
+}
+
+/* Liest oder schreibt Sektoren; die Daten laufen über den gemeinsamen Puffer. */
+static bool storage_transfer(xhci_t *x, device_t *dev, bool write, uint64_t lba,
+                             uint32_t count, uint8_t *buffer)
+{
+    while (count > 0) {
+        uint32_t n = count < STORAGE_CHUNK / SECTOR_SIZE
+                         ? count : STORAGE_CHUNK / SECTOR_SIZE;
+        uint8_t cdb[10] = {
+            write ? 0x2A : 0x28, 0,     /* WRITE(10) bzw. READ(10) */
+            (uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8),
+            (uint8_t)lba, 0, (uint8_t)(n >> 8), (uint8_t)n, 0,
+        };
+        if (write)
+            memcpy(x->storage_buffer, buffer, n * SECTOR_SIZE);
+        if (!scsi(x, dev, cdb, 10, !write, x->storage_buffer, n * SECTOR_SIZE))
+            return false;
+        if (!write)
+            memcpy(buffer, x->storage_buffer, n * SECTOR_SIZE);
+        lba += n;
+        count -= n;
+        buffer += n * SECTOR_SIZE;
+    }
+    return true;
+}
+
+/* Wird von anderen Tasks aufgerufen: Auftrag hinterlegen und warten. */
+static bool storage_submit(block_device_t *block, bool write, uint64_t lba,
+                           uint32_t count, void *buffer)
+{
+    xhci_t *x = block->driver_data;
+    if (lba + count > 0xFFFFFFFFull)
+        return false;                   /* mehr kann READ(10) nicht adressieren */
+
+    uint64_t flags = irq_save();
+    while (x->storage_busy) {           /* immer nur ein Auftrag je Controller */
+        irq_restore(flags);
+        task_sleep(2);
+        flags = irq_save();
+    }
+    x->storage_busy = true;
+    x->request = (storage_request_t){
+        .pending = true, .block = block, .write = write, .lba = lba,
+        .count = count, .buffer = buffer, .waiter = task_current_pid(),
+    };
+    while (!x->request.done)
+        task_block(1000);
+    bool ok = x->request.ok;
+    x->storage_busy = false;
+    irq_restore(flags);
+    return ok;
+}
+
+static bool storage_read(block_device_t *block, uint64_t lba, uint32_t count,
+                         void *buffer)
+{
+    return storage_submit(block, false, lba, count, buffer);
+}
+
+static bool storage_write(block_device_t *block, uint64_t lba, uint32_t count,
+                          const void *buffer)
+{
+    return storage_submit(block, true, lba, count, (void *)buffer);
+}
+
+/* Im USB-Task: einen wartenden Auftrag ausführen. */
+static void storage_serve(xhci_t *x)
+{
+    storage_request_t *r = &x->request;
+    if (!r->pending)
+        return;
+    r->pending = false;
+
+    bool ok = false;
+    for (int i = 0; i < MAX_DEVICES; i++) {
+        device_t *dev = &x->devices[i];
+        if (dev->used && dev->storage.present && dev->storage.block == r->block)
+            ok = storage_transfer(x, dev, r->write, r->lba, r->count, r->buffer);
+    }
+    uint64_t flags = irq_save();
+    r->ok = ok;
+    r->done = true;
+    task_wake(r->waiter);
+    irq_restore(flags);
+}
+
+/* Fragt den Datenträger nach seiner Größe und meldet ihn als Blockgerät an. */
+static bool storage_start(xhci_t *x, device_t *dev)
+{
+    static const uint8_t test_unit_ready[6] = { 0x00 };
+    static const uint8_t request_sense[6] = { 0x03, 0, 0, 0, 18, 0 };
+    static const uint8_t read_capacity[10] = { 0x25 };
+
+    if (!x->storage_buffer) {
+        /* Der Puffer darf keine 64-KiB-Grenze überschreiten. */
+        uint64_t raw = (uint64_t)alloc_pages(2 * STORAGE_CHUNK / PAGE_SIZE);
+        if ((raw & 0xFFFF) > 0x10000 - STORAGE_CHUNK)
+            raw = (raw + 0xFFFF) & ~0xFFFFull;
+        x->storage_buffer = (uint8_t *)raw;
+    }
+
+    /* Frisch eingesteckte Sticks brauchen einen Moment, bis sie bereit sind. */
+    bool ready = false;
+    for (int attempt = 0; attempt < 20 && !ready; attempt++) {
+        ready = scsi(x, dev, test_unit_ready, 6, true, NULL, 0);
+        if (!ready) {
+            scsi(x, dev, request_sense, 6, true, x->storage_buffer, 18);
+            task_sleep(200);
+        }
+    }
+    if (!ready || !scsi(x, dev, read_capacity, 10, true, x->storage_buffer, 8))
+        return false;
+
+    const uint8_t *cap = x->storage_buffer;
+    uint64_t last = ((uint32_t)cap[0] << 24) | ((uint32_t)cap[1] << 16) |
+                    ((uint32_t)cap[2] << 8) | cap[3];
+    uint32_t sector = ((uint32_t)cap[4] << 24) | ((uint32_t)cap[5] << 16) |
+                      ((uint32_t)cap[6] << 8) | cap[7];
+    if (sector != SECTOR_SIZE) {
+        klog("USB %d: Datenträger mit %u-Byte-Sektoren wird nicht unterstützt\n",
+             x->number, sector);
+        return false;
+    }
+
+    char name[24];
+    ksnprintf(name, sizeof(name), "usb%d-%d", x->number, dev->port + 1);
+    block_device_t *block = block_register(name, last + 1);
+    if (!block)
+        return false;
+    block->read = storage_read;
+    block->write = storage_write;
+    block->driver_data = x;
+    dev->storage.block = block;
+    klog("USB %d: Datenträger an Anschluss %d (%llu MiB)\n", x->number,
+         dev->port + 1, (last + 1) / 2048);
+    return true;
+}
+
 /* --- Geräte einrichten und entfernen -------------------------------------------------- */
 
 static void device_free(xhci_t *x, device_t *dev)
@@ -518,6 +795,9 @@ static void device_free(xhci_t *x, device_t *dev)
         page_put(hid->ring.trbs);
         page_put(hid->buffer);
     }
+    block_unregister(dev->storage.block);
+    page_put(dev->storage.ring_in.trbs);
+    page_put(dev->storage.ring_out.trbs);
     page_put(dev->out_ctx);
     page_put(dev->in_ctx);
     page_put(dev->ep0.trbs);
@@ -525,17 +805,26 @@ static void device_free(xhci_t *x, device_t *dev)
     memset(dev, 0, sizeof(*dev));
 }
 
-/* Sucht in der Gerätebeschreibung nach Tastatur- und Maus-Schnittstellen. */
+/* Sucht in der Gerätebeschreibung nach Schnittstellen, die wir bedienen können. */
 static int parse_configuration(device_t *dev, uint16_t total, uint8_t speed)
 {
     const uint8_t *p = dev->buffer;
     const uint8_t *end = p + total;
     hid_t *current = NULL;
+    storage_t *st = &dev->storage;
+    bool in_storage = false;
+    uint8_t *last_burst = NULL;         /* für die Zusatzangabe bei USB 3 */
     int found = 0;
 
     while (p + 2 <= end && p[0] >= 2 && p + p[0] <= end) {
         if (p[1] == 4 && p[0] >= 9) {           /* Schnittstelle */
             current = NULL;
+            last_burst = NULL;
+            /* Massenspeicher: Klasse 8, SCSI-Befehle (6), Bulk-Only (0x50) */
+            in_storage = p[5] == 8 && p[6] == 6 && p[7] == 0x50 && p[3] == 0 &&
+                         !st->dci_in && !st->dci_out;
+            if (in_storage)
+                st->interface = p[2];
             bool boot_hid = p[5] == 3 && p[6] == 1 && p[3] == 0;
             if (boot_hid && (p[7] == 1 || p[7] == 2) && found < 2) {
                 current = &dev->hid[found];
@@ -543,6 +832,20 @@ static int parse_configuration(device_t *dev, uint16_t total, uint8_t speed)
                 current->interface = p[2];
                 current->dci = 0;
             }
+        } else if (p[1] == 5 && p[0] >= 7 && in_storage && (p[3] & 0x03) == 2) {
+            /* Bulk-Endpunkt eines Massenspeichers */
+            uint8_t dci = (uint8_t)((p[2] & 0x0F) * 2 + ((p[2] & 0x80) ? 1 : 0));
+            st->max_packet = (uint16_t)((p[4] | (p[5] << 8)) & 0x7FF);
+            if (p[2] & 0x80) {
+                st->dci_in = dci;
+                st->address_in = p[2];
+            } else {
+                st->dci_out = dci;
+                st->address_out = p[2];
+            }
+            last_burst = &st->max_burst;
+        } else if (p[1] == 0x30 && p[0] >= 6 && last_burst) {
+            *last_burst = p[2];         /* USB 3: Pakete pro Bündel - 1 */
         } else if (p[1] == 5 && p[0] >= 7 && current && !current->dci) {
             /* Endpunkt: Wir brauchen den, über den Berichte hereinkommen */
             bool in = p[2] & 0x80;
@@ -575,7 +878,8 @@ static int parse_configuration(device_t *dev, uint16_t total, uint8_t speed)
         if (!dev->hid[i].dci)
             dev->hid[i].kind = HID_NONE;
     }
-    return found;
+    st->present = st->dci_in && st->dci_out;
+    return found + (st->present ? 1 : 0);
 }
 
 static bool port_reset(xhci_t *x, int port)
@@ -653,7 +957,7 @@ static const char *device_setup(xhci_t *x, device_t *dev)
     if (!control(x, dev, 0x80, 6, 0x0200, 0, total))
         return "Konfiguration nicht lesbar";
     if (parse_configuration(dev, total, dev->speed) == 0)
-        return "weder Tastatur noch Maus";
+        return "kein unterstützter Gerätetyp";
 
     if (!control(x, dev, 0x00, 9, config_value, 0, 0))     /* SET_CONFIGURATION */
         return "Konfiguration nicht wählbar";
@@ -678,6 +982,32 @@ static const char *device_setup(xhci_t *x, device_t *dev)
         if (hid->dci > last_dci)
             last_dci = hid->dci;
     }
+    storage_t *st = &dev->storage;
+    if (st->present) {
+        ring_init(&st->ring_in);
+        ring_init(&st->ring_out);
+        const struct {
+            uint8_t dci;
+            uint32_t type;              /* 6 = Bulk hinein, 2 = Bulk hinaus */
+            ring_t *ring;
+        } endpoints[2] = {
+            { st->dci_in, 6, &st->ring_in },
+            { st->dci_out, 2, &st->ring_out },
+        };
+        for (int i = 0; i < 2; i++) {
+            uint32_t *ep = context(x, dev->in_ctx, endpoints[i].dci + 1);
+            ep[0] = 0;
+            ep[1] = (3u << 1) | (endpoints[i].type << 3) |
+                    ((uint32_t)st->max_burst << 8) |
+                    ((uint32_t)st->max_packet << 16);
+            ep[2] = (uint32_t)(uint64_t)endpoints[i].ring->trbs | 1;
+            ep[3] = (uint32_t)((uint64_t)endpoints[i].ring->trbs >> 32);
+            ep[4] = 4096;
+            add_flags |= 1u << endpoints[i].dci;
+            if (endpoints[i].dci > last_dci)
+                last_dci = endpoints[i].dci;
+        }
+    }
     ctrl[0] = 0;
     ctrl[1] = add_flags;
     slot[0] = ((uint32_t)dev->speed << 20) | (last_dci << 27);
@@ -697,6 +1027,11 @@ static const char *device_setup(xhci_t *x, device_t *dev)
         hid_request(x, dev, hid);
         klog("USB %d: %s an Anschluss %d\n", x->number,
              hid->kind == HID_KEYBOARD ? "Tastatur" : "Maus", dev->port + 1);
+    }
+    if (st->present && !storage_start(x, dev)) {
+        st->present = false;
+        if (dev->hid[0].kind == HID_NONE && dev->hid[1].kind == HID_NONE)
+            return "Datenträger antwortet nicht";
     }
     return NULL;
 }
@@ -895,6 +1230,7 @@ static void xhci_task(void *arg)
     uint64_t next_scan = 0;
     for (;;) {
         poll_events(x);
+        storage_serve(x);
 
         uint64_t now = time_ms();
         if (now >= next_scan) {

@@ -842,6 +842,7 @@ bool gui_launch(const char *app)
         { "malen", "malen", paint_app },
         { "info", "info", about_app },
         { "aus", "ausschalten", power_app },
+        { "update", "update-hinweis", update_app },
     };
 
     if (!running)

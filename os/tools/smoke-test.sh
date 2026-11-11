@@ -22,8 +22,14 @@ FIFO="$DIR/input"
 mkfifo "$FIFO"
 : > "$LOG"
 
-timeout 180 "$QEMU" -machine q35 -m 256 -bios "$OVMF" \
-    -drive format=raw,file="$IMAGE" -net none -display none \
+# Das Image steckt als USB-Stick am xHCI-Controller; QEMUs eingebautes Netz
+# ("user") liefert DHCP und einen anpingbaren Router - auch ohne Internet.
+# Gearbeitet wird auf einer Kopie, damit das Original unverändert bleibt.
+cp "$IMAGE" "$DIR/stick.img"
+timeout 180 "$QEMU" -machine q35 -m 256 -bios "$OVMF" -device qemu-xhci \
+    -drive if=none,id=stick,format=raw,file="$DIR/stick.img" \
+    -device usb-storage,drive=stick \
+    -netdev user,id=net0 -device e1000e,netdev=net0 -display none \
     -serial stdio -no-reboot "$@" < "$FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 exec 3> "$FIFO"
@@ -55,7 +61,7 @@ expect "Multitasking gestartet" 30
 expect "helloos> " 30
 
 printf 'info\nmem\ndate\n' >&3
-expect "HelloOS 0.2 (x86-64, UEFI)"
+expect "HelloOS 0.3 (x86-64, UEFI"
 expect "Speicherkarte der Firmware"
 
 printf 'write test.txt Hallo Welt\nappend test.txt Zeile zwei\ncat test.txt\nls\n' >&3
@@ -78,6 +84,12 @@ expect "Task $BURN_PID beendet"
 printf 'rm test.txt\nls\nuptime\n' >&3
 expect "^1 Datei(en)"
 expect "Laufzeit: 00:0"
+
+# Datenträger und Netzwerk
+expect "Adresse 10.0.2.15 per DHCP erhalten" 30
+printf 'disk\nping 10.0.2.2\n' >&3
+expect "Startdatei EFI/BOOT/BOOTX64.EFI"
+expect "4 von 4 Paketen beantwortet"
 
 printf 'shutdown\n' >&3
 expect "System wird heruntergefahren"

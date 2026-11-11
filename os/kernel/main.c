@@ -19,6 +19,7 @@
 #include "shell.h"
 #include "task.h"
 #include "time.h"
+#include "update.h"
 #include "usb.h"
 
 /* Shell auf der seriellen Schnittstelle - praktisch zum Testen ohne Bildschirm. */
@@ -62,6 +63,7 @@ void kmain(void *unused)
 
     usb_init();
     net_init();
+    update_init();
     if (serial_present())
         task_create("shell-seriell", serial_shell, NULL, serial_console());
     gui_start();
