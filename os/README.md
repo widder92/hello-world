@@ -642,8 +642,10 @@ Besitzer des Repositorys.
 Von da an baut der Workflow `.github/workflows/helloos-update.yml` bei jeder
 Änderung unter `os/` auf dem Zweig `master` ein signiertes Paket und legt es
 auf den Branch `helloos-updates`. Dort sucht HelloOS standardmäßig
-(`UPDATE_URL` im `Makefile`). Der Workflow ist bisher nicht in der Praxis
-gelaufen.
+(`UPDATE_URL` im `Makefile`). Geprüft ist dieser Weg einmal von Anfang bis
+Ende: Der Workflow hat Build 21 veröffentlicht, und ein älteres HelloOS in
+QEMU hat das Paket von GitHub geholt, geprüft, installiert und danach in der
+neuen Version gestartet. Auf einem echten PC ist noch kein Update gelaufen.
 
 Es geht auch von Hand: `make update-package` erzeugt
 `build/update/helloos.upd` (samt dem Text aus `NEUES.txt`) und
