@@ -10,6 +10,7 @@ void update_app(void *arg);             /* Update: nachfragen, installieren */
 void claude_app(void *arg);             /* Gespräch mit Claude */
 void browser_app(void *arg);            /* einfacher Browser; arg: Adresse (kmalloc) oder NULL */
 void transfer_app(void *arg);           /* Dateien per SFTP übertragen */
+void diagnose_app(void *arg);           /* Startprotokoll; arg != NULL: von selbst geöffnet */
 void editor_app(void *arg);             /* Texteditor; arg: Dateiname (kmalloc) oder NULL */
 
 /* Rechner ausschalten bzw. neu starten - kehren nicht zurück. */

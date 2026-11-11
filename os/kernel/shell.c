@@ -728,6 +728,23 @@ static void cmd_news(shell_t *sh, char *args)
     kprintf("%s\n", notes[0] ? notes : "Für diese Version gibt es keine Beschreibung.");
 }
 
+/* Das Startprotokoll: die Meldungen der Treiber; "log fenster" öffnet es als Fenster. */
+static void cmd_log(shell_t *sh, char *args)
+{
+    (void)sh;
+    if (strcmp(args, "fenster") == 0) {
+        if (!gui_launch("diagnose"))
+            kprintf("Das geht nur mit der grafischen Oberfläche.\n");
+        return;
+    }
+    char line[KLOG_WIDTH];
+    int count = klog_count();
+    for (int i = 0; i < count; i++) {
+        klog_line(i, line, sizeof(line));
+        kprintf("%s\n", line);
+    }
+}
+
 static void cmd_disk(shell_t *sh, char *args)
 {
     (void)sh;
@@ -1382,6 +1399,7 @@ static const struct command commands[] = {
     { "spawn",    "spawn counter|burn",  "Demo-Task im Hintergrund starten", cmd_spawn },
     { "kill",     "kill <pid>",          "Task beenden", cmd_kill },
     { "start",    "start <programm>",    "Fenster-Programm starten", cmd_start },
+    { "log",      "log [fenster]",       "Startprotokoll: Meldungen der Treiber", cmd_log },
     { "net",      "net",                 "Zustand des Netzwerks", cmd_net },
     { "ping",     "ping <ziel>",         "Erreichbarkeit eines Rechners prüfen", cmd_ping },
     { "dns",      "dns <name>",          "Namen in eine Adresse auflösen", cmd_dns },
@@ -1443,7 +1461,7 @@ shell_risk_t shell_command_risk(const char *line)
 {
     static const char *const safe[] = {
         "help", "hilfe", "?", "info", "mem", "uptime", "date", "ps", "ls", "cat",
-        "sha256", "disk", "news", "echo", "history", "start", NULL,
+        "sha256", "disk", "news", "echo", "history", "start", "log", NULL,
     };
     /*
      * ping, dns, web und get stehen bewusst nicht in der Liste: Was Claude

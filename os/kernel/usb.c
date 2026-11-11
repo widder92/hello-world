@@ -134,6 +134,7 @@ typedef struct {
     ring_t ring;
     uint8_t *buffer;
     uint8_t previous[8];                /* Tastatur: letzter Bericht */
+    bool active;                        /* eingerichtet und mitgezählt */
 } hid_t;
 
 /* Massenspeicher: zwei Endpunkte, einer je Richtung */
@@ -158,6 +159,10 @@ typedef struct {
     uint32_t *in_ctx;                   /* unsere Anweisungen an den Controller */
     ring_t ep0;
     uint8_t *buffer;                    /* für Steuertransfers */
+    uint16_t vendor, product;
+    uint8_t device_class;
+    char interfaces[40];                /* Klasse/Unterklasse/Protokoll je Schnittstelle */
+    bool hub;
     hid_t hid[2];
     storage_t storage;
 } device_t;
@@ -189,6 +194,7 @@ typedef struct {
     trb_t *pending_command;
     bool command_done;
     uint32_t command_code, command_slot;
+    uint32_t last_code;                 /* Ergebnis des letzten Fehlschlags (0: keine Antwort) */
     uint32_t control_slot;
     bool control_done;
     uint32_t control_code;
@@ -208,6 +214,14 @@ typedef struct {
     uint16_t repeat_key;
     uint64_t repeat_at;
 } xhci_t;
+
+/* Anzahl der gerade bedienten Tastaturen und Mäuse */
+static volatile int input_devices;
+
+int usb_input_devices(void)
+{
+    return input_devices;
+}
 
 /* --- Hilfsfunktionen -------------------------------------------------------------- */
 
@@ -483,11 +497,14 @@ static bool command(xhci_t *x, uint64_t param, uint32_t control)
             break;
         if (time_ms() > deadline) {
             x->pending_command = NULL;
+            x->last_code = 0;
             return false;
         }
         task_sleep(1);
     }
     x->pending_command = NULL;
+    if (x->command_code != CC_SUCCESS)
+        x->last_code = x->command_code;
     return x->command_code == CC_SUCCESS;
 }
 
@@ -529,6 +546,7 @@ static bool control(xhci_t *x, device_t *dev, uint8_t request_type,
     x->control_slot = 0;
     if (x->control_done && x->control_code == CC_SUCCESS)
         return true;
+    uint32_t failed = x->control_done ? x->control_code : 0;
 
     /*
      * Fehlgeschlagen (z. B. vom Gerät abgelehnt): Der Endpunkt steht jetzt.
@@ -539,6 +557,7 @@ static bool control(xhci_t *x, device_t *dev, uint8_t request_type,
     command(x, (uint64_t)&dev->ep0.trbs[dev->ep0.enqueue] | dev->ep0.cycle,
             TRB_TYPE(TRB_SET_DEQUEUE) | (1u << 16) |
                 ((uint32_t)dev->slot << 24));
+    x->last_code = failed;
     return false;
 }
 
@@ -792,6 +811,8 @@ static void device_free(xhci_t *x, device_t *dev)
             static const uint8_t nothing[8];
             keyboard_report(x, hid, nothing);
         }
+        if (hid->active)
+            input_devices--;
         page_put(hid->ring.trbs);
         page_put(hid->buffer);
     }
@@ -820,6 +841,13 @@ static int parse_configuration(device_t *dev, uint16_t total, uint8_t speed)
         if (p[1] == 4 && p[0] >= 9) {           /* Schnittstelle */
             current = NULL;
             last_burst = NULL;
+            if (p[3] == 0) {            /* fürs Protokoll notieren */
+                size_t used = strlen(dev->interfaces);
+                ksnprintf(dev->interfaces + used, sizeof(dev->interfaces) - used,
+                          "%s%u/%u/%u", used ? " " : "", p[5], p[6], p[7]);
+                if (p[5] == 9)
+                    dev->hub = true;
+            }
             /* Massenspeicher: Klasse 8, SCSI-Befehle (6), Bulk-Only (0x50) */
             in_storage = p[5] == 8 && p[6] == 6 && p[7] == 0x50 && p[3] == 0 &&
                          !st->dci_in && !st->dci_out;
@@ -882,6 +910,14 @@ static int parse_configuration(device_t *dev, uint16_t total, uint8_t speed)
     return found + (st->present ? 1 : 0);
 }
 
+static const char *speed_name(uint8_t speed)
+{
+    static const char *const names[] = {
+        "Tempo ?", "Full Speed", "Low Speed", "High Speed", "SuperSpeed",
+    };
+    return speed < 5 ? names[speed] : "SuperSpeed+";
+}
+
 static bool port_reset(xhci_t *x, int port)
 {
     uint32_t status = rd32(x->op, OP_PORTSC(port));
@@ -902,8 +938,8 @@ static bool port_reset(xhci_t *x, int port)
 /* Liefert NULL bei Erfolg, sonst eine kurze Beschreibung des Problems. */
 static const char *device_setup(xhci_t *x, device_t *dev)
 {
-    static const uint16_t default_packet[] = { 8, 8, 8, 64, 512, 512 };
-    uint16_t packet0 = default_packet[dev->speed <= 5 ? dev->speed : 3];
+    static const uint16_t default_packet[] = { 8, 8, 8, 64 };
+    uint16_t packet0 = dev->speed < 4 ? default_packet[dev->speed] : 512;
 
     if (!command(x, 0, TRB_TYPE(TRB_ENABLE_SLOT)))
         return "kein freier Geräteplatz";
@@ -947,6 +983,15 @@ static const char *device_setup(xhci_t *x, device_t *dev)
             return "Paketgröße nicht einstellbar";
     }
 
+    /* Hersteller- und Gerätekennung fürs Protokoll (darf fehlschlagen) */
+    if (control(x, dev, 0x80, 6, 0x0100, 0, 18)) {
+        dev->device_class = dev->buffer[4];
+        dev->vendor = (uint16_t)(dev->buffer[8] | (dev->buffer[9] << 8));
+        dev->product = (uint16_t)(dev->buffer[10] | (dev->buffer[11] << 8));
+        if (dev->device_class == 9)
+            dev->hub = true;
+    }
+
     /* Konfiguration lesen: erst den Kopf (mit der Gesamtlänge), dann alles */
     if (!control(x, dev, 0x80, 6, 0x0200, 0, 9))
         return "Konfiguration nicht lesbar";
@@ -956,7 +1001,13 @@ static const char *device_setup(xhci_t *x, device_t *dev)
         total = 1024;
     if (!control(x, dev, 0x80, 6, 0x0200, 0, total))
         return "Konfiguration nicht lesbar";
-    if (parse_configuration(dev, total, dev->speed) == 0)
+    int usable = parse_configuration(dev, total, dev->speed);
+    klog("USB %d Anschluss %d: Gerät %04x:%04x, %s, Schnittstellen %s\n",
+         x->number, dev->port + 1, dev->vendor, dev->product,
+         speed_name(dev->speed), dev->interfaces[0] ? dev->interfaces : "-");
+    if (dev->hub)
+        return "USB-Hub - Geräte dahinter werden noch nicht unterstützt";
+    if (usable == 0)
         return "kein unterstützter Gerätetyp";
 
     if (!control(x, dev, 0x00, 9, config_value, 0, 0))     /* SET_CONFIGURATION */
@@ -1025,6 +1076,8 @@ static const char *device_setup(xhci_t *x, device_t *dev)
         if (hid->kind == HID_KEYBOARD)
             control(x, dev, 0x21, 0x0A, 0, hid->interface, 0);
         hid_request(x, dev, hid);
+        hid->active = true;
+        input_devices++;
         klog("USB %d: %s an Anschluss %d\n", x->number,
              hid->kind == HID_KEYBOARD ? "Tastatur" : "Maus", dev->port + 1);
     }
@@ -1034,6 +1087,23 @@ static const char *device_setup(xhci_t *x, device_t *dev)
             return "Datenträger antwortet nicht";
     }
     return NULL;
+}
+
+/* Antwort des Controllers auf einen Fehlschlag, fürs Protokoll */
+static const char *code_text(uint32_t code)
+{
+    static char text[24];
+    switch (code) {
+    case 0:  return "keine Antwort";
+    case 4:  return "Übertragungsfehler";
+    case 6:  return "vom Gerät abgelehnt";
+    case 3:  return "Babble";
+    case 5:  return "TRB-Fehler";
+    case 17: return "Parameterfehler";
+    default:
+        ksnprintf(text, sizeof(text), "Code %u", code);
+        return text;
+    }
 }
 
 static void port_connected(xhci_t *x, int port)
@@ -1052,8 +1122,8 @@ static void port_connected(xhci_t *x, int port)
     task_sleep(100);                    /* Kontakte zur Ruhe kommen lassen */
     if (!port_reset(x, port)) {
         if (++x->failures[port] == 3)
-            klog("USB %d: Anschluss %d lässt sich nicht aktivieren\n",
-                 x->number, port + 1);
+            klog("USB %d: Anschluss %d lässt sich nicht aktivieren (Status %08x)\n",
+                 x->number, port + 1, rd32(x->op, OP_PORTSC(port)));
         return;
     }
     memset(dev, 0, sizeof(*dev));
@@ -1061,11 +1131,17 @@ static void port_connected(xhci_t *x, int port)
     dev->port = (uint8_t)port;
     dev->speed = (uint8_t)PORT_SPEED(rd32(x->op, OP_PORTSC(port)));
 
+    x->last_code = 1;
     const char *problem = device_setup(x, dev);
     if (problem) {
         /* Kein Eingabegerät oder Fehler: Anschluss in Ruhe lassen */
-        klog("USB %d: Gerät an Anschluss %d ignoriert (%s)\n", x->number,
-             port + 1, problem);
+        if (x->last_code == 1)
+            klog("USB %d: Gerät an Anschluss %d ignoriert (%s)\n", x->number,
+                 port + 1, problem);
+        else
+            klog("USB %d: Gerät an Anschluss %d ignoriert (%s, %s, %s)\n",
+                 x->number, port + 1, problem, speed_name(dev->speed),
+                 code_text(x->last_code));
         device_free(x, dev);
         x->failures[port] = 3;
     }
@@ -1123,25 +1199,31 @@ static void take_ownership(xhci_t *x)
     }
 }
 
-static bool controller_start(xhci_t *x)
+/* Liefert NULL bei Erfolg, sonst den Grund. */
+static const char *controller_start(xhci_t *x)
 {
     const pci_device_t *pci = &x->pci;
 
     uint64_t bar = pci_read32(pci, 0x10);
     if (bar & 1)
-        return false;                   /* kein Speicherbereich */
+        return "kein Speicherbereich";
     if ((bar & 0x6) == 0x4)
         bar |= (uint64_t)pci_read32(pci, 0x14) << 32;
     bar &= ~0xFull;
     if (!bar)
-        return false;
+        return "kein Speicherbereich";
 
     /* Gerät einschalten: Speicherzugriff + Busmaster, kein Interrupt-Pin */
     uint16_t pci_command = pci_read16(pci, 0x04);
     pci_write16(pci, 0x04, pci_command | 0x0006 | 0x0400);
 
-    /* Ältere Intel-Chipsätze: Anschlüsse vom USB-2-Controller herüberholen */
-    if (pci->vendor_id == 0x8086) {
+    /*
+     * Ältere Intel-Chipsätze: Anschlüsse vom USB-2-Controller herüberholen.
+     * Nur dort, wo es so einen Controller (EHCI) gibt - bei neueren Chips
+     * bedeuten diese Register etwas anderes.
+     */
+    pci_device_t ehci;
+    if (pci->vendor_id == 0x8086 && pci_find(0x0C, 0x03, 0x20, &ehci, 1) > 0) {
         pci_write32(pci, 0xD8, pci_read32(pci, 0xDC));
         pci_write32(pci, 0xD0, pci_read32(pci, 0xD4));
     }
@@ -1168,9 +1250,10 @@ static bool controller_start(xhci_t *x)
     wait_bits(x->op, OP_USBSTS, STS_HALTED, STS_HALTED, 100);
     wr32(x->op, OP_USBCMD, CMD_RESET);
     task_sleep(2);                      /* manche Controller reagieren träge */
-    if (!wait_bits(x->op, OP_USBCMD, CMD_RESET, 0, 1000) ||
-        !wait_bits(x->op, OP_USBSTS, STS_NOT_READY, 0, 1000))
-        return false;
+    if (!wait_bits(x->op, OP_USBCMD, CMD_RESET, 0, 1000))
+        return "Zurücksetzen endet nicht";
+    if (!wait_bits(x->op, OP_USBSTS, STS_NOT_READY, 0, 1000))
+        return "wird nach dem Zurücksetzen nicht bereit";
 
     wr32(x->op, OP_CONFIG, slots);
 
@@ -1204,7 +1287,7 @@ static bool controller_start(xhci_t *x)
 
     wr32(x->op, OP_USBCMD, CMD_RUN);
     if (!wait_bits(x->op, OP_USBSTS, STS_HALTED, 0, 1000))
-        return false;
+        return "läuft nicht an";
 
     /* Anschlüsse mit Strom versorgen */
     for (int port = 0; port < x->ports; port++) {
@@ -1212,20 +1295,37 @@ static bool controller_start(xhci_t *x)
         if (!(status & PORT_POWER))
             wr32(x->op, OP_PORTSC(port), (status & PORT_KEEP_BITS) | PORT_POWER);
     }
-    return true;
+    return NULL;
 }
 
 static void xhci_task(void *arg)
 {
     xhci_t *x = arg;
 
-    if (!controller_start(x)) {
-        klog("USB %d: Controller lässt sich nicht starten\n", x->number);
+    const char *problem = controller_start(x);
+    if (problem) {
+        klog("USB %d: Controller %04x:%04x (%02x:%02x.%u) startet nicht: %s\n",
+             x->number, x->pci.vendor_id, x->pci.device_id, x->pci.bus,
+             x->pci.device, x->pci.function, problem);
         return;
     }
-    klog("USB %d: xHCI-Controller mit %d Anschlüssen gestartet\n", x->number,
-         x->ports);
+    klog("USB %d: xHCI-Controller %04x:%04x (%02x:%02x.%u) mit %d Anschlüssen gestartet\n",
+         x->number, x->pci.vendor_id, x->pci.device_id, x->pci.bus,
+         x->pci.device, x->pci.function, x->ports);
     task_sleep(200);
+
+    /* Einmal fürs Protokoll: an welchen Anschlüssen etwas steckt */
+    task_sleep(300);
+    char connected[96] = "";
+    for (int port = 0; port < x->ports; port++) {
+        if (!(rd32(x->op, OP_PORTSC(port)) & PORT_CONNECTED))
+            continue;
+        size_t used = strlen(connected);
+        ksnprintf(connected + used, sizeof(connected) - used, "%s%d",
+                  used ? ", " : "", port + 1);
+    }
+    klog("USB %d: Geräte an Anschluss: %s\n", x->number,
+         connected[0] ? connected : "keinem");
 
     uint64_t next_scan = 0;
     for (;;) {

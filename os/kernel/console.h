@@ -53,3 +53,10 @@ int kvsnprintf(char *buf, size_t size, const char *fmt, va_list ap);
  */
 void klog(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void klog_set_screen(void (*write)(const char *text));
+
+/* Die letzten Meldungen von klog(): index 0 ist die älteste aufgehobene. */
+#define KLOG_LINES 160
+#define KLOG_WIDTH 128
+int klog_count(void);
+unsigned klog_total(void);              /* Zähler aller Meldungen bisher */
+void klog_line(int index, char *out, size_t size);

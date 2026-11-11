@@ -10,6 +10,7 @@
 #include "shell.h"
 #include "string.h"
 #include "task.h"
+#include "usb.h"
 #include "time.h"
 #include "update.h"
 
@@ -1161,13 +1162,29 @@ static bool pop_raw(raw_event_t *out)
     return have;
 }
 
+/* Kam seit dem Start irgendeine Eingabe an? (für die Diagnose) */
+static volatile bool input_seen;
+
 static void gui_task(void *arg)
 {
     (void)arg;
     add_dirty(rect_make(0, 0, screen.width, screen.height));
     gui_launch("terminal");
 
+    /*
+     * Ohne Tastatur und Maus lässt sich nichts bedienen. Ist nach einer
+     * Weile kein Eingabegerät da, zeigt ein Fenster von selbst, was die
+     * Treiber gemeldet haben.
+     */
+    uint64_t diagnose_at = time_ms() + 15000;
+
     for (;;) {
+        if (diagnose_at && time_ms() >= diagnose_at) {
+            diagnose_at = 0;
+            if (!input_seen && usb_input_devices() == 0)
+                gui_launch_with("diagnose", "auto");
+        }
+
         raw_event_t ev;
         while (pop_raw(&ev)) {
             if (ev.type == RAW_KEY)
@@ -1224,11 +1241,13 @@ static void push_raw(raw_event_t ev)
 
 void gui_post_key(int key, int mods)
 {
+    input_seen = true;
     push_raw((raw_event_t){ RAW_KEY, key, mods, 0 });
 }
 
 void gui_post_mouse(int dx, int dy, int buttons)
 {
+    input_seen = true;
     push_raw((raw_event_t){ RAW_MOUSE, dx, dy, buttons });
 }
 
@@ -1256,6 +1275,7 @@ bool gui_launch_with(const char *app, const char *argument)
         { "editor", "editor", editor_app },
         { "transfer", "transfer", transfer_app },
         { "browser", "browser", browser_app },
+        { "diagnose", "diagnose", diagnose_app },
     };
 
     if (!running)

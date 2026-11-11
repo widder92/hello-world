@@ -245,6 +245,32 @@ void klog_set_screen(void (*write)(const char *text))
     screen_write = write;
 }
 
+/* Die letzten Meldungen bleiben stehen: für "log" und das Diagnosefenster. */
+static char log_lines[KLOG_LINES][KLOG_WIDTH];
+static unsigned log_total;
+
+unsigned klog_total(void)
+{
+    return log_total;
+}
+
+int klog_count(void)
+{
+    return log_total < KLOG_LINES ? (int)log_total : KLOG_LINES;
+}
+
+void klog_line(int index, char *out, size_t size)
+{
+    uint64_t flags = irq_save();
+    int count = klog_count();
+    if (index < 0 || index >= count)
+        strlcpy(out, "", size);
+    else
+        strlcpy(out, log_lines[(log_total - (unsigned)count + (unsigned)index) %
+                               KLOG_LINES], size);
+    irq_restore(flags);
+}
+
 void klog(const char *fmt, ...)
 {
     char line[160];
@@ -256,4 +282,13 @@ void klog(const char *fmt, ...)
     serial_write(line);
     if (screen_write)
         screen_write(line);
+
+    /* Ohne den Zeilenumbruch am Ende aufheben */
+    uint64_t flags = irq_save();
+    char *slot = log_lines[log_total++ % KLOG_LINES];
+    strlcpy(slot, line, KLOG_WIDTH);
+    size_t len = strlen(slot);
+    while (len && (slot[len - 1] == '\n' || slot[len - 1] == '\r'))
+        slot[--len] = '\0';
+    irq_restore(flags);
 }

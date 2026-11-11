@@ -93,6 +93,13 @@ Unter macOS liefert Homebrew alles Nötige (`brew install llvm lld nasm qemu`);
    **Vorher unbedingt lesen:** den Hinweis zu BitLocker weiter unten.
 3. Vom Stick starten (Boot-Menü, meist F12, F11, F8 oder Esc).
 
+Reagieren Tastatur und Maus nicht, öffnet HelloOS nach etwa 15 Sekunden von
+selbst ein Diagnosefenster mit dem Startprotokoll. Es zeigt für jeden
+USB-Anschluss, welches Gerät dort erkannt wurde und warum es nicht bedient
+wird – ein Foto davon ist die beste Grundlage für eine Fehlermeldung.
+Funkempfänger und Geräte hinter einem USB-Hub sind die häufigsten Fälle
+(siehe [Grenzen](#grenzen)).
+
 ### Neben Windows: zwei Wege
 
 **Weg 1 – der USB-Stick (einfach und ohne Risiko für Windows).** Steckt der
@@ -261,6 +268,7 @@ Was dabei zu beachten ist:
 | `news` | zeigt, was in der laufenden Version neu ist |
 | `claude <frage>` | mit Claude sprechen (siehe [Claude](#claude)) |
 | `disk` | zeigt alle Datenträger, ihre FAT32-Partitionen und wo HelloOS speichert |
+| `log [fenster]` | Startprotokoll: was die Treiber beim Start gemeldet haben (USB-Geräte, Netzwerk, Ton, Datenträger) |
 | `ls`, `cat <datei>`, `rm <datei>` | Dateien auflisten, anzeigen, löschen |
 | `edit [datei]` | Datei im Texteditor öffnen (oder neu anlegen) |
 | `sha256 <datei>` | Prüfsumme einer Datei |

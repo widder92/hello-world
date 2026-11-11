@@ -2,3 +2,4 @@ HelloOS 0.11
 - Netzwerk jetzt auch mit Intels 2,5-Gigabit-Anschlüssen I225 und I226, wie sie in vielen aktuellen PCs und Mini-PCs stecken.
 - Hat der PC mehrere solche Anschlüsse, benutzt HelloOS von selbst den, an dem ein Kabel steckt.
 - Wird eine Netzwerk- oder WLAN-Karte nicht unterstützt, nennt HelloOS beim Start ihre Kennung.
+- Findet HelloOS weder Tastatur noch Maus, zeigt es von selbst ein Diagnosefenster mit dem Startprotokoll; im Terminal gibt es dafür den Befehl log.
