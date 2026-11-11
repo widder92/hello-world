@@ -1,3 +1,4 @@
 build/
+__pycache__/
 # Geheimer Schlüssel für Updates - niemals einchecken!
 update-key.private
