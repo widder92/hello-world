@@ -5,8 +5,10 @@
 #include "cpu.h"
 #include "fs.h"
 #include "gui.h"
+#include "http.h"
 #include "input.h"
 #include "memory.h"
+#include "net.h"
 #include "string.h"
 #include "task.h"
 #include "time.h"
@@ -379,6 +381,277 @@ static void cmd_start(shell_t *sh, char *args)
         kprintf("Aufruf: start terminal | monitor | malen | info | aus\n");
 }
 
+/* --- Netzwerk -------------------------------------------------------------------- */
+
+static void cmd_net(shell_t *sh, char *args)
+{
+    (void)sh;
+    char *sub = next_token(&args);
+    if (strcmp(sub, "dns") == 0) {
+        ip4_t server;
+        if (!ip4_parse(next_token(&args), &server)) {
+            kprintf("Aufruf: net dns <adresse>\n");
+            return;
+        }
+        net_set_dns(server);
+    }
+
+    net_info_t info;
+    char text[16];
+    net_get_info(&info);
+    if (!info.present) {
+        kprintf("Keine unterstützte Netzwerkkarte gefunden.\n");
+        return;
+    }
+    kprintf("Karte:       %s\n", info.driver);
+    kprintf("MAC-Adresse: %02x:%02x:%02x:%02x:%02x:%02x\n", info.mac[0],
+            info.mac[1], info.mac[2], info.mac[3], info.mac[4], info.mac[5]);
+    kprintf("Verbindung:  %s\n", info.link ? "aktiv" : "kein Kabel");
+    if (info.configured) {
+        ip4_format(info.ip, text);
+        kprintf("IP-Adresse:  %s\n", text);
+        ip4_format(info.netmask, text);
+        kprintf("Netzmaske:   %s\n", text);
+        ip4_format(info.gateway, text);
+        kprintf("Router:      %s\n", text);
+    } else {
+        kprintf("IP-Adresse:  noch keine (warte auf DHCP)\n");
+    }
+    if (info.dns) {
+        ip4_format(info.dns, text);
+        kprintf("DNS-Server:  %s\n", text);
+    }
+    kprintf("Pakete:      %llu empfangen, %llu gesendet\n", info.rx_packets,
+            info.tx_packets);
+}
+
+/* Prüft, ob das Netz bereit ist, und meldet es sonst dem Benutzer. */
+static bool need_network(void)
+{
+    net_info_t info;
+    net_get_info(&info);
+    if (!info.present)
+        kprintf("Keine unterstützte Netzwerkkarte gefunden.\n");
+    else if (!info.configured)
+        kprintf("Das Netzwerk ist noch nicht bereit (siehe \"net\").\n");
+    return info.configured;
+}
+
+static void cmd_ping(shell_t *sh, char *args)
+{
+    (void)sh;
+    char *host = next_token(&args);
+    ip4_t target;
+    char text[16];
+
+    if (!*host) {
+        kprintf("Aufruf: ping <name oder adresse>\n");
+        return;
+    }
+    if (!need_network())
+        return;
+    if (!net_resolve(host, &target)) {
+        kprintf("Name nicht auflösbar: %s\n", host);
+        return;
+    }
+    ip4_format(target, text);
+    kprintf("Ping an %s (%s):\n", host, text);
+
+    int answered = 0;
+    for (int i = 0; i < 4; i++) {
+        uint32_t ms;
+        if (net_ping(target, 2000, &ms)) {
+            kprintf("  Antwort von %s: Zeit=%u ms\n", text, ms);
+            answered++;
+        } else {
+            kprintf("  keine Antwort\n");
+        }
+        if (i < 3)
+            task_sleep(500);
+    }
+    kprintf("%d von 4 Paketen beantwortet.\n", answered);
+}
+
+static void cmd_dns(shell_t *sh, char *args)
+{
+    (void)sh;
+    char *name = next_token(&args);
+    ip4_t ip;
+    char text[16];
+
+    if (!*name) {
+        kprintf("Aufruf: dns <name>\n");
+        return;
+    }
+    if (!need_network())
+        return;
+    if (!net_resolve(name, &ip)) {
+        kprintf("Name nicht auflösbar: %s\n", name);
+        return;
+    }
+    ip4_format(ip, text);
+    kprintf("%s hat die Adresse %s\n", name, text);
+}
+
+/* Gibt HTML als lesbaren Text aus: ohne Tags, Skripte und Leerraum-Wüsten. */
+static void print_as_text(const char *html, size_t length, int max_lines)
+{
+    static const char *const hidden[] = { "script", "style", "head", NULL };
+    static const char *const breaks[] = {
+        "p", "br", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
+        "title", "section", "article", "ul", "ol", "table", NULL,
+    };
+    const char *p = html, *end = html + length;
+    const char *skip_until = NULL;      /* Name des Tags, das den Bereich beendet */
+    int lines = 0, column = 0;
+    bool space = false, newline = false;
+
+    while (p < end && lines < max_lines) {
+        if (*p == '<') {
+            /* Tagnamen herauslösen */
+            const char *q = p + 1;
+            bool closing = *q == '/';
+            q += closing;
+            char name[12];
+            size_t n = 0;
+            while (q < end && n + 1 < sizeof(name) &&
+                   (((*q | 0x20) >= 'a' && (*q | 0x20) <= 'z') ||
+                    (*q >= '0' && *q <= '9')))
+                name[n++] = (char)(*q++ | 0x20);
+            name[n] = '\0';
+            while (q < end && *q != '>')
+                q++;
+            p = q < end ? q + 1 : end;
+
+            if (skip_until) {
+                if (closing && strcmp(name, skip_until) == 0)
+                    skip_until = NULL;
+                continue;
+            }
+            for (int i = 0; hidden[i] && !closing; i++) {
+                if (strcmp(name, hidden[i]) == 0)
+                    skip_until = hidden[i];
+            }
+            for (int i = 0; breaks[i]; i++) {
+                if (strcmp(name, breaks[i]) == 0)
+                    newline = true;
+            }
+            continue;
+        }
+        if (skip_until) {
+            p++;
+            continue;
+        }
+
+        char c = *p++;
+        const char *replacement = NULL;
+        if (c == '&') {                 /* die häufigsten HTML-Kürzel */
+            static const struct {
+                const char *code;
+                const char *text;
+            } entities[] = {
+                { "amp;", "&" }, { "lt;", "<" }, { "gt;", ">" },
+                { "quot;", "\"" }, { "nbsp;", " " }, { "#39;", "'" },
+                { "auml;", "ä" }, { "ouml;", "ö" }, { "uuml;", "ü" },
+                { "Auml;", "Ä" }, { "Ouml;", "Ö" }, { "Uuml;", "Ü" },
+                { "szlig;", "ß" },
+            };
+            for (unsigned i = 0; i < sizeof(entities) / sizeof(entities[0]); i++) {
+                size_t n = strlen(entities[i].code);
+                if ((size_t)(end - p) >= n && memcmp(p, entities[i].code, n) == 0) {
+                    replacement = entities[i].text;
+                    c = replacement[0];
+                    p += n;
+                    break;
+                }
+            }
+        }
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+            space = true;
+            continue;
+        }
+
+        if (newline && column > 0) {
+            console_putc('\n');
+            lines++;
+            column = 0;
+        } else if (space && column > 0) {
+            console_putc(' ');
+            column++;
+        }
+        newline = space = false;
+        if (column >= 78 && ((uint8_t)c & 0xC0) != 0x80) {
+            console_putc('\n');         /* lange Zeilen umbrechen */
+            lines++;
+            column = 0;
+        }
+        if (replacement) {
+            kprintf("%s", replacement);
+            column++;
+            continue;
+        }
+        console_putc(c);
+        if (((uint8_t)c & 0xC0) != 0x80)
+            column++;                   /* UTF-8-Folgebytes zählen nicht */
+    }
+    if (column > 0)
+        console_putc('\n');
+    if (p < end)
+        kprintf("[... gekürzt, insgesamt %zu Bytes]\n", length);
+}
+
+static void cmd_web(shell_t *sh, char *args)
+{
+    (void)sh;
+    char *url = next_token(&args);
+    if (!*url) {
+        kprintf("Aufruf: web <adresse>   z. B. web http://example.com\n");
+        return;
+    }
+    if (!need_network())
+        return;
+
+    http_response_t response;
+    if (!http_get(url, 512 * 1024, &response)) {
+        kprintf("Fehler: %s\n", response.error);
+        return;
+    }
+    console_set_color(COLOR_CYAN);
+    kprintf("Status %d, %zu Bytes, %s\n", response.status, response.length,
+            response.content_type[0] ? response.content_type : "Typ unbekannt");
+    console_set_color(COLOR_DEFAULT);
+    print_as_text(response.body, response.length, 40);
+    kfree(response.body);
+}
+
+static void cmd_get(shell_t *sh, char *args)
+{
+    (void)sh;
+    char *url = next_token(&args);
+    char *name = next_token(&args);
+    if (!*url || !*name) {
+        kprintf("Aufruf: get <adresse> <datei>\n");
+        return;
+    }
+    if (!need_network())
+        return;
+
+    http_response_t response;
+    if (!http_get(url, 4 * 1024 * 1024, &response)) {
+        kprintf("Fehler: %s\n", response.error);
+        return;
+    }
+    if (response.status != 200)
+        kprintf("Der Server antwortet mit Status %d.\n", response.status);
+    else if (fs_write(name, response.body, response.length, false) != FS_OK)
+        kprintf("Datei konnte nicht gespeichert werden.\n");
+    else
+        kprintf("%zu Bytes in %s gespeichert.\n", response.length, name);
+    kfree(response.body);
+}
+
+/* --- Dateien ---------------------------------------------------------------------- */
+
 static void cmd_ls(shell_t *sh, char *args)
 {
     (void)sh;
@@ -517,6 +790,11 @@ static const struct command commands[] = {
     { "spawn",    "spawn counter|burn",  "Demo-Task im Hintergrund starten", cmd_spawn },
     { "kill",     "kill <pid>",          "Task beenden", cmd_kill },
     { "start",    "start <programm>",    "Fenster-Programm starten", cmd_start },
+    { "net",      "net",                 "Zustand des Netzwerks", cmd_net },
+    { "ping",     "ping <ziel>",         "Erreichbarkeit eines Rechners prüfen", cmd_ping },
+    { "dns",      "dns <name>",          "Namen in eine Adresse auflösen", cmd_dns },
+    { "web",      "web <adresse>",       "Webseite als Text anzeigen", cmd_web },
+    { "get",      "get <adresse> <datei>", "Datei aus dem Netz laden", cmd_get },
     { "ls",       "ls",                  "Dateien auflisten", cmd_ls },
     { "cat",      "cat <datei>",         "Datei anzeigen", cmd_cat },
     { "write",    "write <datei> <text>", "Datei (über)schreiben", cmd_write },

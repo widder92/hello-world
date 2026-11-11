@@ -13,6 +13,7 @@
 #include "input.h"
 #include "interrupts.h"
 #include "memory.h"
+#include "net.h"
 #include "serial.h"
 #include "shell.h"
 #include "task.h"
@@ -56,6 +57,7 @@ void kmain(void *unused)
     task_init();
 
     usb_init();
+    net_init();
     if (serial_present())
         task_create("shell-seriell", serial_shell, NULL, serial_console());
     gui_start();
