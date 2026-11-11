@@ -7,13 +7,18 @@
  * eine feste Kette von Ableitungen (HKDF) die Schlüssel berechnet. Der Rest
  * des Verbindungsaufbaus und alle Nutzdaten laufen danach verschlüsselt.
  *
- * Siehe tls.h: Das Zertifikat des Servers wird NICHT geprüft.
+ * Der Server weist sich aus, indem er (a) eine Zertifikatskette schickt, die
+ * bei einer eingebauten Wurzel endet, und (b) mit dem Schlüssel aus seinem
+ * Zertifikat den bisherigen Ablauf signiert ("CertificateVerify"). Beides
+ * wird geprüft, bevor Nutzdaten fließen.
  */
 #include "tls.h"
 #include "console.h"
 #include "crypto.h"
 #include "memory.h"
 #include "string.h"
+#include "time.h"
+#include "x509.h"
 
 #define RECORD_MAX      (16384 + 256)
 #define HANDSHAKE_MAX   (64 * 1024)
@@ -52,6 +57,7 @@ struct tls {
 
     uint8_t *handshake;                 /* zusammengesetzte Handshake-Daten */
     size_t handshake_len;
+    uint8_t *certificates;              /* Kopie der Zertifikatsnachricht */
 
     bool closed;
     char *error;
@@ -286,11 +292,11 @@ static size_t put16(uint8_t *p, uint16_t value)
 static size_t build_client_hello(uint8_t *m, const char *host,
                                  const uint8_t public_key[32])
 {
+    /* Nur Verfahren anbieten, die wir auch prüfen können */
     static const uint16_t signature_algorithms[] = {
-        0x0403, 0x0503, 0x0603,         /* ECDSA mit SHA-256/384/512 */
+        0x0403, 0x0503,                 /* ECDSA mit P-256/SHA-256, P-384/SHA-384 */
         0x0804, 0x0805, 0x0806,         /* RSA-PSS */
-        0x0401, 0x0501, 0x0601,         /* RSA PKCS#1 */
-        0x0807,                         /* Ed25519 */
+        0x0401, 0x0501, 0x0601,         /* RSA PKCS#1 (nur in Zertifikaten) */
     };
     size_t n = 4;                       /* Kopf wird am Ende gefüllt */
 
@@ -410,6 +416,99 @@ static bool parse_server_hello(tls_t *t, const uint8_t *m, size_t len,
     return true;
 }
 
+/* Prüft die Zertifikatskette aus der Nachricht "Certificate". */
+static bool check_certificates(tls_t *t, const uint8_t *m, size_t len,
+                               const char *host, public_key_t *server_key)
+{
+    const uint8_t *certs[8];
+    size_t lens[8];
+    int count = 0;
+
+    /* Aufbau: Kontext, dann eine Liste aus (Zertifikat, Erweiterungen) */
+    const uint8_t *p = m + 4, *end = m + len;
+    if (p + 1 > end || p + 1 + p[0] + 3 > end)
+        goto malformed;
+    p += 1 + p[0];
+    size_t list = ((size_t)p[0] << 16) | ((size_t)p[1] << 8) | p[2];
+    p += 3;
+    if (p + list != end)
+        goto malformed;
+    while (p < end) {
+        if (p + 3 > end)
+            goto malformed;
+        size_t size = ((size_t)p[0] << 16) | ((size_t)p[1] << 8) | p[2];
+        p += 3;
+        if (p + size + 2 > end)
+            goto malformed;
+        if (count < 8) {
+            certs[count] = p;
+            lens[count++] = size;
+        }
+        p += size;
+        p += 2 + (((size_t)p[0] << 8) | p[1]);
+    }
+
+    datetime_t now;
+    time_now(&now);
+    uint64_t stamp = (((((uint64_t)now.year * 100 + now.month) * 100 + now.day) * 100 +
+                       now.hour) * 100 + now.minute) * 100 + now.second;
+    const char *problem = x509_verify_chain(certs, lens, count, host, stamp, server_key);
+    if (problem) {
+        fail(t, problem);
+        return false;
+    }
+    return true;
+
+malformed:
+    fail(t, "Zertifikatsnachricht beschädigt");
+    return false;
+}
+
+/*
+ * Prüft "CertificateVerify": Der Server hat den Hash des bisherigen Ablaufs
+ * mit seinem geheimen Schlüssel signiert - nur der Besitzer des Zertifikats
+ * kann das.
+ */
+static bool check_certificate_verify(const uint8_t *m, size_t len,
+                                     const uint8_t transcript[32],
+                                     const public_key_t *key)
+{
+    static const char label[] = "TLS 1.3, server CertificateVerify";
+    uint8_t content[64 + sizeof(label) + 32];
+    uint8_t hash[HASH_MAX];
+
+    if (len < 4 + 4)
+        return false;
+    uint16_t algorithm = (uint16_t)((m[4] << 8) | m[5]);
+    size_t sig_len = ((size_t)m[6] << 8) | m[7];
+    const uint8_t *sig = m + 8;
+    if (8 + sig_len != len)
+        return false;
+
+    memset(content, 0x20, 64);
+    memcpy(content + 64, label, sizeof(label));     /* samt abschließender 0 */
+    memcpy(content + 64 + sizeof(label), transcript, 32);
+
+    switch (algorithm) {
+    case 0x0403:
+        hash_compute(HASH_SHA256, content, sizeof(content), hash);
+        return key->type == KEY_EC_P256 && ecdsa_verify(key, hash, 32, sig, sig_len);
+    case 0x0503:
+        hash_compute(HASH_SHA384, content, sizeof(content), hash);
+        return key->type == KEY_EC_P384 && ecdsa_verify(key, hash, 48, sig, sig_len);
+    case 0x0804:
+    case 0x0805:
+    case 0x0806: {
+        hash_alg_t alg = algorithm == 0x0804 ? HASH_SHA256
+                       : algorithm == 0x0805 ? HASH_SHA384 : HASH_SHA512;
+        hash_compute(alg, content, sizeof(content), hash);
+        return key->type == KEY_RSA && rsa_pss_verify(key, alg, hash, sig, sig_len);
+    }
+    default:
+        return false;
+    }
+}
+
 static bool handshake(tls_t *t, const char *host)
 {
     static const uint8_t zeros[32];
@@ -467,12 +566,18 @@ static bool handshake(tls_t *t, const char *host)
     bool certificate_requested = false;
     uint8_t request_context[256];
     size_t request_context_len = 0;
+    public_key_t identity = { .type = KEY_NONE };
+    bool identity_proven = false;
     for (;;) {
         if (!next_message(t, &message, &len))
             return false;
         uint8_t type = message[0];
 
         if (type == HS_FINISHED) {
+            if (!identity_proven) {
+                fail(t, "Server hat sich nicht ausgewiesen");
+                return false;
+            }
             /* Prüfsumme über den gesamten bisherigen Ablauf */
             transcript_hash(t, hash);
             expand_label(t->rx.secret, "finished", NULL, 0, finished_key, 32);
@@ -490,12 +595,29 @@ static bool handshake(tls_t *t, const char *host)
             request_context_len = message[4];
             if (5 + request_context_len <= len)
                 memcpy(request_context, message + 5, request_context_len);
-        } else if (type != HS_ENCRYPTED_EXTENSIONS && type != HS_CERTIFICATE &&
-                   type != HS_CERTIFICATE_VERIFY) {
+        } else if (type == HS_CERTIFICATE) {
+            /* Kopie aufheben: der Schlüssel darin wird gleich noch gebraucht */
+            kfree(t->certificates);
+            t->certificates = kmalloc(len);
+            if (!t->certificates) {
+                fail(t, "nicht genug Speicher");
+                return false;
+            }
+            memcpy(t->certificates, message, len);
+            if (!check_certificates(t, t->certificates, len, host, &identity))
+                return false;
+        } else if (type == HS_CERTIFICATE_VERIFY) {
+            transcript_hash(t, hash);
+            if (identity.type == KEY_NONE ||
+                !check_certificate_verify(message, len, hash, &identity)) {
+                fail(t, "Server konnte den Besitz seines Schlüssels nicht nachweisen");
+                return false;
+            }
+            identity_proven = true;
+        } else if (type != HS_ENCRYPTED_EXTENSIONS) {
             fail(t, "unerwartete Nachricht beim Aufbau");
             return false;
         }
-        /* Das Zertifikat wird nur zur Kenntnis genommen, nicht geprüft. */
         sha256_update(&t->transcript, message, len);
         consume_message(t, len);
     }
@@ -663,5 +785,14 @@ void tls_close(tls_t *t)
     kfree(t->plain);
     kfree(t->out);
     kfree(t->handshake);
+    kfree(t->certificates);
     kfree(t);
+}
+
+void tls_init(void)
+{
+    /* Die Daten selbst stehen in tls_roots.asm. */
+    extern const uint8_t tls_roots_builtin[], tls_roots_extra[];
+    x509_add_roots(tls_roots_builtin);
+    x509_add_roots(tls_roots_extra);
 }

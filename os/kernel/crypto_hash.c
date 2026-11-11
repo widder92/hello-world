@@ -248,6 +248,43 @@ void sha512_final(sha512_t *ctx, uint8_t out[64])
     }
 }
 
+/* SHA-384 ist SHA-512 mit anderen Startwerten und gekürzter Ausgabe. */
+static void sha384(const void *data, size_t len, uint8_t out[48])
+{
+    static const uint64_t initial[8] = {
+        0xcbbb9d5dc1059ed8ull, 0x629a292a367cd507ull, 0x9159015a3070dd17ull,
+        0x152fecd8f70e5939ull, 0x67332667ffc00b31ull, 0x8eb44a8768581511ull,
+        0xdb0c2e0d64f98fa7ull, 0x47b5481dbefa4fa4ull,
+    };
+    uint8_t full[64];
+    sha512_t ctx;
+    memcpy(ctx.state, initial, sizeof(initial));
+    ctx.length = 0;
+    ctx.used = 0;
+    sha512_update(&ctx, data, len);
+    sha512_final(&ctx, full);
+    memcpy(out, full, 48);
+}
+
+size_t hash_size(hash_alg_t alg)
+{
+    return alg == HASH_SHA256 ? 32 : alg == HASH_SHA384 ? 48 : 64;
+}
+
+void hash_compute(hash_alg_t alg, const void *data, size_t len, uint8_t *out)
+{
+    if (alg == HASH_SHA256) {
+        sha256(data, len, out);
+    } else if (alg == HASH_SHA384) {
+        sha384(data, len, out);
+    } else {
+        sha512_t ctx;
+        sha512_init(&ctx);
+        sha512_update(&ctx, data, len);
+        sha512_final(&ctx, out);
+    }
+}
+
 /* --- HMAC und HKDF ---------------------------------------------------------------- */
 
 void hmac_sha256(const uint8_t *key, size_t key_len, const void *data,

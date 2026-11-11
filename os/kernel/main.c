@@ -19,6 +19,7 @@
 #include "shell.h"
 #include "task.h"
 #include "time.h"
+#include "tls.h"
 #include "update.h"
 #include "usb.h"
 
@@ -61,6 +62,7 @@ void kmain(void *unused)
     fs_init();
     task_init();
 
+    tls_init();
     usb_init();
     net_init();
     update_init();

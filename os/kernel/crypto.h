@@ -36,6 +36,13 @@ void sha512_init(sha512_t *ctx);
 void sha512_update(sha512_t *ctx, const void *data, size_t len);
 void sha512_final(sha512_t *ctx, uint8_t out[64]);
 
+/* Für Zertifikate: Hashfunktion zur Laufzeit wählbar */
+typedef enum { HASH_SHA256, HASH_SHA384, HASH_SHA512 } hash_alg_t;
+#define HASH_MAX 64
+
+size_t hash_size(hash_alg_t alg);
+void hash_compute(hash_alg_t alg, const void *data, size_t len, uint8_t *out);
+
 /* Schlüsselabhängiger Hash und Schlüsselableitung (HMAC, HKDF) mit SHA-256 */
 void hmac_sha256(const uint8_t *key, size_t key_len, const void *data,
                  size_t len, uint8_t out[32]);
@@ -66,6 +73,27 @@ void x25519_public(uint8_t out[32], const uint8_t scalar[32]);
 /* Prüft eine Ed25519-Signatur (RFC 8032). */
 bool ed25519_verify(const uint8_t signature[64], const uint8_t public_key[32],
                     const void *message, size_t len);
+
+/* --- Signaturen prüfen: RSA und ECDSA (für Zertifikate) --------------------------- */
+
+typedef enum { KEY_NONE, KEY_RSA, KEY_EC_P256, KEY_EC_P384 } key_type_t;
+
+/* Öffentlicher Schlüssel; die Zeiger verweisen in das Zertifikat. */
+typedef struct {
+    key_type_t type;
+    const uint8_t *modulus, *exponent;  /* RSA: Zahlen, höchstwertiges Byte zuerst */
+    size_t modulus_len, exponent_len;
+    const uint8_t *point;               /* EC: X und Y hintereinander */
+} public_key_t;
+
+/* hash ist jeweils der fertige Hashwert der signierten Daten. */
+bool rsa_pkcs1_verify(const public_key_t *key, hash_alg_t alg,
+                      const uint8_t *hash, const uint8_t *signature, size_t len);
+bool rsa_pss_verify(const public_key_t *key, hash_alg_t alg, const uint8_t *hash,
+                    const uint8_t *signature, size_t len);
+/* signature ist DER-kodiert: SEQUENCE { r, s }. */
+bool ecdsa_verify(const public_key_t *key, const uint8_t *hash, size_t hash_len,
+                  const uint8_t *signature, size_t len);
 
 /* --- Zufall ------------------------------------------------------------------------ */
 

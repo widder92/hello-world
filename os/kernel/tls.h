@@ -1,17 +1,18 @@
 /*
  * TLS 1.3: verschlüsselte Verbindungen (das "s" in https).
  *
- * WICHTIG: Dieser Client verschlüsselt, prüft aber NICHT das Zertifikat des
- * Servers. Ein Angreifer im selben Netz könnte sich also als der Server
- * ausgeben. Für Passwörter oder andere Geheimnisse ist das nicht geeignet.
- * Updates sind trotzdem sicher, weil sie zusätzlich signiert sind
- * (siehe update.c).
+ * Der Server muss sich mit einem Zertifikat ausweisen, das zum Namen passt,
+ * gültig ist und auf eine der eingebauten Zertifizierungsstellen zurückgeht
+ * (siehe x509.h). Sonst kommt keine Verbindung zustande.
  */
 #pragma once
 
 #include "net.h"
 
 typedef struct tls tls_t;
+
+/* Meldet die eingebauten Wurzelzertifikate an (einmal beim Start). */
+void tls_init(void);
 
 /*
  * Baut über eine bestehende TCP-Verbindung eine TLS-Sitzung auf. Bei einem

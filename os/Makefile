@@ -37,6 +37,12 @@ UPDATE_KEY := $(shell cat update-key.pub 2>/dev/null)
 # "Was ist neu": wird vor der Installation eines Updates angezeigt.
 NOTES      := NEUES.txt
 
+# --- HTTPS -----------------------------------------------------------------
+# Zusätzliche Zertifizierungsstellen (PEM-Datei), denen HelloOS neben den
+# eingebauten vertrauen soll - etwa für einen eigenen Server oder einen
+# Firmen-Proxy, der HTTPS-Verbindungen aufbricht. Normalerweise leer.
+EXTRA_CA   :=
+
 # UEFI-Programme sind PE-Dateien wie unter Windows - daher dieses Ziel.
 CFLAGS  := --target=x86_64-unknown-windows -std=gnu11 -O2 -Wall -Wextra \
            -ffreestanding -fno-stack-protector -fshort-wchar -mno-red-zone \
@@ -74,7 +80,12 @@ $(BUILD)/%.obj: kernel/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/%.asm.obj: kernel/%.asm | $(BUILD)
-	$(AS) -f win64 $< -o $@
+	$(AS) -f win64 -i$(BUILD)/ $< -o $@
+
+$(BUILD)/extra-ca.bin: FORCE | $(BUILD)
+	@$(PYTHON) tools/mkroots.py $@ $(EXTRA_CA)
+
+$(BUILD)/tls_roots.asm.obj: kernel/tls_roots.bin $(BUILD)/extra-ca.bin
 
 $(EFI): $(OBJS)
 	$(LD) $(LDFLAGS) /out:$@ $(OBJS)
