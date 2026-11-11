@@ -1,9 +1,9 @@
 # HelloOS
 
 Ein kleines, von Grund auf selbst geschriebenes Betriebssystem für PCs mit
-64-Bit-Prozessor (x86-64) und UEFI – mit grafischer Oberfläche, Fenstern und
-Maus. Kein Linux, kein GRUB, keine fremde Bibliothek: rund 6700 Zeilen C und
-etwas Assembler.
+64-Bit-Prozessor (x86-64) und UEFI – mit grafischer Oberfläche, Netzwerk und
+signierten Updates. Kein Linux, kein GRUB, keine fremde Bibliothek: rund
+12 000 Zeilen C und etwas Assembler.
 
 ![HelloOS mit Terminal, Systemmonitor und Malprogramm](docs/screenshot.png)
 
@@ -20,8 +20,14 @@ etwas Assembler.
 - **Eingabegeräte**: USB-Tastaturen und -Mäuse (xHCI, auch An- und Abstecken
   im Betrieb) sowie PS/2, wie es viele Notebook-Tastaturen intern noch nutzen;
   deutsche und US-Tastaturbelegung
-- **RAM-Dateisystem** und 21 Shell-Befehle
+- **Netzwerk**: Treiber für Intel-Netzwerkkarten, eigener Stack mit ARP, IPv4,
+  ICMP, UDP, DHCP, DNS und TCP, dazu HTTP und HTTPS (TLS 1.3)
+- **Updates**: HelloOS sucht regelmäßig nach neuen Versionen, prüft deren
+  Signatur und ersetzt sich selbst auf dem USB-Stick, von dem es gestartet wurde
+- **RAM-Dateisystem** und 29 Shell-Befehle
 - **Serielle Konsole** mit eigener Shell – praktisch für Tests ohne Bildschirm
+
+![Netzwerk: eine Webseite über HTTPS im Terminal](docs/screenshot-netz.png)
 
 ## Bauen und in QEMU starten
 
@@ -39,7 +45,12 @@ make            # baut build/BOOTX64.EFI und das Disk-Image build/helloos.img
 make run        # startet HelloOS in einem QEMU-Fenster
 make run-usb    # dasselbe mit USB-Tastatur und -Maus statt PS/2
 make test       # bootet ohne Bildschirm und prüft die wichtigsten Befehle
+make check      # prüft die Kryptografie gegen eine Referenzbibliothek
 ```
+
+In QEMU steckt das Image als USB-Stick an einem emulierten USB-3-Controller,
+dazu kommt eine emulierte Netzwerkkarte mit Internetzugang über den
+Wirtsrechner. `make check` braucht zusätzlich das Python-Paket `cryptography`.
 
 Liegt die Firmware an einem ungewöhnlichen Ort: `make run OVMF=/pfad/zu/OVMF.fd`.
 Unter macOS liefert Homebrew alles Nötige (`brew install llvm lld nasm qemu`);
@@ -48,8 +59,9 @@ Unter macOS liefert Homebrew alles Nötige (`brew install llvm lld nasm qemu`);
 ## Auf einem echten PC starten
 
 > HelloOS wurde bisher nur in QEMU getestet, nicht auf echter Hardware. Es
-> schreibt nichts auf Festplatten – ein Versuch ist ungefährlich, aber es kann
-> sein, dass es auf einem bestimmten Rechner nicht startet.
+> schreibt nur auf den USB-Stick, von dem es gestartet wurde (und das nur bei
+> einem Update) – ein Versuch ist ungefährlich, aber es kann sein, dass es auf
+> einem bestimmten Rechner nicht startet.
 
 1. USB-Stick vorbereiten – eine der beiden Möglichkeiten:
    - Stick mit FAT32 formatieren und `build/BOOTX64.EFI` als
@@ -62,12 +74,18 @@ Unter macOS liefert Homebrew alles Nötige (`brew install llvm lld nasm qemu`);
 
 Was dabei zu beachten ist:
 
-- Tastatur und Maus am besten **direkt am Rechner** einstecken. USB-Hubs
-  (auch die in Monitoren, Docks oder Tastaturen) werden nicht unterstützt.
+- Stick, Tastatur und Maus **direkt am Rechner** einstecken. USB-Hubs (auch
+  die in Monitoren, Docks oder Tastaturen) werden nicht unterstützt.
 - Unterstützt werden gewöhnliche USB-Tastaturen und -Mäuse (HID
   „Boot-Protokoll"). Bluetooth-Geräte und Touchpads, die nur über I²C
   angebunden sind, funktionieren nicht – dann hilft eine USB-Maus oder die
   Bedienung per Tastatur.
+- **Netzwerk gibt es nur per Kabel** und nur mit Intel-Netzwerkkarten der
+  e1000-Familie. Getestet ist der Treiber mit den beiden Modellen, die QEMU
+  emuliert; die verwandten Karten in echten PCs („Intel Ethernet Connection
+  I217/I218/I219") erkennt er, ob sie damit laufen, ist ungeprüft. WLAN,
+  Realtek-Karten und Intels 2,5-Gigabit-Karten (I225/I226) werden nicht
+  unterstützt. `net` zeigt, ob eine Karte erkannt wurde.
 - Es wird nur ein Prozessorkern benutzt und ohne Grafikbeschleunigung
   gezeichnet. Bei sehr hohen Auflösungen wählt HelloOS, wenn die Firmware das
   anbietet, einen Modus bis 1920 × 1200.
@@ -89,7 +107,7 @@ Was dabei zu beachten ist:
 | Befehl | Wirkung |
 | --- | --- |
 | `help` | Befehlsübersicht |
-| `info` | System, Prozessor, Speicher, Bildschirm |
+| `info` | System, Build-Nummer, Prozessor, Speicher, Bildschirm |
 | `mem` | Heap-Belegung und Speicherkarte der Firmware |
 | `uptime`, `date` | Laufzeit bzw. Datum und Uhrzeit |
 | `ps` | Tasks mit Zustand und verbrauchter CPU-Zeit |
@@ -97,7 +115,15 @@ Was dabei zu beachten ist:
 | `spawn burn` | Hintergrund-Task, der pausenlos rechnet (zeigt die Präemption) |
 | `kill <pid>` | Task beenden |
 | `start <programm>` | `terminal`, `monitor`, `malen`, `info` oder `aus` öffnen |
+| `net` | Netzwerkkarte, Adressen, Paketzähler; `net dns <adresse>` setzt den DNS-Server |
+| `ping <ziel>` | prüft, ob ein Rechner antwortet |
+| `dns <name>` | löst einen Namen in eine IPv4-Adresse auf |
+| `web <adresse>` | holt eine Webseite und zeigt sie als Text |
+| `get <adresse> <datei>` | lädt eine Datei aus dem Netz ins RAM-Dateisystem |
+| `update` | sucht jetzt nach einem Update und installiert es |
+| `disk` | zeigt angeschlossene USB-Datenträger |
 | `ls`, `cat <datei>`, `rm <datei>` | Dateien auflisten, anzeigen, löschen |
+| `sha256 <datei>` | Prüfsumme einer Datei |
 | `write <datei> <text>` | Datei (über)schreiben |
 | `append <datei> <text>` | Zeile anhängen |
 | `echo <text>` | Text ausgeben |
@@ -108,6 +134,85 @@ Was dabei zu beachten ist:
 
 Pfeil hoch/runter blättert im Verlauf, Strg+C verwirft die Eingabe,
 Strg+L leert das Terminal.
+
+## Internet
+
+Sobald ein Netzwerkkabel steckt, holt sich HelloOS per DHCP eine Adresse.
+Danach funktionieren zum Beispiel:
+
+```
+ping 10.0.2.2
+dns example.com
+web https://example.com/
+get https://raw.githubusercontent.com/widder92/hello-world/master/README.md readme.md
+```
+
+Wichtig zu wissen:
+
+- **HTTPS verschlüsselt, prüft aber nicht, mit wem.** Der TLS-Client
+  unterstützt TLS 1.3 (X25519, ChaCha20-Poly1305) und kontrolliert die
+  Zertifikate der Server nicht. Mitlesen im Netz wird verhindert; wer den
+  Datenverkehr aber aktiv umleiten kann, könnte sich als Server ausgeben. Für
+  Passwörter oder andere Geheimnisse ist das nicht geeignet. (Updates sind
+  davon nicht betroffen, siehe unten.)
+- Es gibt keinen Browser – `web` zeigt den Text einer Seite, mehr nicht.
+- Nur IPv4, keine zerteilten Pakete, keine eingehenden Verbindungen.
+- In QEMU beantwortet nur der eingebaute Router (`10.0.2.2`) Pings; Pings ins
+  Internet leitet QEMUs Netz nicht weiter. Namensauflösung und Webzugriffe
+  funktionieren trotzdem.
+
+## Updates
+
+HelloOS kann sich selbst aktuell halten. Etwa fünf Sekunden nach dem
+Netzwerkstart und danach alle sechs Stunden geschieht Folgendes:
+
+1. Von der Update-Quelle wird `helloos.version` geladen. Steht dort eine
+   größere Build-Nummer als die eigene, folgt `helloos.upd`.
+2. Das Paket wird nur akzeptiert, wenn seine **Ed25519-Signatur** zum
+   öffentlichen Schlüssel passt, der in den Kernel eingebaut ist, und wenn die
+   mitsignierte Build-Nummer wirklich neuer ist.
+3. Auf dem USB-Stick, von dem HelloOS gestartet wurde, wird
+   `EFI/BOOT/BOOTX64.EFI` ausgetauscht – zuerst wird die neue Datei komplett
+   geschrieben, dann mit einem einzigen Schreibzugriff umgeschaltet. Ein
+   Stromausfall mittendrin hinterlässt also die alte oder die neue Version,
+   aber keine halbe.
+4. Ein Fenster meldet das Update; aktiv wird es beim nächsten Start.
+
+Weil die Signatur entscheidet, ist es für die Sicherheit der Updates egal,
+dass der TLS-Client keine Zertifikate prüft: Ohne den geheimen Schlüssel kann
+niemand ein Paket herstellen, das HelloOS annimmt.
+
+### Einrichten
+
+**Ohne Schlüssel sind Updates abgeschaltet** – so wird HelloOS standardmäßig
+gebaut, und dann fragt es auch nirgends nach neuen Versionen. So schaltest du
+sie ein:
+
+1. Schlüsselpaar erzeugen: `make update-key`. Das legt zwei Dateien an:
+   - `update-key.pub` – der öffentliche Teil. Einchecken; er wird beim Bauen
+     in den Kernel übernommen.
+   - `update-key.private` – der geheime Teil. **Niemals einchecken oder
+     weitergeben** (`.gitignore` schließt ihn aus). Wer ihn hat, kann Updates
+     für deine Installationen ausstellen; geht er verloren, lassen sich
+     bestehende Installationen nicht mehr aktualisieren.
+2. Den Inhalt von `update-key.private` bei GitHub als Repository-Secret
+   `HELLOOS_UPDATE_KEY` hinterlegen (Settings → Secrets and variables → Actions).
+3. HelloOS neu bauen und auf den Stick bringen – erst diese Version kennt den
+   Schlüssel.
+
+Von da an baut der Workflow `.github/workflows/helloos-update.yml` bei jeder
+Änderung unter `os/` auf dem Zweig `master` ein signiertes Paket und legt es
+auf den Branch `helloos-updates`. Dort sucht HelloOS standardmäßig
+(`UPDATE_URL` im `Makefile`). Der Workflow ist bisher nicht in der Praxis
+gelaufen.
+
+Es geht auch von Hand: `make update-package` erzeugt
+`build/update/helloos.upd` und `helloos.version`; beide Dateien müssen dann
+unter der Adresse erreichbar sein, die beim Bauen als `UPDATE_URL` galt.
+
+Die Build-Nummer ist die Anzahl der Commits (`git rev-list --count HEAD`).
+Updates funktionieren nur, wenn HelloOS von einem USB-Stick läuft, der direkt
+am Rechner steckt – interne Festplatten kann es nicht ansprechen.
 
 ## Wie es funktioniert
 
@@ -120,8 +225,8 @@ Strg+L leert das Terminal.
 3. Mit `ExitBootServices()` wird die Firmware verabschiedet. Ab hier gehört
    die Maschine dem Kernel: eigene Seitentabellen (der gesamte RAM 1:1
    abgebildet), eigener Stack, weiter nach `kmain()` in `kernel/main.c`.
-4. `kmain()` richtet Interrupts, Speicher, Bildschirm, Systemtakt und
-   Eingabegeräte ein, startet die ersten Tasks und wird zum Leerlauf-Task.
+4. `kmain()` richtet Interrupts, Speicher, Bildschirm, Systemtakt, Eingabe-
+   geräte und Netzwerk ein, startet die ersten Tasks und wird zum Leerlauf-Task.
 
 ### Kernel
 
@@ -129,7 +234,8 @@ Strg+L leert das Terminal.
   Dabei werden PS/2-Controller und serielle Schnittstelle abgefragt und der
   Scheduler aufgerufen. Es ist der einzige Interrupt, den HelloOS braucht –
   das macht den Kernel unabhängig davon, wie ein Rechner seine
-  Interrupt-Leitungen verdrahtet.
+  Interrupt-Leitungen verdrahtet. USB und Netzwerk haben eigene Tasks, die
+  ihre Geräte regelmäßig abfragen.
 - **Multitasking:** Kernel-Threads mit eigenem Stack (`kernel/task.c`). Tasks,
   die gerade aus dem Warten aufwachen (Eingaben, Oberfläche), kommen vor
   solchen dran, die nur rechnen – so bleibt die Oberfläche auch unter Last
@@ -137,8 +243,11 @@ Strg+L leert das Terminal.
 - **Speicher:** Heap im größten freien Bereich laut Firmware, dazu ein Vorrat
   ganzer Seiten unterhalb von 4 GiB für Gerätetreiber (`kernel/memory.c`).
 - **USB:** Für jeden xHCI-Controller läuft ein Task, der Anschlüsse
-  beobachtet, neue Geräte einrichtet und deren Berichte in Tastendrücke und
-  Mausbewegungen übersetzt (`kernel/usb.c`).
+  beobachtet, neue Geräte einrichtet, Berichte von Tastatur und Maus auswertet
+  und Lese-/Schreibaufträge für USB-Sticks ausführt (`kernel/usb.c`).
+- **Netzwerk:** Der Task „netz" holt Pakete von der Karte und reicht sie durch
+  die Schichten (`kernel/net.c`, `kernel/tcp.c`). Programme rufen blockierende
+  Funktionen wie `tcp_connect()` auf und werden geweckt, wenn etwas ankommt.
 
 ### Oberfläche
 
@@ -162,33 +271,45 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `kernel/task.c` | Tasks und Scheduler |
 | `kernel/console.c`, `kernel/serial.c` | Konsolen, `kprintf`, serielle Schnittstelle |
 | `kernel/keyboard.c`, `kernel/ps2.c` | Tastaturbelegungen, PS/2-Tastatur und -Maus |
-| `kernel/pci.c`, `kernel/usb.c` | PCI-Bus, xHCI-Treiber für USB-Tastatur und -Maus |
+| `kernel/pci.c`, `kernel/usb.c` | PCI-Bus, xHCI-Treiber (Tastatur, Maus, Massenspeicher) |
+| `kernel/block.c`, `kernel/fat.c` | Blockgeräte, FAT32 |
+| `kernel/e1000.c` | Treiber für Intel-Netzwerkkarten |
+| `kernel/net.c`, `kernel/tcp.c` | ARP, IPv4, ICMP, UDP, DHCP, DNS; TCP |
+| `kernel/crypto_*.c` | SHA-2, HMAC/HKDF, ChaCha20-Poly1305, X25519, Ed25519 |
+| `kernel/tls.c`, `kernel/http.c` | TLS 1.3, HTTP-Client |
+| `kernel/update.c` | Selbstaktualisierung |
 | `kernel/gfx.c`, `kernel/font_data.c` | Zeichenfunktionen, Schrift |
 | `kernel/gui.c` | Compositor, Fensterverwaltung, Taskleiste |
 | `kernel/terminal.c`, `kernel/shell.c` | Terminalfenster und Kommandozeile |
 | `kernel/sysmon.c`, `kernel/paint.c`, `kernel/about.c` | Systemmonitor, Malprogramm, Dialoge |
 | `kernel/fs.c` | RAM-Dateisystem |
 | `tools/mkimage.py` | baut das Disk-Image (GPT, FAT32) |
+| `tools/update-tool.py` | Schlüssel erzeugen, Update-Pakete signieren und prüfen |
 | `tools/mkfont.py` | erzeugt `font_data.c` aus einer TrueType-Schrift |
 | `tools/smoke-test.sh` | automatischer Boot-Test in QEMU |
+| `tests/crypto_test.py` | Kryptografie gegen `hashlib` und `cryptography` prüfen |
 
 ## Grenzen und Ideen zum Weiterbauen
 
 HelloOS ist ein Lernsystem. Alles läuft im Kernel-Modus in einem gemeinsamen
-Adressraum; es gibt keinen Speicherschutz, keine Programme von außerhalb, kein
-Netzwerk, und Dateien überleben keinen Neustart. Naheliegende nächste Schritte:
+Adressraum; es gibt keinen Speicherschutz und keine Programme von außerhalb,
+und eigene Dateien überleben keinen Neustart. Die Kryptografie ist geprüft,
+aber nicht gegen Seitenkanäle gehärtet, und der Zufallsgenerator ist einfach
+gehalten. Naheliegende nächste Schritte:
 
-- USB-Hubs und USB-Massenspeicher, damit Dateien dauerhaft gespeichert werden
+- Zertifikate prüfen, damit HTTPS auch die Gegenseite ausweist
+- eigene Dateien dauerhaft auf dem USB-Stick speichern (FAT32 ist schon da)
+- weitere Netzwerkkarten (Realtek, Intel I225), USB-Hubs
 - User-Modus (Ring 3) mit Systemaufrufen und getrennten Adressräumen
-- Programme aus Dateien laden (ELF)
-- mehrere Prozessorkerne
-- Fenster in der Größe ändern, ein Texteditor, ein Dateimanager
+- Programme aus Dateien laden (ELF), mehrere Prozessorkerne
+- ein grafischer Browser, Fenster in der Größe ändern, ein Texteditor
 
 ## Die ältere 32-Bit-Version
 
 In [`legacy-bios32/`](legacy-bios32/) liegt die erste Fassung von HelloOS: ein
 32-Bit-System mit eigenem BIOS-Bootloader und Textoberfläche. Sie läuft auf
-PCs mit klassischem BIOS (oder CSM), nicht aber auf reinen UEFI-Rechnern.
+PCs mit klassischem BIOS (oder CSM), nicht aber auf reinen UEFI-Rechnern, und
+hat weder Netzwerk noch Updates.
 
 ## Schrift
 

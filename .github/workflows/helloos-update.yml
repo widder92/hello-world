@@ -1,0 +1,60 @@
+# Baut HelloOS bei jeder Änderung auf dem Hauptzweig und veröffentlicht ein
+# signiertes Update-Paket auf dem Branch "helloos-updates". Von dort holen sich
+# laufende HelloOS-Installationen ihre Updates (siehe os/README.md).
+#
+# Voraussetzungen - ohne sie tut dieser Workflow nichts:
+#   1. os/update-key.pub ist eingecheckt (erzeugt mit "make update-key")
+#   2. Das Repository-Secret HELLOOS_UPDATE_KEY enthält den Inhalt von
+#      os/update-key.private
+name: HelloOS-Update veröffentlichen
+
+on:
+  push:
+    branches: [master]
+    paths: ['os/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # die Build-Nummer ist die Anzahl der Commits
+
+      - name: Prüfen, ob Updates eingerichtet sind
+        id: setup
+        env:
+          HELLOOS_UPDATE_KEY: ${{ secrets.HELLOOS_UPDATE_KEY }}
+        run: |
+          if [ -n "$HELLOOS_UPDATE_KEY" ] && [ -f os/update-key.pub ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Kein Update-Schlüssel eingerichtet - nichts zu veröffentlichen."
+          fi
+
+      - name: Werkzeuge installieren
+        if: steps.setup.outputs.ready == 'true'
+        run: sudo apt-get update && sudo apt-get install -y clang lld nasm
+
+      - name: Bauen und signieren
+        if: steps.setup.outputs.ready == 'true'
+        env:
+          HELLOOS_UPDATE_KEY: ${{ secrets.HELLOOS_UPDATE_KEY }}
+        run: make -C os update-package
+
+      - name: Auf dem Branch helloos-updates veröffentlichen
+        if: steps.setup.outputs.ready == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd os/build/update
+          git init -q -b helloos-updates
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add helloos.upd helloos.version
+          git commit -q -m "HelloOS Build $(cat helloos.version)"
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" helloos-updates

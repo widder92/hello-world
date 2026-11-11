@@ -137,8 +137,13 @@ static void keyboard_byte(uint8_t data)
         extended = true;
         return;
     }
-    if (data == 0xE1 || data == 0xFA || data == 0xAA)
-        return;                         /* Pause-Präfix, Bestätigung, Selbsttest */
+    /*
+     * Pause-Präfix und Bestätigungen überspringen. Achtung: 0xAA ist zwar auch
+     * die Selbsttest-Meldung einer Tastatur, vor allem aber "linke
+     * Umschalttaste losgelassen" - das darf nicht verloren gehen.
+     */
+    if (data == 0xE1 || data == 0xFA)
+        return;
     keyboard_handle_scancode(data & 0x7F, extended, data & 0x80);
     extended = false;
 }
