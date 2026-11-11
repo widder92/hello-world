@@ -54,8 +54,10 @@ void gui_post_mouse(int dx, int dy, int buttons);
 
 /* --- Für Anwendungen ----------------------------------------------------------- */
 
-/* Startet eine Anwendung: "terminal", "monitor", "malen", "info", "aus". */
+/* Startet eine Anwendung: "terminal", "monitor", "malen", "info", "editor" ... */
 bool gui_launch(const char *app);
+/* Wie gui_launch(), reicht der Anwendung aber eine Angabe mit (z. B. einen Dateinamen). */
+bool gui_launch_with(const char *app, const char *argument);
 
 /* Neues Fenster mit einer Inhaltsfläche der angegebenen Größe (oder NULL). */
 window_t *window_create(const char *title, int width, int height);

@@ -17,6 +17,7 @@
 #include "net.h"
 #include "serial.h"
 #include "shell.h"
+#include "storage.h"
 #include "task.h"
 #include "time.h"
 #include "tls.h"
@@ -64,6 +65,7 @@ void kmain(void *unused)
 
     tls_init();
     usb_init();
+    storage_init();
     net_init();
     update_init();
     if (serial_present())

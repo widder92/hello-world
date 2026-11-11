@@ -356,6 +356,7 @@ static const struct {
     { "Malen", "malen" },
     { "Info", "info" },
     { "Claude", "claude" },
+    { "Editor", "editor" },
 };
 #define LAUNCHER_COUNT ((int)(sizeof(launchers) / sizeof(launchers[0])))
 
@@ -859,6 +860,11 @@ void gui_post_mouse(int dx, int dy, int buttons)
 
 bool gui_launch(const char *app)
 {
+    return gui_launch_with(app, NULL);
+}
+
+bool gui_launch_with(const char *app, const char *argument)
+{
     static const struct {
         const char *name;
         const char *task_name;
@@ -871,14 +877,28 @@ bool gui_launch(const char *app)
         { "aus", "ausschalten", power_app },
         { "update", "update", update_app },
         { "claude", "claude", claude_app },
+        { "editor", "editor", editor_app },
     };
 
     if (!running)
         return false;
     for (unsigned i = 0; i < sizeof(apps) / sizeof(apps[0]); i++) {
-        if (strcmp(apps[i].name, app) == 0)
-            return task_create(apps[i].task_name, apps[i].entry, NULL,
-                               serial_console()) >= 0;
+        if (strcmp(apps[i].name, app) != 0)
+            continue;
+        /* Die Angabe wandert als eigene Kopie zur Anwendung, die sie freigibt. */
+        char *copy = NULL;
+        if (argument) {
+            size_t size = strlen(argument) + 1;
+            copy = kmalloc(size);
+            if (!copy)
+                return false;
+            memcpy(copy, argument, size);
+        }
+        if (task_create(apps[i].task_name, apps[i].entry, copy,
+                        serial_console()) >= 0)
+            return true;
+        kfree(copy);
+        return false;
     }
     return false;
 }

@@ -1,6 +1,8 @@
 #include "fat.h"
+#include "console.h"
 #include "memory.h"
 #include "string.h"
+#include "time.h"
 
 #define CACHE_SECTORS  64
 #define RUN_SECTORS    64               /* so viel am Stück lesen/schreiben */
@@ -350,6 +352,19 @@ bool fat_read(fat_t *fs, const fat_file_t *file, void *buffer)
     return ok;
 }
 
+/* Trägt Datum und Uhrzeit der letzten Änderung in einen Verzeichniseintrag ein. */
+static void stamp(uint8_t *entry)
+{
+    datetime_t now;
+    time_now(&now);
+    if (now.year < 1980 || now.year > 2107)
+        return;
+    wr16(entry + 22, (uint16_t)((now.hour << 11) | (now.minute << 5) |
+                                (now.second / 2)));
+    wr16(entry + 24, (uint16_t)(((now.year - 1980) << 9) | (now.month << 5) |
+                                now.day));
+}
+
 /* Gibt alle Cluster einer Kette frei. */
 static bool free_chain(fat_t *fs, uint32_t cluster)
 {
@@ -363,14 +378,28 @@ static bool free_chain(fat_t *fs, uint32_t cluster)
     return cache_flush(fs);
 }
 
+/* Der Infosektor merkt sich die Zahl freier Cluster - nach Änderungen stimmt sie nicht mehr. */
+static void forget_free_count(fat_t *fs)
+{
+    uint8_t sector[SECTOR_SIZE];
+    if (fs->info_sector && block_read(fs->dev, fs->start + fs->info_sector, 1, sector) &&
+        rd32(sector) == 0x41615252 && rd32(sector + 484) == 0x61417272 &&
+        rd32(sector + 488) != 0xFFFFFFFF) {
+        wr32(sector + 488, 0xFFFFFFFF); /* "Anzahl freier Cluster unbekannt" */
+        wr32(sector + 492, 0xFFFFFFFF);
+        block_write(fs->dev, fs->start + fs->info_sector, 1, sector);
+    }
+}
+
 bool fat_replace(fat_t *fs, fat_file_t *file, const void *data, uint32_t size)
 {
     uint32_t cluster_bytes = fs->sectors_per_cluster * SECTOR_SIZE;
     uint32_t needed = (size + cluster_bytes - 1) / cluster_bytes;
-    if (needed == 0 || file->directory)
+    if (file->directory)
         return false;
 
-    uint32_t *chain = kmalloc((size_t)needed * sizeof(uint32_t));
+    /* Eine leere Datei belegt keinen Cluster; chain[0] ist dann 0. */
+    uint32_t *chain = kzalloc((size_t)(needed + 1) * sizeof(uint32_t));
     uint8_t *scratch = kzalloc(cluster_bytes);
     bool ok = false;
     if (!chain || !scratch)
@@ -434,6 +463,7 @@ bool fat_replace(fat_t *fs, fat_file_t *file, const void *data, uint32_t size)
     wr16(entry + 20, (uint16_t)(chain[0] >> 16));
     wr16(entry + 26, (uint16_t)chain[0]);
     wr32(entry + 28, size);
+    stamp(entry);
     if (!block_write(fs->dev, file->entry_sector, 1, sector))
         goto done;
 
@@ -443,12 +473,7 @@ bool fat_replace(fat_t *fs, fat_file_t *file, const void *data, uint32_t size)
     file->size = size;
     ok = true;
     free_chain(fs, old);
-    if (fs->info_sector && block_read(fs->dev, fs->start + fs->info_sector, 1, sector) &&
-        rd32(sector) == 0x41615252 && rd32(sector + 484) == 0x61417272) {
-        wr32(sector + 488, 0xFFFFFFFF); /* "Anzahl freier Cluster unbekannt" */
-        wr32(sector + 492, 0xFFFFFFFF);
-        block_write(fs->dev, fs->start + fs->info_sector, 1, sector);
-    }
+    forget_free_count(fs);
 
 done:
     if (!ok)
@@ -456,5 +481,531 @@ done:
     fs->cache_dirty = ok && fs->cache_dirty;
     kfree(chain);
     kfree(scratch);
+    return ok;
+}
+
+/* --- Eigene Dateien: Verzeichnisse als Ganzes bearbeiten ----------------------------------- */
+
+#define DIR_BYTES_MAX  (1024 * 1024)    /* größer wird kein Verzeichnis geladen */
+#define LFN_CHARS      13               /* Zeichen pro Eintrag eines langen Namens */
+#define LFN_ENTRIES    20               /* 255 Zeichen */
+
+/* Ein vollständig in den Speicher geladenes Verzeichnis */
+typedef struct {
+    uint8_t *data;
+    uint32_t bytes;
+    uint32_t *clusters;
+    uint32_t count;
+} dir_t;
+
+static void dir_free(dir_t *d)
+{
+    kfree(d->data);
+    kfree(d->clusters);
+    memset(d, 0, sizeof(*d));
+}
+
+static bool dir_load(fat_t *fs, uint32_t first, dir_t *d)
+{
+    uint32_t cluster_bytes = fs->sectors_per_cluster * SECTOR_SIZE;
+    uint32_t max = DIR_BYTES_MAX / cluster_bytes + 1;
+    uint32_t count = 0;
+
+    memset(d, 0, sizeof(*d));
+    for (uint32_t c = first; valid_cluster(fs, c); c = fat_next(fs, c)) {
+        if (++count > max)
+            return false;               /* zu groß oder im Kreis verkettet */
+    }
+    if (count == 0)
+        return false;
+
+    d->clusters = kmalloc(count * sizeof(uint32_t));
+    d->data = kmalloc((size_t)count * cluster_bytes);
+    if (!d->clusters || !d->data) {
+        dir_free(d);
+        return false;
+    }
+    uint32_t c = first;
+    for (uint32_t i = 0; i < count; i++, c = fat_next(fs, c)) {
+        d->clusters[i] = c;
+        if (!block_read(fs->dev, cluster_lba(fs, c), fs->sectors_per_cluster,
+                        d->data + (size_t)i * cluster_bytes)) {
+            dir_free(d);
+            return false;
+        }
+    }
+    d->count = count;
+    d->bytes = count * cluster_bytes;
+    return true;
+}
+
+/* Schreibt die Sektoren zurück, in denen der Bereich [offset, offset+len) liegt. */
+static bool dir_write(fat_t *fs, const dir_t *d, uint32_t offset, uint32_t len)
+{
+    uint32_t cluster_bytes = fs->sectors_per_cluster * SECTOR_SIZE;
+    uint32_t first = offset / SECTOR_SIZE;
+    uint32_t last = (offset + len - 1) / SECTOR_SIZE;
+
+    for (uint32_t sector = first; sector <= last; sector++) {
+        uint32_t position = sector * SECTOR_SIZE;
+        uint64_t lba = cluster_lba(fs, d->clusters[position / cluster_bytes]) +
+                       (position % cluster_bytes) / SECTOR_SIZE;
+        if (!block_write(fs->dev, lba, 1, d->data + position))
+            return false;
+    }
+    return true;
+}
+
+static uint64_t dir_entry_sector(const fat_t *fs, const dir_t *d, uint32_t offset)
+{
+    uint32_t cluster_bytes = fs->sectors_per_cluster * SECTOR_SIZE;
+    return cluster_lba(fs, d->clusters[offset / cluster_bytes]) +
+           (offset % cluster_bytes) / SECTOR_SIZE;
+}
+
+/* Sucht einen freien Cluster, füllt ihn mit Nullen und markiert ihn als Kettenende. */
+static uint32_t allocate_cluster(fat_t *fs)
+{
+    uint32_t cluster_bytes = fs->sectors_per_cluster * SECTOR_SIZE;
+    uint32_t found = 0;
+
+    for (uint32_t c = 2; c < fs->cluster_count + 2 && !found; c++) {
+        uint8_t *entry = fat_entry(fs, c);
+        if (!entry)
+            return 0;
+        if ((rd32(entry) & FAT_MASK) == 0)
+            found = c;
+    }
+    uint8_t *zero = found ? kzalloc(cluster_bytes) : NULL;
+    if (!zero)
+        return 0;
+    bool ok = block_write(fs->dev, cluster_lba(fs, found),
+                          fs->sectors_per_cluster, zero) &&
+              fat_set(fs, found, FAT_MASK) && cache_flush(fs);
+    kfree(zero);
+    return ok ? found : 0;
+}
+
+/* Hängt einen leeren Cluster an das Verzeichnis an. */
+static bool dir_grow(fat_t *fs, dir_t *d)
+{
+    uint32_t cluster_bytes = fs->sectors_per_cluster * SECTOR_SIZE;
+    if (d->bytes + cluster_bytes > DIR_BYTES_MAX)
+        return false;
+
+    uint8_t *data = kzalloc(d->bytes + cluster_bytes);
+    uint32_t *clusters = kmalloc((d->count + 1) * sizeof(uint32_t));
+    uint32_t added = (data && clusters) ? allocate_cluster(fs) : 0;
+    if (!added || !fat_set(fs, d->clusters[d->count - 1], added) ||
+        !cache_flush(fs)) {
+        kfree(data);
+        kfree(clusters);
+        return false;
+    }
+    memcpy(data, d->data, d->bytes);
+    memcpy(clusters, d->clusters, d->count * sizeof(uint32_t));
+    clusters[d->count] = added;
+    kfree(d->data);
+    kfree(d->clusters);
+    d->data = data;
+    d->clusters = clusters;
+    d->count++;
+    d->bytes += cluster_bytes;
+    return true;
+}
+
+/* Prüfsumme des kurzen Namens; verbindet ihn mit den Einträgen des langen. */
+static uint8_t lfn_checksum(const uint8_t name[11])
+{
+    uint8_t sum = 0;
+    for (int i = 0; i < 11; i++)
+        sum = (uint8_t)(((sum & 1) << 7) + (sum >> 1) + name[i]);
+    return sum;
+}
+
+static const uint8_t lfn_positions[LFN_CHARS] = {
+    1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30
+};
+
+static size_t utf8_put(char *out, uint32_t cp)
+{
+    if (cp < 0x80) {
+        out[0] = (char)cp;
+        return 1;
+    }
+    if (cp < 0x800) {
+        out[0] = (char)(0xC0 | (cp >> 6));
+        out[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    out[0] = (char)(0xE0 | (cp >> 12));
+    out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    out[2] = (char)(0x80 | (cp & 0x3F));
+    return 3;
+}
+
+/* Liest ein UTF-8-Zeichen; alles außerhalb der Grundebene wird zu '?'. */
+static uint32_t utf8_get(const char **text)
+{
+    const uint8_t *p = (const uint8_t *)*text;
+    uint32_t cp = *p++;
+    int extra = cp >= 0xF0 ? 3 : cp >= 0xE0 ? 2 : cp >= 0xC0 ? 1 : 0;
+
+    if (cp >= 0x80)
+        cp = extra ? cp & (0x3F >> extra) : '?';
+    while (extra-- > 0 && (*p & 0xC0) == 0x80)
+        cp = (cp << 6) | (*p++ & 0x3F);
+    *text = (const char *)p;
+    return cp > 0xFFFF ? '?' : cp;
+}
+
+static uint32_t fold(uint32_t cp)
+{
+    if ((cp >= 'A' && cp <= 'Z') || (cp >= 0xC0 && cp <= 0xDE && cp != 0xD7))
+        return cp + 32;
+    return cp;
+}
+
+/* Vergleicht zwei Namen ohne Rücksicht auf Groß- und Kleinschreibung. */
+bool fat_same_name(const char *a, const char *b)
+{
+    for (;;) {
+        uint32_t x = fold(utf8_get(&a)), y = fold(utf8_get(&b));
+        if (x != y)
+            return false;
+        if (x == 0)
+            return true;
+    }
+}
+
+/* "NOTIZ   TXT" -> "notiz.txt" bzw. "NOTIZ.TXT", je nach Kennzeichen in flags. */
+static void short_to_text(const uint8_t *entry, char *out)
+{
+    size_t n = 0;
+    for (int i = 0; i < 11; i++) {
+        uint8_t c = entry[i];
+        if (i == 0 && c == 0x05)
+            c = 0xE5;
+        if (c == ' ')
+            continue;
+        if (i == 8)
+            out[n++] = '.';
+        bool lower = entry[12] & (i < 8 ? 0x08 : 0x10);
+        if (lower && c >= 'A' && c <= 'Z')
+            c = (uint8_t)(c + 32);
+        if (c >= 0x80)
+            c = '_';                    /* Zeichen der alten DOS-Codeseiten */
+        out[n++] = (char)c;
+    }
+    out[n] = '\0';
+}
+
+static void fill_file(const fat_t *fs, const dir_t *d, uint32_t first,
+                      uint32_t offset, uint32_t name_entries, fat_file_t *file)
+{
+    const uint8_t *entry = d->data + offset;
+    file->first_cluster = ((uint32_t)rd16(entry + 20) << 16) | rd16(entry + 26);
+    file->size = rd32(entry + 28);
+    file->directory = entry[11] & ATTR_DIRECTORY;
+    file->entry_sector = dir_entry_sector(fs, d, offset);
+    file->entry_offset = offset % SECTOR_SIZE;
+    file->dir_cluster = first;
+    file->dir_offset = offset;
+    file->name_entries = name_entries;
+}
+
+/* Geht alle Einträge eines geladenen Verzeichnisses durch. */
+static void dir_walk(const fat_t *fs, const dir_t *d, uint32_t first,
+                     fat_visit_t visit, void *ctx)
+{
+    uint16_t wide[LFN_ENTRIES * LFN_CHARS + 1];
+    uint32_t expected = 0, total = 0;   /* Zustand des langen Namens davor */
+    uint8_t checksum = 0;
+    char name[FAT_NAME_MAX * 3];
+
+    for (uint32_t offset = 0; offset + 32 <= d->bytes; offset += 32) {
+        const uint8_t *entry = d->data + offset;
+        if (entry[0] == 0x00)
+            break;
+        if (entry[0] == 0xE5) {
+            total = 0;
+            continue;
+        }
+        if (entry[11] == ATTR_LONG_NAME) {
+            uint32_t seq = entry[0] & 0x3F;
+            if (entry[0] & 0x40) {      /* letzter Teil steht zuerst */
+                total = expected = seq;
+                checksum = entry[13];
+                memset(wide, 0, sizeof(wide));
+            }
+            if (seq == 0 || seq > LFN_ENTRIES || seq != expected ||
+                entry[13] != checksum) {
+                total = 0;
+                expected = 0;
+                continue;
+            }
+            for (int i = 0; i < LFN_CHARS; i++)
+                wide[(seq - 1) * LFN_CHARS + i] = rd16(entry + lfn_positions[i]);
+            expected--;
+            continue;
+        }
+        bool has_long = total > 0 && expected == 0 &&
+                        lfn_checksum(entry) == checksum;
+        uint32_t name_entries = has_long ? total : 0;
+        total = 0;
+        if (entry[11] & ATTR_LABEL)
+            continue;
+        if (entry[0] == '.')
+            continue;                   /* "." und ".." */
+
+        if (has_long) {
+            size_t n = 0;
+            for (int i = 0; wide[i] && wide[i] != 0xFFFF; i++) {
+                uint32_t cp = wide[i];
+                if (cp >= 0xD800 && cp <= 0xDFFF)
+                    cp = '?';
+                n += utf8_put(name + n, cp);
+            }
+            name[n] = '\0';
+        } else {
+            short_to_text(entry, name);
+        }
+        if (strlen(name) >= FAT_NAME_MAX)
+            continue;
+
+        fat_file_t file;
+        fill_file(fs, d, first, offset, name_entries, &file);
+        if (!visit(ctx, name, &file))
+            break;
+    }
+}
+
+bool fat_list(fat_t *fs, uint32_t dir_cluster, fat_visit_t visit, void *ctx)
+{
+    dir_t d;
+    if (!dir_load(fs, dir_cluster, &d))
+        return false;
+    dir_walk(fs, &d, dir_cluster, visit, ctx);
+    dir_free(&d);
+    return true;
+}
+
+typedef struct {
+    const char *name;
+    fat_file_t *out;
+    bool found;
+} lookup_t;
+
+static bool lookup_visit(void *ctx, const char *name, const fat_file_t *file)
+{
+    lookup_t *l = ctx;
+    if (!fat_same_name(name, l->name))
+        return true;
+    *l->out = *file;
+    l->found = true;
+    return false;
+}
+
+bool fat_lookup(fat_t *fs, uint32_t dir_cluster, const char *name, fat_file_t *out)
+{
+    lookup_t l = { name, out, false };
+    return fat_list(fs, dir_cluster, lookup_visit, &l) && l.found;
+}
+
+/* Gibt es im Verzeichnis schon einen Eintrag mit diesem kurzen Namen? */
+static bool short_exists(const dir_t *d, const uint8_t name[11])
+{
+    for (uint32_t offset = 0; offset + 32 <= d->bytes; offset += 32) {
+        const uint8_t *entry = d->data + offset;
+        if (entry[0] == 0x00)
+            break;
+        if (entry[0] != 0xE5 && entry[11] != ATTR_LONG_NAME &&
+            memcmp(entry, name, 11) == 0)
+            return true;
+    }
+    return false;
+}
+
+static uint8_t short_char(uint32_t cp)
+{
+    if (cp >= 'a' && cp <= 'z')
+        return (uint8_t)(cp - 32);
+    if ((cp >= 'A' && cp <= 'Z') || (cp >= '0' && cp <= '9') || cp == '_' ||
+        cp == '-')
+        return (uint8_t)cp;
+    return '_';
+}
+
+/* Erfindet zum langen Namen einen freien kurzen: "BRIEFA~1TXT". */
+static bool make_alias(const dir_t *d, const char *name, uint8_t out[11])
+{
+    uint8_t base[6], ext[3];
+    int base_len = 0, ext_len = 0;
+    const char *dot = NULL;
+
+    for (const char *p = name; *p; p++) {
+        if (*p == '.' && p != name)
+            dot = p;
+    }
+    for (const char *p = name; *p && p != dot && base_len < 6; ) {
+        uint32_t cp = utf8_get(&p);
+        if (cp != ' ' && cp != '.')
+            base[base_len++] = short_char(cp);
+    }
+    for (const char *p = dot ? dot + 1 : ""; *p && ext_len < 3; ) {
+        uint32_t cp = utf8_get(&p);
+        if (cp != ' ')
+            ext[ext_len++] = short_char(cp);
+    }
+    if (base_len == 0)
+        base[base_len++] = '_';
+
+    for (uint32_t n = 1; n < 100000; n++) {
+        char tail[8];
+        int tail_len = ksnprintf(tail, sizeof(tail), "~%u", n);
+        int keep = base_len < 8 - tail_len ? base_len : 8 - tail_len;
+        memset(out, ' ', 11);
+        memcpy(out, base, (size_t)keep);
+        memcpy(out + keep, tail, (size_t)tail_len);
+        memcpy(out + 8, ext, (size_t)ext_len);
+        if (!short_exists(d, out))
+            return true;
+    }
+    return false;
+}
+
+bool fat_create(fat_t *fs, uint32_t dir_cluster, const char *name, bool directory,
+                fat_file_t *out)
+{
+    uint16_t wide[LFN_ENTRIES * LFN_CHARS];
+    uint32_t chars = 0;
+    for (const char *p = name; *p; ) {
+        if (chars >= 255)
+            return false;
+        wide[chars++] = (uint16_t)utf8_get(&p);
+    }
+    if (chars == 0)
+        return false;
+    uint32_t name_entries = (chars + LFN_CHARS - 1) / LFN_CHARS;
+    uint32_t needed = name_entries + 1;
+
+    dir_t d;
+    bool ok = false;
+    uint32_t content = 0;
+    if (!dir_load(fs, dir_cluster, &d))
+        return false;
+
+    /* Eine Lücke aus genügend freien Einträgen suchen */
+    uint32_t start = 0, run = 0;
+    for (;;) {
+        run = 0;
+        for (uint32_t offset = 0; offset + 32 <= d.bytes && run < needed;
+             offset += 32) {
+            uint8_t first = d.data[offset];
+            if (first == 0x00) {        /* ab hier ist alles frei */
+                if (run == 0)
+                    start = offset;
+                run += (d.bytes - offset) / 32;
+                break;
+            }
+            if (first == 0xE5) {
+                if (run++ == 0)
+                    start = offset;
+            } else {
+                run = 0;
+            }
+        }
+        if (run >= needed)
+            break;
+        if (!dir_grow(fs, &d))
+            goto done;
+    }
+
+    uint8_t alias[11];
+    if (!make_alias(&d, name, alias))
+        goto done;
+
+    if (directory) {                    /* ein Cluster mit "." und ".." */
+        content = allocate_cluster(fs);
+        uint8_t *block = content ? kzalloc(SECTOR_SIZE) : NULL;
+        if (!block)
+            goto done;
+        uint32_t parent = dir_cluster == fs->root_cluster ? 0 : dir_cluster;
+        memset(block, ' ', 11);
+        memset(block + 32, ' ', 11);
+        block[0] = '.';
+        block[32] = block[33] = '.';
+        block[11] = block[32 + 11] = ATTR_DIRECTORY;
+        wr16(block + 20, (uint16_t)(content >> 16));
+        wr16(block + 26, (uint16_t)content);
+        wr16(block + 32 + 20, (uint16_t)(parent >> 16));
+        wr16(block + 32 + 26, (uint16_t)parent);
+        stamp(block);
+        stamp(block + 32);
+        bool written = block_write(fs->dev, cluster_lba(fs, content), 1, block);
+        kfree(block);
+        if (!written)
+            goto done;
+    }
+
+    /* Die Einträge des langen Namens stehen rückwärts vor dem eigentlichen. */
+    uint8_t sum = lfn_checksum(alias);
+    for (uint32_t i = 0; i < name_entries; i++) {
+        uint32_t seq = name_entries - i;
+        uint8_t *entry = d.data + start + i * 32;
+        memset(entry, 0, 32);
+        entry[0] = (uint8_t)(seq | (i == 0 ? 0x40 : 0));
+        entry[11] = ATTR_LONG_NAME;
+        entry[13] = sum;
+        for (uint32_t c = 0; c < LFN_CHARS; c++) {
+            uint32_t index = (seq - 1) * LFN_CHARS + c;
+            uint16_t value = index < chars ? wide[index]
+                           : index == chars ? 0 : 0xFFFF;
+            wr16(entry + lfn_positions[c], value);
+        }
+    }
+    uint32_t offset = start + name_entries * 32;
+    uint8_t *entry = d.data + offset;
+    memset(entry, 0, 32);
+    memcpy(entry, alias, 11);
+    entry[11] = directory ? ATTR_DIRECTORY : 0x20;      /* 0x20: "Archiv" */
+    wr16(entry + 20, (uint16_t)(content >> 16));
+    wr16(entry + 26, (uint16_t)content);
+    stamp(entry);
+    wr16(entry + 14, rd16(entry + 22));                 /* angelegt = geändert */
+    wr16(entry + 16, rd16(entry + 24));
+    if (!dir_write(fs, &d, start, needed * 32))
+        goto done;
+
+    fill_file(fs, &d, dir_cluster, offset, name_entries, out);
+    forget_free_count(fs);
+    ok = true;
+
+done:
+    if (!ok && content)
+        free_chain(fs, content);
+    dir_free(&d);
+    return ok;
+}
+
+bool fat_delete(fat_t *fs, const fat_file_t *file)
+{
+    dir_t d;
+    if (file->directory || !dir_load(fs, file->dir_cluster, &d))
+        return false;
+
+    uint32_t start = file->dir_offset - file->name_entries * 32;
+    bool ok = file->dir_offset + 32 <= d.bytes &&
+              file->name_entries * 32 <= file->dir_offset;
+    if (ok) {
+        for (uint32_t offset = start; offset <= file->dir_offset; offset += 32)
+            d.data[offset] = 0xE5;
+        ok = dir_write(fs, &d, start, file->dir_offset + 32 - start);
+    }
+    dir_free(&d);
+    if (ok) {
+        free_chain(fs, file->first_cluster);
+        forget_free_count(fs);
+    }
     return ok;
 }

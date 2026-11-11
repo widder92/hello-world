@@ -13,6 +13,7 @@
 #include "input.h"
 #include "memory.h"
 #include "net.h"
+#include "storage.h"
 #include "string.h"
 #include "task.h"
 #include "time.h"
@@ -384,7 +385,17 @@ static void cmd_start(shell_t *sh, char *args)
     if (!gui_available())
         kprintf("Es gibt keinen Bildschirm.\n");
     else if (!gui_launch(app))
-        kprintf("Aufruf: start terminal | monitor | malen | info | aus\n");
+        kprintf("Aufruf: start terminal | monitor | malen | info | claude | editor | aus\n");
+}
+
+static void cmd_edit(shell_t *sh, char *args)
+{
+    (void)sh;
+    char *name = next_token(&args);
+    if (!gui_available())
+        kprintf("Der Editor braucht einen Bildschirm.\n");
+    else if (!gui_launch_with("editor", name))
+        kprintf("Der Editor ließ sich nicht starten.\n");
 }
 
 /* --- Netzwerk -------------------------------------------------------------------- */
@@ -628,6 +639,8 @@ static void cmd_web(shell_t *sh, char *args)
     kfree(response.body);
 }
 
+static void warn_if_unsaved(const char *name);
+
 static void cmd_get(shell_t *sh, char *args)
 {
     (void)sh;
@@ -649,8 +662,10 @@ static void cmd_get(shell_t *sh, char *args)
         kprintf("Der Server antwortet mit Status %d.\n", response.status);
     else if (fs_write(name, response.body, response.length, false) != FS_OK)
         kprintf("Datei konnte nicht gespeichert werden.\n");
-    else
+    else {
         kprintf("%zu Bytes in %s gespeichert.\n", response.length, name);
+        warn_if_unsaved(name);
+    }
     kfree(response.body);
 }
 
@@ -829,6 +844,20 @@ static void cmd_claude(shell_t *sh, char *args)
 
 /* --- Dateien ---------------------------------------------------------------------- */
 
+/* Hinweis, wenn eine Datei nicht auf dem Stick gesichert werden konnte. */
+static void warn_if_unsaved(const char *name)
+{
+    const file_t *f = fs_find(name);
+    if (!f || f->saved)
+        return;
+    console_set_color(COLOR_YELLOW);
+    kprintf(storage_available()
+                ? "Hinweis: %s konnte nicht auf dem USB-Stick gesichert werden.\n"
+                : "Hinweis: %s liegt nur im Arbeitsspeicher - kein USB-Stick zum "
+                  "Sichern gefunden.\n", f->name);
+    console_set_color(COLOR_DEFAULT);
+}
+
 static void cmd_ls(shell_t *sh, char *args)
 {
     (void)sh;
@@ -838,10 +867,14 @@ static void cmd_ls(shell_t *sh, char *args)
         const file_t *f = fs_entry(i);
         if (!f)
             continue;
-        kprintf("%8u Bytes  %s\n", (uint32_t)f->size, f->name);
+        kprintf("%8u Bytes  %s%s\n", (uint32_t)f->size, f->name,
+                f->saved || f->builtin ? "" : "   (nicht gesichert)");
         count++;
     }
-    kprintf("%d Datei(en)\n", count);
+    kprintf("%d Datei(en)%s\n", count,
+            storage_available() ? ", gesichert auf dem USB-Stick im Ordner "
+                                  STORAGE_FILES
+                                : " - kein USB-Stick zum Sichern gefunden");
 }
 
 static void cmd_cat(shell_t *sh, char *args)
@@ -852,28 +885,34 @@ static void cmd_cat(shell_t *sh, char *args)
         kprintf("Aufruf: cat <datei>\n");
         return;
     }
-    const file_t *f = fs_find(name);
-    if (!f) {
-        kprintf("Datei nicht gefunden: %s\n", name);
+    char *data;
+    size_t size;
+    int err = fs_read(name, &data, &size);
+    if (err != FS_OK) {
+        kprintf(err == FS_ERR_NOT_FOUND ? "Datei nicht gefunden: %s\n"
+                                        : "Nicht genug Speicher für %s.\n", name);
         return;
     }
-    console_write(f->data, f->size);
-    if (f->size > 0 && f->data[f->size - 1] != '\n')
+    console_write(data, size);
+    if (size > 0 && data[size - 1] != '\n')
         console_putc('\n');
+    kfree(data);
 }
 
 static void cmd_sha256(shell_t *sh, char *args)
 {
     (void)sh;
     char *name = next_token(&args);
-    const file_t *f = *name ? fs_find(name) : NULL;
-    if (!f) {
+    char *data;
+    size_t size;
+    if (!*name || fs_read(name, &data, &size) != FS_OK) {
         kprintf(*name ? "Datei nicht gefunden: %s\n" : "Aufruf: sha256 <datei>\n",
                 name);
         return;
     }
     uint8_t hash[32];
-    sha256(f->data, f->size, hash);
+    sha256(data, size, hash);
+    kfree(data);
     for (int i = 0; i < 32; i++)
         kprintf("%02x", hash[i]);
     kprintf("  %s\n", name);
@@ -886,22 +925,24 @@ static void write_file(char *args, bool append)
         kprintf("Aufruf: %s <datei> <text>\n", append ? "append" : "write");
         return;
     }
-    int err = fs_write(name, args, strlen(args), append);
-    if (err == FS_OK)
-        err = fs_write(name, "\n", 1, true);
+    /* Text und Zeilenende in einem Rutsch - sonst würde zweimal gesichert. */
+    char text[LINE_MAX + 1];
+    ksnprintf(text, sizeof(text), "%s\n", args);
+    int err = fs_write(name, text, strlen(text), append);
 
     switch (err) {
     case FS_OK:
+        warn_if_unsaved(name);
         break;
     case FS_ERR_NAME:
-        kprintf("Ungültiger Dateiname (höchstens %d Zeichen).\n",
+        kprintf("Ungültiger Dateiname (höchstens %d Zeichen, ohne / \\ : * ? \" < > |).\n",
                 FS_NAME_MAX - 1);
         break;
     case FS_ERR_FULL:
-        kprintf("Das Dateisystem ist voll (%d Dateien).\n", FS_MAX_FILES);
+        kprintf("Es gibt schon %d Dateien - mehr geht nicht.\n", FS_MAX_FILES);
         break;
     default:
-        kprintf("Nicht genug Speicher.\n");
+        kprintf("Fehler: %s.\n", fs_error_text(err));
         break;
     }
 }
@@ -995,6 +1036,7 @@ static const struct command commands[] = {
     { "disk",     "disk",                "Datenträger anzeigen", cmd_disk },
     { "ls",       "ls",                  "Dateien auflisten", cmd_ls },
     { "cat",      "cat <datei>",         "Datei anzeigen", cmd_cat },
+    { "edit",     "edit [datei]",        "Datei im Texteditor öffnen", cmd_edit },
     { "write",    "write <datei> <text>", "Datei (über)schreiben", cmd_write },
     { "append",   "append <datei> <text>", "Zeile an Datei anhängen", cmd_append },
     { "rm",       "rm <datei>",          "Datei löschen", cmd_rm },

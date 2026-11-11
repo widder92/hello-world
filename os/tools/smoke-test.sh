@@ -26,13 +26,17 @@ mkfifo "$FIFO"
 # ("user") liefert DHCP und einen anpingbaren Router - auch ohne Internet.
 # Gearbeitet wird auf einer Kopie, damit das Original unverändert bleibt.
 cp "$IMAGE" "$DIR/stick.img"
-timeout 180 "$QEMU" -machine q35 -m 256 -bios "$OVMF" -device qemu-xhci \
-    -drive if=none,id=stick,format=raw,file="$DIR/stick.img" \
-    -device usb-storage,drive=stick \
-    -netdev user,id=net0 -device e1000e,netdev=net0 -display none \
-    -serial stdio -no-reboot "$@" < "$FIFO" > "$LOG" 2>&1 &
-QEMU_PID=$!
-exec 3> "$FIFO"
+start_qemu() {
+    : > "$LOG"
+    timeout 180 "$QEMU" -machine q35 -m 256 -bios "$OVMF" -device qemu-xhci \
+        -drive if=none,id=stick,format=raw,file="$DIR/stick.img" \
+        -device usb-storage,drive=stick \
+        -netdev user,id=net0 -device e1000e,netdev=net0 -display none \
+        -serial stdio -no-reboot "$@" < "$FIFO" > "$LOG" 2>&1 &
+    QEMU_PID=$!
+    exec 3> "$FIFO"
+}
+start_qemu "$@"
 trap 'exec 3>&-; kill "$QEMU_PID" 2>/dev/null; rm -rf "$DIR"' EXIT
 
 # Wartet (höchstens $2 Sekunden), bis der Text in der Ausgabe auftaucht.
@@ -96,6 +100,11 @@ printf 'claude\nclaude hallo\n' >&3
 expect "Schlüssel: nicht gesetzt"
 expect "Es ist kein API-Schlüssel hinterlegt"
 
+# Eigene Dateien werden auf dem Stick gesichert ...
+expect "Dateien: 0 vom USB-Stick geladen" 30
+printf 'write bleibt.txt dauerhaft gespeichert\nls\n' >&3
+expect "2 Datei(en), gesichert auf dem USB-Stick"
+
 printf 'shutdown\n' >&3
 expect "System wird heruntergefahren"
 if wait "$QEMU_PID"; then
@@ -104,6 +113,16 @@ else
     echo "  FEHLT   sauberes Herunterfahren"
     failed=1
 fi
+
+# ... und sind nach einem Neustart wieder da.
+echo "Starte HelloOS ein zweites Mal ..."
+exec 3>&-
+start_qemu "$@"
+expect "Dateien: 1 vom USB-Stick geladen" 120
+printf 'cat bleibt.txt\nshutdown\n' >&3
+expect "^dauerhaft gespeichert"
+expect "System wird heruntergefahren"
+wait "$QEMU_PID"
 
 if [ "$failed" -ne 0 ]; then
     echo

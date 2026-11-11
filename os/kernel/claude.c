@@ -20,6 +20,7 @@
 #include "json.h"
 #include "memory.h"
 #include "shell.h"
+#include "storage.h"
 #include "string.h"
 #include "task.h"
 
@@ -84,6 +85,7 @@ bool claude_load_key(void)
 {
     static const char *const names[] = { "CLAUDE.KEY", "CLAUDE.TXT", NULL };
 
+    storage_lock();
     for (int i = 0; i < BLOCK_DEVICES_MAX && !claude_has_key(); i++) {
         block_device_t *dev = block_get(i);
         fat_t fs;
@@ -103,6 +105,7 @@ bool claude_load_key(void)
         }
         fat_unmount(&fs);
     }
+    storage_unlock();
     return claude_has_key();
 }
 

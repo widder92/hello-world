@@ -27,6 +27,7 @@
 #include "http.h"
 #include "memory.h"
 #include "net.h"
+#include "storage.h"
 #include "string.h"
 #include "task.h"
 #include "time.h"
@@ -279,7 +280,7 @@ bool update_check(bool verbose)
 /* --- Installation ------------------------------------------------------------------------ */
 
 /* Sucht den Datenträger mit der Startdatei von HelloOS und tauscht sie aus. */
-static bool install(bool verbose, const uint8_t *image, uint32_t size)
+static bool install_unlocked(bool verbose, const uint8_t *image, uint32_t size)
 {
     bool any_device = false;
 
@@ -327,6 +328,15 @@ static bool install(bool verbose, const uint8_t *image, uint32_t size)
                   ? "Kein Datenträger mit der HelloOS-Startdatei gefunden"
                   : "Kein USB-Stick gefunden - Updates brauchen HelloOS auf einem Stick");
     return false;
+}
+
+static bool install(bool verbose, const uint8_t *image, uint32_t size)
+{
+    /* Währenddessen darf niemand sonst auf den Stick schreiben. */
+    storage_lock();
+    bool ok = install_unlocked(verbose, image, size);
+    storage_unlock();
+    return ok;
 }
 
 bool update_install(bool verbose)
