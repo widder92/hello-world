@@ -20,6 +20,7 @@ typedef enum {
     EV_MOUSE_UP,
     EV_MOUSE_MOVE,                      /* nur bei gedrückter Maustaste */
     EV_CLOSE,                           /* Schließen-Knopf angeklickt */
+    EV_RESIZE,                          /* neue Größe gewünscht: x = Breite, y = Höhe */
 } event_type_t;
 
 typedef struct {
@@ -76,6 +77,16 @@ void window_destroy(window_t *win);
  * Nach window_keep() bleibt sie bestehen, bis jemand window_unref() aufruft.
  */
 void window_keep(window_t *win);
+
+/*
+ * Größe ändern: Nach window_set_resizable() kann der Benutzer das Fenster am
+ * Griff unten rechts ziehen oder maximieren. Die Anwendung bekommt dann
+ * EV_RESIZE und antwortet mit window_resize(): Das legt die neue Fläche an
+ * (leer - der Inhalt ist neu zu zeichnen) und liefert sie, oder NULL, wenn es
+ * nicht geht. Ohne diese Antwort bleibt alles beim Alten.
+ */
+void window_set_resizable(window_t *win, int min_width, int min_height);
+surface_t *window_resize(window_t *win, int width, int height);
 
 /* Meldet einen geänderten Bereich des Inhalts (Koordinaten im Fenster). */
 void window_invalidate(window_t *win, int x, int y, int w, int h);

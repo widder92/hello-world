@@ -14,7 +14,8 @@ fremde Bibliothek: rund 24 000 Zeilen C und etwas Assembler.
   einzige Datei (`BOOTX64.EFI`), die die Firmware direkt lädt
 - **64-Bit-Kernel** mit eigenen Seitentabellen, Interrupt-Behandlung,
   Speicherverwaltung und präemptivem Multitasking
-- **Grafische Oberfläche**: verschiebbare Fenster, Taskleiste mit Startmenü,
+- **Grafische Oberfläche**: Fenster zum Verschieben, Vergrößern und
+  Maximieren, Taskleiste mit Startmenü,
   Mauszeiger, geglättete Schrift – gezeichnet direkt in den Bildspeicher der
   Grafikkarte
 - **Programme**: Browser, Terminal mit Shell (mehrere gleichzeitig), Texteditor,
@@ -144,6 +145,8 @@ Was dabei zu beachten ist:
 | Programm starten | im Startmenü anklicken | F1 Terminal, F2 Monitor, F3 Malen, F4 Info, F5 Claude, F6 Editor, F7 Transfer, F8 Browser |
 | Fenster wechseln | Fenster oder dessen Knopf in der Taskleiste anklicken | Alt+Tab |
 | Fenster verschieben | an der Titelleiste ziehen | – |
+| Fenstergröße ändern | am Griff in der rechten unteren Ecke ziehen | – |
+| Fenster maximieren / zurück | Knopf mit dem Rechteck neben dem ✕ | Alt+F10 |
 | Fenster schließen | ✕ in der Titelleiste | Alt+F4 |
 | Ausschalten / Neustart | „Aus" rechts in der Taskleiste | `shutdown` bzw. `reboot` im Terminal |
 
@@ -181,6 +184,11 @@ Was dabei zu beachten ist:
 | `history`, `clear` | Befehlsverlauf, Terminal leeren |
 | `panic` | löst absichtlich eine CPU-Ausnahme aus |
 | `reboot`, `shutdown` | Neustart, Herunterfahren |
+
+In der Größe ändern lassen sich Browser, Terminal, Texteditor,
+Dateiübertragung und Claude; Systemmonitor, Malprogramm und die Dialoge haben
+eine feste Größe. Beim Ziehen zeigt ein Rahmen die künftige Größe – das
+Fenster folgt, sobald du loslässt.
 
 Pfeil hoch/runter blättert im Verlauf, Strg+C verwirft die Eingabe,
 Strg+L leert das Terminal.
@@ -622,7 +630,7 @@ gehalten. Naheliegende nächste Schritte:
 - weitere Netzwerkkarten (Realtek, Intel I225), USB-Hubs
 - User-Modus (Ring 3) mit Systemaufrufen und getrennten Adressräumen
 - Programme aus Dateien laden (ELF), mehrere Prozessorkerne
-- Fenster in der Größe ändern und maximieren, Symbole auf dem Desktop, ein Dateimanager
+- Symbole auf dem Desktop, ein Dateimanager, Fenster an den Kanten ziehen und minimieren
 - im Browser: Bilder, einfache Gestaltung, Lesezeichen (JavaScript bleibt außer Reichweite)
 
 ## Die ältere 32-Bit-Version

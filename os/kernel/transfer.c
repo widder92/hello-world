@@ -16,22 +16,25 @@
 #include "task.h"
 #include "time.h"
 
-#define WIDTH        900
-#define HEIGHT       556
+/* Das Fenster lässt sich vergrößern: Die beiden Listen wachsen mit. */
+#define WIDTH        (app->width)
+#define HEIGHT       (app->height)
+#define START_WIDTH  900
+#define START_HEIGHT 556
 #define MARGIN       12
 #define FIELD_Y      10
 #define FIELD_H      26
-#define PANE_W       432
+#define PANE_W       ((WIDTH - 3 * MARGIN) / 2)
 #define LEFT_X       MARGIN
 #define RIGHT_X      (MARGIN + PANE_W + 12)
 #define HEADER_Y     46
 #define LIST_Y       68
 #define ROW_H        18
-#define ROWS         22
-#define LIST_H       (ROWS * ROW_H)
-#define BUTTON_Y     (LIST_Y + LIST_H + 10)
 #define BUTTON_H     28
-#define STATUS_Y     (BUTTON_Y + BUTTON_H + 10)
+#define STATUS_Y     (HEIGHT - 44)
+#define BUTTON_Y     (STATUS_Y - 10 - BUTTON_H)
+#define ROWS         ((BUTTON_Y - 10 - LIST_Y) / ROW_H)
+#define LIST_H       (ROWS * ROW_H)
 #define COLUMNS      (PANE_W / FONT_W - 1)
 #define SETTINGS     "transfer.txt"
 
@@ -68,6 +71,7 @@ typedef struct {
 
 typedef struct {
     window_t *window;
+    int width, height;
     bool closing;
 
     char field[FIELDS][96];
@@ -369,7 +373,7 @@ static void take_incoming(app_t *app)
 }
 
 /* Hält die Auswahl im sichtbaren Ausschnitt. */
-static void clamp(int count, int *selected, int *top)
+static void clamp(const app_t *app, int count, int *selected, int *top)
 {
     if (*selected >= count)
         *selected = count ? count - 1 : 0;
@@ -404,20 +408,20 @@ static const char *const button_label[BUTTONS] = {
     "<< Herunterladen", "Neuer Ordner", "Löschen", "Neu laden",
 };
 
-static rect_t button_rect(int i)
+static rect_t button_rect(const app_t *app, int i)
 {
-    static const int x[BUTTONS] = { LEFT_X, LEFT_X + 126, LEFT_X + 232,
-                                    RIGHT_X, RIGHT_X + 146, RIGHT_X + 262, RIGHT_X + 342 };
+    static const int offset[BUTTONS] = { 0, 126, 232, 0, 146, 262, 342 };
     static const int w[BUTTONS] = { 120, 100, 76, 140, 110, 74, 90 };
-    return rect_make(x[i], BUTTON_Y, w[i], BUTTON_H);
+    return rect_make((i < B_DOWNLOAD ? LEFT_X : RIGHT_X) + offset[i], BUTTON_Y, w[i],
+                     BUTTON_H);
 }
 
-static rect_t yes_rect(void)
+static rect_t yes_rect(const app_t *app)
 {
     return rect_make(WIDTH - MARGIN - 110 - 6 - 110, STATUS_Y, 110, BUTTON_H);
 }
 
-static rect_t no_rect(void)
+static rect_t no_rect(const app_t *app)
 {
     return rect_make(WIDTH - MARGIN - 110, STATUS_Y, 110, BUTTON_H);
 }
@@ -452,8 +456,8 @@ static void format_size(uint64_t bytes, char *out, size_t size)
         ksnprintf(out, size, "%llu MB", bytes / (1024 * 1024));
 }
 
-static void draw_row(surface_t *s, int x, int row, const char *name, const char *detail,
-                     bool selected, bool focused, color_t color)
+static void draw_row(const app_t *app, surface_t *s, int x, int row, const char *name,
+                     const char *detail, bool selected, bool focused, color_t color)
 {
     char shown[200];
     int y = LIST_Y + row * ROW_H;
@@ -464,7 +468,8 @@ static void draw_row(surface_t *s, int x, int row, const char *name, const char 
     gfx_text(s, x + PANE_W - 6 - gfx_text_width(detail), y + 1, detail, C_MUTED, false);
 }
 
-static void draw_pane(surface_t *s, int x, const char *title, bool focused)
+static void draw_pane(const app_t *app, surface_t *s, int x, const char *title,
+                      bool focused)
 {
     char shown[200];
     fit(title, COLUMNS, shown, sizeof(shown));
@@ -517,14 +522,14 @@ static void draw(app_t *app)
     ui_button(s, connect_rect(), app->connected ? "Trennen" : "Verbinden", !app->connected);
 
     /* Links: eigene Dateien */
-    draw_pane(s, LEFT_X, storage_available() ? "Eigene Dateien (USB-Stick)"
+    draw_pane(app, s, LEFT_X, storage_available() ? "Eigene Dateien (USB-Stick)"
                                              : "Eigene Dateien (nur Arbeitsspeicher!)",
               app->focus == FOCUS_LOCAL);
-    clamp(app->local_count, &app->local_selected, &app->local_top);
+    clamp(app, app->local_count, &app->local_selected, &app->local_top);
     for (int row = 0; row < ROWS && app->local_top + row < app->local_count; row++) {
         const local_t *f = &app->local[app->local_top + row];
         format_size(f->size, detail, sizeof(detail));
-        draw_row(s, LEFT_X, row, f->name, detail,
+        draw_row(app, s, LEFT_X, row, f->name, detail,
                  app->local_top + row == app->local_selected,
                  app->focus == FOCUS_LOCAL, f->saved ? C_TEXT : C_ERROR);
     }
@@ -534,23 +539,23 @@ static void draw(app_t *app)
         ksnprintf(text, sizeof(text), "Server: %s", app->cwd);
     else
         strlcpy(text, "Server (nicht verbunden)", sizeof(text));
-    draw_pane(s, RIGHT_X, text, app->focus == FOCUS_REMOTE);
+    draw_pane(app, s, RIGHT_X, text, app->focus == FOCUS_REMOTE);
     if (app->connected) {
         int rows = remote_rows(app);
-        clamp(rows, &app->remote_selected, &app->remote_top);
+        clamp(app, rows, &app->remote_selected, &app->remote_top);
         for (int row = 0; row < ROWS && app->remote_top + row < rows; row++) {
             int index = app->remote_top + row;
             const sftp_entry_t *e = remote_entry(app, index);
             bool selected = index == app->remote_selected;
             if (!e) {
-                draw_row(s, RIGHT_X, row, "..", "eine Ebene höher", selected,
+                draw_row(app, s, RIGHT_X, row, "..", "eine Ebene höher", selected,
                          app->focus == FOCUS_REMOTE, C_FOLDER);
             } else if (e->directory) {
-                draw_row(s, RIGHT_X, row, e->name, "Ordner", selected,
+                draw_row(app, s, RIGHT_X, row, e->name, "Ordner", selected,
                          app->focus == FOCUS_REMOTE, C_FOLDER);
             } else {
                 format_size(e->size, detail, sizeof(detail));
-                draw_row(s, RIGHT_X, row, e->name, detail, selected,
+                draw_row(app, s, RIGHT_X, row, e->name, detail, selected,
                          app->focus == FOCUS_REMOTE, C_TEXT);
             }
         }
@@ -564,7 +569,7 @@ static void draw(app_t *app)
     }
 
     for (int i = 0; i < BUTTONS; i++)
-        ui_button(s, button_rect(i), button_label[i], false);
+        ui_button(s, button_rect(app, i), button_label[i], false);
 
     /* Unten: Rückfrage oder Statuszeile */
     gfx_fill(s, 0, STATUS_Y - 6, WIDTH, HEIGHT - STATUS_Y + 6, C_BAR);
@@ -577,14 +582,15 @@ static void draw(app_t *app)
     } else if (app->prompt != PROMPT_NONE) {
         gfx_text(s, MARGIN, STATUS_Y - 2, app->prompt_line[0], C_TEXT, true);
         gfx_text(s, MARGIN, STATUS_Y + 16, app->prompt_line[1], C_TEXT, false);
-        ui_button(s, yes_rect(), app->prompt_yes, true);
-        ui_button(s, no_rect(), "Abbrechen", false);
+        ui_button(s, yes_rect(app), app->prompt_yes, true);
+        ui_button(s, no_rect(app), "Abbrechen", false);
     } else if (app->busy && app->progress_total > 0) {
         int percent = (int)(app->progress_done * 100 / app->progress_total);
         ksnprintf(text, sizeof(text), "%s: %d %%", app->job_name, percent);
         gfx_text(s, MARGIN, STATUS_Y + 6, text, C_TEXT, false);
-        gfx_frame(s, 400, STATUS_Y + 8, 488, 12, C_BORDER);
-        gfx_fill(s, 401, STATUS_Y + 9, 486 * percent / 100, 10, C_FOCUS);
+        int bar = WIDTH - 400 - MARGIN;
+        gfx_frame(s, 400, STATUS_Y + 8, bar, 12, C_BORDER);
+        gfx_fill(s, 401, STATUS_Y + 9, (bar - 2) * percent / 100, 10, C_FOCUS);
     } else if (app->busy) {
         ksnprintf(text, sizeof(text), "%s  (%llu s)",
                   app->status[0] ? app->status : "Einen Moment ...",
@@ -869,8 +875,8 @@ static void key_pressed(app_t *app, int key, int mods)
 static void mouse_pressed(app_t *app, int x, int y)
 {
     if (app->prompt == PROMPT_TRUST || app->prompt == PROMPT_CONFIRM) {
-        bool yes = rect_contains(yes_rect(), x, y);
-        bool no = rect_contains(no_rect(), x, y);
+        bool yes = rect_contains(yes_rect(app), x, y);
+        bool no = rect_contains(no_rect(app), x, y);
         if (app->prompt == PROMPT_TRUST && (yes || no))
             app->trust_answer = yes ? 1 : 2;
         else if (yes)
@@ -893,7 +899,7 @@ static void mouse_pressed(app_t *app, int x, int y)
         }
     }
     for (int i = 0; i < BUTTONS; i++) {
-        if (rect_contains(button_rect(i), x, y)) {
+        if (rect_contains(button_rect(app, i), x, y)) {
             button_pressed(app, i);
             return;
         }
@@ -963,6 +969,8 @@ void transfer_app(void *arg)
     (void)arg;
     app_t *app = kzalloc(sizeof(*app));
     if (app) {
+        app->width = START_WIDTH;
+        app->height = START_HEIGHT;
         app->local = kmalloc(FS_MAX_FILES * sizeof(local_t));
         app->window = app->local ? window_create("Dateien übertragen", WIDTH, HEIGHT) : NULL;
     }
@@ -972,6 +980,8 @@ void transfer_app(void *arg)
         kfree(app);
         return;
     }
+    /* Kleiner als zu Beginn passt die Kopfzeile nicht mehr hinein. */
+    window_set_resizable(app->window, START_WIDTH, 300);
     load_settings(app);
 
     for (;;) {
@@ -984,6 +994,10 @@ void transfer_app(void *arg)
             continue;                   /* regelmäßig neu zeichnen: Fortschritt, neue Dateien */
         if (ev.type == EV_CLOSE)
             break;
+        if (ev.type == EV_RESIZE && window_resize(app->window, ev.x, ev.y)) {
+            app->width = ev.x;
+            app->height = ev.y;
+        }
         if (ev.type == EV_KEY)
             key_pressed(app, ev.key, ev.mods);
         else if (ev.type == EV_MOUSE_DOWN)

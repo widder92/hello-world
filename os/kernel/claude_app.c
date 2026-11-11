@@ -17,8 +17,10 @@
 #include "task.h"
 #include "time.h"
 
-#define WIDTH        664
-#define HEIGHT       484
+#define WIDTH        (app->width)       /* Größe des Fensters - veränderbar */
+#define HEIGHT       (app->height)
+#define START_WIDTH  664
+#define START_HEIGHT 484
 #define MARGIN       12
 #define LINE_H       (FONT_H + 2)
 #define INPUT_Y      (HEIGHT - 60)
@@ -47,6 +49,7 @@ typedef struct entry {
 
 typedef struct {
     window_t *window;
+    int width, height;
     claude_chat_t *chat;
     entry_t *first, *last;              /* Verlauf; wächst nur am Ende */
 
@@ -151,7 +154,7 @@ static int layout(app_t *app, surface_t *s, int first)
             line++;
         }
         const char *text = e->text;
-        char buffer[COLUMNS * 2 + 4];
+        char buffer[640];
         while (gfx_wrap_line(&text, COLUMNS, buffer, sizeof(buffer))) {
             if (s && line >= first && line < first + VISIBLE)
                 gfx_text(s, MARGIN, 8 + (line - first) * LINE_H, buffer, color,
@@ -163,12 +166,12 @@ static int layout(app_t *app, surface_t *s, int first)
     return line;
 }
 
-static rect_t allow_rect(void)
+static rect_t allow_rect(const app_t *app)
 {
     return rect_make(WIDTH - MARGIN - 220, INPUT_Y, 104, INPUT_H);
 }
 
-static rect_t deny_rect(void)
+static rect_t deny_rect(const app_t *app)
 {
     return rect_make(WIDTH - MARGIN - 108, INPUT_Y, 108, INPUT_H);
 }
@@ -190,8 +193,8 @@ static void draw(app_t *app)
         /* Rückfrage: Claude möchte etwas ausführen, das den Rechner verändert */
         gfx_text(s, MARGIN, INPUT_Y + (INPUT_H - FONT_H) / 2,
                  "Diesen Befehl ausführen lassen?  (J / N)", C_TEXT, true);
-        ui_button(s, allow_rect(), "Erlauben", true);
-        ui_button(s, deny_rect(), "Ablehnen", false);
+        ui_button(s, allow_rect(app), "Erlauben", true);
+        ui_button(s, deny_rect(app), "Ablehnen", false);
     } else {
         gfx_fill(s, MARGIN, INPUT_Y, WIDTH - 2 * MARGIN, INPUT_H, C_FIELD);
         gfx_frame(s, MARGIN, INPUT_Y, WIDTH - 2 * MARGIN, INPUT_H, C_BORDER);
@@ -322,7 +325,11 @@ void claude_app(void *arg)
     app_t *app = kzalloc(sizeof(*app));
     if (!app)
         return;
+    app->width = START_WIDTH;
+    app->height = START_HEIGHT;
     app->window = window_create("Claude", WIDTH, HEIGHT);
+    if (app->window)
+        window_set_resizable(app->window, 420, 260);
     app->chat = claude_chat_new();
     if (!app->window || !app->chat) {
         if (app->window)
@@ -358,12 +365,17 @@ void claude_app(void *arg)
         }
         if (ev.type == EV_CLOSE)
             break;
+        if (ev.type == EV_RESIZE && window_resize(app->window, ev.x, ev.y)) {
+            app->width = ev.x;
+            app->height = ev.y;
+            app->dirty = true;
+        }
         if (ev.type == EV_KEY) {
             key_pressed(app, ev.key);
         } else if (ev.type == EV_MOUSE_UP && app->confirm_pending) {
-            if (rect_contains(allow_rect(), ev.x, ev.y))
+            if (rect_contains(allow_rect(app), ev.x, ev.y))
                 app->confirm_answer = 1;
-            else if (rect_contains(deny_rect(), ev.x, ev.y))
+            else if (rect_contains(deny_rect(app), ev.x, ev.y))
                 app->confirm_answer = 2;
         }
     }

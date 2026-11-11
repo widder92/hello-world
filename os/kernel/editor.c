@@ -185,10 +185,13 @@ static void draw(editor_t *e)
     surface_t *s = window_surface(e->window);
     char status[200];
 
-    if (e->mode == MODE_OPEN)
+    if (e->mode == MODE_OPEN) {
         draw_open(e, s);
-    else
+    } else {
+        /* Das Textfeld füllt das Fenster nur auf ganze Zeichen genau. */
+        gfx_fill(s, 0, 0, WIDTH, TEXT_H, C_BACKGROUND);
         textedit_draw(&e->edit, s, 0, 0, true);
+    }
 
     gfx_fill(s, 0, TEXT_H, WIDTH, STATUS_H, C_STATUS);
     if (e->mode == MODE_UNSAVED) {
@@ -300,6 +303,8 @@ void editor_app(void *arg)
         e->text_height = textedit_height(&e->edit);
         e->window = window_create("Editor", WIDTH, HEIGHT);
     }
+    if (e && e->window)
+        window_set_resizable(e->window, 46 * FONT_W, 10 * LINE_H + STATUS_H);
     if (!e || !e->window) {
         kfree(e);
         kfree(name);
@@ -320,7 +325,16 @@ void editor_app(void *arg)
 
         event_t ev;
         window_get_event(e->window, &ev, 0);
-        if (ev.type == EV_CLOSE) {
+        if (ev.type == EV_RESIZE) {
+            /* So viele Spalten und Zeilen, wie in die neue Fläche passen */
+            int fixed = textedit_width(&e->edit, true) - e->edit.columns * FONT_W;
+            if (window_resize(e->window, ev.x, ev.y)) {
+                e->width = ev.x;
+                e->text_height = ev.y - STATUS_H;
+                textedit_resize(&e->edit, (ev.x - fixed) / FONT_W,
+                                (e->text_height - 8) / LINE_H);
+            }
+        } else if (ev.type == EV_CLOSE) {
             if (e->edit.modified && e->mode != MODE_UNSAVED) {
                 e->mode = MODE_UNSAVED;
             } else {

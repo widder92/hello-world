@@ -14,6 +14,8 @@
 
 #define MAX_WINDOWS   16
 #define MAX_DIRTY     16
+#define RETIRED_MAX   4
+#define GRIP          16                /* Griff zum Ziehen in der rechten unteren Ecke */
 #define EVENT_QUEUE   64
 #define RAW_QUEUE     256
 
@@ -52,6 +54,14 @@ struct window {
     bool auto_release;                  /* Referenz des Erzeugers verfällt,
                                            wenn dessen Task endet */
 
+    bool resizable;
+    int min_width, min_height;
+    surface_t *retired[RETIRED_MAX];    /* abgelöste Flächen; gibt der Compositor frei */
+    bool maximized;
+    rect_t restore;                     /* Lage und Inhaltsgröße vor dem Maximieren */
+    bool move_pending;                  /* neue Lage, die mit der neuen Größe gilt */
+    int pending_x, pending_y;
+
     event_t events[EVENT_QUEUE];
     unsigned ev_head, ev_tail;
     uint32_t waiter;                    /* Task, der auf Ereignisse wartet */
@@ -83,6 +93,9 @@ static int mouse_x, mouse_y, mouse_buttons;
 static window_t *drag_win;              /* Fenster wird gerade verschoben */
 static int drag_dx, drag_dy;
 static window_t *capture_win;           /* Fenster, in dem die Maus gedrückt wurde */
+static window_t *resize_win;            /* Fenster, dessen Größe gerade gezogen wird */
+static int resize_w, resize_h;          /* gewünschte Inhaltsgröße */
+static int resize_dx, resize_dy;
 static char clock_text[32];
 
 /* --- Mauszeiger ----------------------------------------------------------------- */
@@ -199,6 +212,92 @@ static rect_t close_rect(const window_t *w)
     return rect_make(f.x + f.w - BORDER - 23, f.y + BORDER + 4, 18, 18);
 }
 
+/* Knopf zum Maximieren - nur bei Fenstern mit veränderbarer Größe */
+static rect_t maximize_rect(const window_t *w)
+{
+    rect_t c = close_rect(w);
+    return rect_make(c.x - 22, c.y, 18, 18);
+}
+
+static rect_t grip_rect(const window_t *w)
+{
+    rect_t f = frame_rect(w);
+    return rect_make(f.x + f.w - GRIP, f.y + f.h - GRIP, GRIP, GRIP);
+}
+
+/* Der Rahmen, der beim Ziehen die künftige Größe anzeigt */
+static rect_t outline_rect(void)
+{
+    return rect_make(resize_win->x, resize_win->y, resize_w + 2 * BORDER,
+                     resize_h + TITLE_H + 2 * BORDER);
+}
+
+/* Meldet nur die vier Kanten eines Rechtecks als geändert. */
+static void add_dirty_outline(rect_t r)
+{
+    add_dirty(rect_make(r.x, r.y, r.w, 3));
+    add_dirty(rect_make(r.x, r.y + r.h - 3, r.w, 3));
+    add_dirty(rect_make(r.x, r.y, 3, r.h));
+    add_dirty(rect_make(r.x + r.w - 3, r.y, 3, r.h));
+}
+
+void window_set_resizable(window_t *win, int min_width, int min_height)
+{
+    win->min_width = min_width;
+    win->min_height = min_height;
+    win->resizable = true;
+    add_dirty(damage_rect(win));
+}
+
+surface_t *window_resize(window_t *win, int width, int height)
+{
+    if (width < 1 || height < 1 || width > screen.width || height > screen.height)
+        return NULL;
+    surface_t *fresh = surface_create(width, height);
+    if (!fresh)
+        return NULL;
+
+    uint64_t flags = irq_save();
+    int slot = 0;
+    while (slot < RETIRED_MAX && win->retired[slot])
+        slot++;
+    if (slot == RETIRED_MAX || win->close_requested) {
+        irq_restore(flags);
+        surface_free(fresh);
+        return NULL;
+    }
+    rect_t before = damage_rect(win);
+    /* Die alte Fläche kann gerade auf den Bildschirm kopiert werden - freigeben
+     * darf sie deshalb nur der Compositor selbst, wenn er damit fertig ist. */
+    win->retired[slot] = win->surface;
+    win->surface = fresh;
+    if (win->move_pending) {
+        win->x = win->pending_x;
+        win->y = win->pending_y;
+        win->move_pending = false;
+    }
+    rect_t after = damage_rect(win);
+    irq_restore(flags);
+
+    add_dirty(before);
+    add_dirty(after);
+    return fresh;
+}
+
+static void free_retired(void)
+{
+    for (int i = 0; i < window_count; i++) {
+        window_t *w = zorder[i];
+        for (int slot = 0; slot < RETIRED_MAX; slot++) {
+            uint64_t flags = irq_save();
+            surface_t *old = w->retired[slot];
+            w->retired[slot] = NULL;
+            irq_restore(flags);
+            surface_free(old);
+        }
+    }
+}
+
 window_t *window_create(const char *title, int width, int height)
 {
     if (!running)
@@ -262,6 +361,8 @@ void window_unref(window_t *win)
     bool last = --win->refs == 0;
     irq_restore(flags);
     if (last) {
+        for (int slot = 0; slot < RETIRED_MAX; slot++)
+            surface_free(win->retired[slot]);
         surface_free(win->surface);
         kfree(win);
     }
@@ -639,6 +740,21 @@ static void draw_window(const window_t *w, bool active)
 
     rect_t content = client_rect(w);
     gfx_blit(&back, content.x, content.y, w->surface);
+
+    if (w->resizable) {
+        rect_t m = maximize_rect(w);
+        gfx_fill(&back, m.x, m.y, m.w, m.h, active ? C_TITLE_BOTTOM : C_CLOSE_OFF);
+        gfx_frame(&back, m.x + 4, m.y + 4, m.w - 8, m.h - 8, RGB(255, 255, 255));
+        gfx_fill(&back, m.x + 4, m.y + 4, m.w - 8, 2, RGB(255, 255, 255));
+        if (w->maximized)               /* zweites Rechteck: "wiederherstellen" */
+            gfx_frame(&back, m.x + 7, m.y + 2, m.w - 9, m.h - 9, RGB(255, 255, 255));
+
+        /* Griff: drei schräge Striche in der Ecke */
+        rect_t g = grip_rect(w);
+        for (int i = 0; i < 3; i++)
+            gfx_line(&back, g.x + g.w - 3, g.y + 4 + i * 4, g.x + 4 + i * 4,
+                     g.y + g.h - 3, 1, RGB(120, 126, 138));
+    }
 }
 
 /* Kopiert einen fertigen Bereich in den Bildspeicher. */
@@ -672,6 +788,12 @@ static void compose(rect_t area)
         draw_window(list[i], i == n - 1);
     draw_taskbar();
     draw_start_menu();
+    if (resize_win) {                   /* künftige Größe als Rahmen */
+        rect_t o = outline_rect();
+        gfx_frame(&back, o.x, o.y, o.w, o.h, RGB(255, 255, 255));
+        gfx_frame(&back, o.x + 1, o.y + 1, o.w - 2, o.h - 2, RGB(40, 82, 160));
+        gfx_frame(&back, o.x + 2, o.y + 2, o.w - 4, o.h - 4, RGB(255, 255, 255));
+    }
     draw_cursor();
     present(back.clip);
 }
@@ -718,6 +840,10 @@ static void remove_window(window_t *w)
         drag_win = NULL;
     if (capture_win == w)
         capture_win = NULL;
+    if (resize_win == w) {
+        add_dirty_outline(outline_rect());
+        resize_win = NULL;
+    }
 
     add_dirty(area);
     add_dirty(taskbar_rect());
@@ -786,6 +912,28 @@ static void taskbar_click(void)
     }
 }
 
+/* Bittet die Anwendung um eine neue Größe (und gegebenenfalls Lage). */
+static void request_size(window_t *w, int x, int y, int width, int height)
+{
+    event_t ev = { .type = EV_RESIZE, .x = width, .y = height };
+    w->pending_x = x;
+    w->pending_y = y;
+    w->move_pending = true;
+    post_event(w, &ev);
+}
+
+static void toggle_maximize(window_t *w)
+{
+    if (!w->maximized) {
+        w->restore = rect_make(w->x, w->y, w->surface->width, w->surface->height);
+        request_size(w, 0, 0, screen.width - 2 * BORDER,
+                     screen.height - TASKBAR_H - TITLE_H - 2 * BORDER);
+    } else {
+        request_size(w, w->restore.x, w->restore.y, w->restore.w, w->restore.h);
+    }
+    w->maximized = !w->maximized;
+}
+
 static void mouse_pressed(void)
 {
     if (menu_open) {
@@ -812,6 +960,15 @@ static void mouse_pressed(void)
     if (rect_contains(close_rect(w), mouse_x, mouse_y)) {
         event_t ev = { .type = EV_CLOSE };
         post_event(w, &ev);
+    } else if (w->resizable && rect_contains(maximize_rect(w), mouse_x, mouse_y)) {
+        toggle_maximize(w);
+    } else if (w->resizable && rect_contains(grip_rect(w), mouse_x, mouse_y)) {
+        resize_win = w;                 /* Ecke: Größe ziehen */
+        resize_w = w->surface->width;
+        resize_h = w->surface->height;
+        resize_dx = w->x + resize_w - mouse_x;
+        resize_dy = w->y + resize_h - mouse_y;
+        add_dirty_outline(outline_rect());
     } else if (rect_contains(client_rect(w), mouse_x, mouse_y)) {
         capture_win = w;
         send_mouse(w, EV_MOUSE_DOWN);
@@ -846,7 +1003,23 @@ static void handle_mouse(int dx, int dy, int buttons)
             menu_select(menu_row_at(mouse_x, mouse_y));
     }
 
-    if (drag_win && (dx || dy)) {
+    if (resize_win && (dx || dy)) {
+        window_t *w = resize_win;
+        int max_w = screen.width - w->x - 2 * BORDER;
+        int max_h = screen.height - TASKBAR_H - w->y - TITLE_H - 2 * BORDER;
+        add_dirty_outline(outline_rect());
+        resize_w = mouse_x + resize_dx - w->x;
+        resize_h = mouse_y + resize_dy - w->y;
+        if (resize_w > max_w)
+            resize_w = max_w;
+        if (resize_h > max_h)
+            resize_h = max_h;
+        if (resize_w < w->min_width)
+            resize_w = w->min_width;
+        if (resize_h < w->min_height)
+            resize_h = w->min_height;
+        add_dirty_outline(outline_rect());
+    } else if (drag_win && (dx || dy)) {
         window_t *w = drag_win;
         rect_t before = damage_rect(w);
         int max_y = screen.height - TASKBAR_H - TITLE_H;
@@ -871,6 +1044,15 @@ static void handle_mouse(int dx, int dy, int buttons)
             send_mouse(capture_win, EV_MOUSE_UP);
         capture_win = NULL;
         drag_win = NULL;
+        if (resize_win) {               /* losgelassen: die Anwendung um die Größe bitten */
+            window_t *w = resize_win;
+            add_dirty_outline(outline_rect());
+            resize_win = NULL;
+            if (resize_w != w->surface->width || resize_h != w->surface->height) {
+                w->maximized = false;
+                request_size(w, w->x, w->y, resize_w, resize_h);
+            }
+        }
     }
 }
 
@@ -911,6 +1093,11 @@ static void handle_key(int key, int mods)
             event_t ev = { .type = EV_CLOSE };
             post_event(focused, &ev);
         }
+        return;
+    }
+    if ((mods & MOD_ALT) && key == KEY_F1 + 9) {        /* Alt+F10: maximieren und zurück */
+        if (focused && focused->resizable)
+            toggle_maximize(focused);
         return;
     }
     if (!mods && key >= KEY_F1 && key < KEY_F1 + LAUNCHER_COUNT) {
@@ -964,6 +1151,7 @@ static void gui_task(void *arg)
                 handle_mouse(ev.a, ev.b, ev.c);
         }
         collect_closed_windows();
+        free_retired();
         update_clock();
 
         /* Geänderte Bereiche übernehmen und neu zeichnen */

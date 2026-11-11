@@ -23,6 +23,8 @@ typedef struct {
 
 void textedit_init(textedit_t *t, int columns, int rows);
 void textedit_free(textedit_t *t);
+/* Neue Größe des sichtbaren Ausschnitts; die Schreibmarke bleibt im Blick. */
+void textedit_resize(textedit_t *t, int columns, int rows);
 
 /* Übernimmt einen Puffer (kmalloc, capacity Bytes) als neuen Inhalt. */
 void textedit_adopt(textedit_t *t, char *text, size_t len, size_t capacity);

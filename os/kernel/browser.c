@@ -22,19 +22,22 @@
 #include "time.h"
 #include "url.h"
 
-#define WIDTH        960
-#define HEIGHT       620
+/* Das Fenster lässt sich in der Größe ändern - fast alle Maße hängen daran. */
+#define WIDTH        (b->width)
+#define HEIGHT       (b->height)
+#define START_WIDTH  960
+#define START_HEIGHT 620
 #define TOOLBAR_H    42
 #define CONTENT_X    10
 #define CONTENT_Y    (TOOLBAR_H + 4)
 #define ROW_H        18
-#define ROWS         30
+#define STATUS_H     26
+#define STATUS_Y     (HEIGHT - STATUS_H)
+#define ROWS         ((STATUS_Y - CONTENT_Y - 4) / ROW_H)
 #define CONTENT_H    (ROWS * ROW_H)
 #define SCROLL_W     10
 #define SCROLL_X     (WIDTH - SCROLL_W - 4)
 #define COLUMNS      ((SCROLL_X - CONTENT_X - 6) / FONT_W)
-#define STATUS_Y     (CONTENT_Y + CONTENT_H + 4)
-#define STATUS_H     (HEIGHT - STATUS_Y)
 #define HISTORY_MAX  40
 #define PAGE_MAX     (8u * 1024 * 1024)
 #define REDIRECTS    10
@@ -66,10 +69,15 @@ typedef enum { OVERLAY_NONE, OVERLAY_PICKER, OVERLAY_TEXT } overlay_t;
 
 typedef struct {
     window_t *window;
+    int width, height;
     bool closing;
 
     char url[URL_SIZE];                 /* Adresse der gezeigten Seite */
     page_t *page;
+    char *source;                       /* ihr Quelltext - zum Neu-Umbrechen bei anderer Breite */
+    size_t source_len;
+    bool source_html;
+    int page_columns;                   /* für diese Breite ist die Seite gesetzt */
     int scroll;
     int focus;                          /* Formularfeld mit der Schreibmarke oder -1 */
     char *history[HISTORY_MAX];         /* besuchte Adressen; die oberste ist die aktuelle */
@@ -87,6 +95,10 @@ typedef struct {
     bool job_remember;                  /* nach Erfolg in den Verlauf */
     page_t *incoming;
     char incoming_url[URL_SIZE];
+    char *incoming_source;
+    size_t incoming_len;
+    bool incoming_html;
+    int incoming_columns;
     bool incoming_ready;
     cookie_t *cookies;                  /* gehören dem Helfer */
 
@@ -367,11 +379,17 @@ static bool mentions(const char *text, size_t len, const char *word)
     return false;
 }
 
-/* Übergibt eine fertige Seite an den Fenster-Task. */
-static void deliver(browser_t *b, page_t *page, const char *url)
+/* Übergibt eine fertige Seite samt Quelltext (kmalloc) an den Fenster-Task. */
+static void deliver(browser_t *b, page_t *page, const char *url, char *source,
+                    size_t len, bool html, int columns)
 {
     while (b->incoming_ready && !b->closing)
         task_sleep(20);
+    kfree(b->incoming_source);
+    b->incoming_source = source;
+    b->incoming_len = len;
+    b->incoming_html = html;
+    b->incoming_columns = columns;
     b->incoming = page;
     strlcpy(b->incoming_url, url, sizeof(b->incoming_url));
     b->incoming_ready = true;
@@ -421,9 +439,16 @@ static void worker(void *arg)
     strlcpy(url, b->job_url, URL_SIZE);
 
     if (strcmp(url, START_PAGE) == 0) {
-        page_t *page = html_layout(start_page, sizeof(start_page) - 1, START_PAGE, COLUMNS);
-        if (page)
-            deliver(b, page, url);
+        int columns = COLUMNS;
+        size_t len = sizeof(start_page) - 1;
+        char *copy = kmalloc(len + 1);
+        page_t *page = copy ? html_layout(start_page, len, START_PAGE, columns) : NULL;
+        if (page) {
+            memcpy(copy, start_page, len + 1);
+            deliver(b, page, url, copy, len, true, columns);
+        } else {
+            kfree(copy);
+        }
         set_status(b, false, "");
         goto done;
     }
@@ -511,10 +536,11 @@ static void worker(void *arg)
                 content = converted;
             }
         }
-        page_t *page = html ? html_layout(content, length, url, COLUMNS)
-                            : html_plain_text(content, length, COLUMNS);
-        kfree(content);
+        int columns = COLUMNS;
+        page_t *page = html ? html_layout(content, length, url, columns)
+                            : html_plain_text(content, length, columns);
         if (!page) {
+            kfree(content);
             set_status(b, true, "Nicht genug Speicher für diese Seite");
             break;
         }
@@ -524,7 +550,7 @@ static void worker(void *arg)
             set_status(b, true, "Die Seite ist zu groß - sie wird unvollständig gezeigt");
         else
             set_status(b, false, "");
-        deliver(b, page, url);
+        deliver(b, page, url, content, length, html, columns);
         break;
     }
 
@@ -566,13 +592,59 @@ static void set_address(browser_t *b, const char *text)
     b->address_len = strlen(b->address);
 }
 
+static void clamp_scroll(browser_t *b);
+
+/*
+ * Setzt die gezeigte Seite für die jetzige Fensterbreite neu. Was der Benutzer
+ * in Formularfelder eingetragen hat, wandert in die neue Fassung mit.
+ */
+static void relayout(browser_t *b)
+{
+    page_t *old = b->page;
+    if (!old || !b->source || b->page_columns == COLUMNS)
+        return;
+    page_t *fresh = b->source_html ? html_layout(b->source, b->source_len, b->url, COLUMNS)
+                                   : html_plain_text(b->source, b->source_len, COLUMNS);
+    if (!fresh)
+        return;
+
+    /* Derselbe Quelltext ergibt dieselben Felder in derselben Reihenfolge. */
+    bool same = fresh->widget_count == old->widget_count;
+    for (int i = 0; same && i < old->widget_count; i++) {
+        const widget_t *from = &old->widgets[i];
+        widget_t *to = &fresh->widgets[i];
+        if (from->kind != to->kind)
+            continue;
+        if (from->value)
+            widget_set_value(to, from->value, strlen(from->value));
+        to->checked = from->checked;
+        if (from->option_count == to->option_count)
+            to->selected = from->selected;
+    }
+    if (!same) {
+        b->focus = -1;
+        b->overlay = OVERLAY_NONE;
+    }
+    b->scroll = old->line_count > 0 ? b->scroll * fresh->line_count / old->line_count : 0;
+    b->page = fresh;
+    b->page_columns = COLUMNS;
+    page_free(old);
+    clamp_scroll(b);
+}
+
 /* Übernimmt eine fertig geladene Seite. */
 static void take_incoming(browser_t *b)
 {
     if (!b->incoming_ready)
         return;
     page_free(b->page);
+    kfree(b->source);
     b->page = b->incoming;
+    b->source = b->incoming_source;
+    b->source_len = b->incoming_len;
+    b->source_html = b->incoming_html;
+    b->page_columns = b->incoming_columns;
+    b->incoming_source = NULL;
     b->incoming = NULL;
     strlcpy(b->url, b->incoming_url, sizeof(b->url));
     b->incoming_ready = false;
@@ -586,6 +658,7 @@ static void take_incoming(browser_t *b)
     b->scroll = heading > ROWS / 2 ? heading - 1 : 0;
     if (b->scroll > 0 && !b->status[0])
         set_status(b, false, "Zum Seitenanfang mit Pos1 - dort stehen Menüs und Links");
+    relayout(b);                        /* falls das Fenster inzwischen breiter oder schmaler ist */
 
     if (b->job_remember &&
         (b->history_count == 0 || strcmp(b->history[b->history_count - 1], b->url) != 0)) {
@@ -748,7 +821,7 @@ static rect_t reload_rect(void)
     return rect_make(84, 8, 86, 26);
 }
 
-static rect_t address_rect(void)
+static rect_t address_rect(const browser_t *b)
 {
     return rect_make(178, 8, WIDTH - 178 - 8, 26);
 }
@@ -761,7 +834,7 @@ static rect_t picker_rect(const browser_t *b)
     return rect_make((WIDTH - width) / 2, CONTENT_Y + 30, width, rows * ROW_H + 8);
 }
 
-static rect_t done_rect(void)
+static rect_t done_rect(const browser_t *b)
 {
     return rect_make(WIDTH - 12 - 150, CONTENT_Y + 4, 150, 24);
 }
@@ -909,7 +982,7 @@ static void draw_overlay(browser_t *b, surface_t *s)
     } else if (b->overlay == OVERLAY_TEXT) {
         gfx_fill(s, 0, CONTENT_Y, WIDTH, CONTENT_H, C_TOOLBAR);
         gfx_text(s, 12, CONTENT_Y + 8, "Text des Formularfelds bearbeiten", C_TEXT, true);
-        ui_button(s, done_rect(), "Fertig (Esc)", true);
+        ui_button(s, done_rect(b), "Fertig (Esc)", true);
         textedit_draw(&b->edit, s, 8, CONTENT_Y + 34, false);
     }
 }
@@ -924,7 +997,7 @@ static void draw(browser_t *b)
     ui_button(s, back_rect(), "Zurück", false);
     ui_button(s, reload_rect(), "Neu laden", false);
 
-    rect_t a = address_rect();
+    rect_t a = address_rect(b);
     gfx_fill(s, a.x, a.y, a.w, a.h, C_FIELD);
     gfx_frame(s, a.x, a.y, a.w, a.h, b->address_focus ? C_FOCUS : C_BORDER);
     int columns = (a.w - 16) / FONT_W;
@@ -1256,7 +1329,7 @@ static void mouse_pressed(browser_t *b, int x, int y)
     if (b->ask_insecure)
         return;
     if (b->overlay == OVERLAY_TEXT) {
-        if (rect_contains(done_rect(), x, y))
+        if (rect_contains(done_rect(b), x, y))
             close_text_overlay(b);
         else if (y >= CONTENT_Y + 34 && y < CONTENT_Y + 34 + textedit_height(&b->edit))
             textedit_click(&b->edit, x - 8, y - (CONTENT_Y + 34));
@@ -1279,7 +1352,7 @@ static void mouse_pressed(browser_t *b, int x, int y)
     } else if (rect_contains(reload_rect(), x, y)) {
         if (b->url[0])
             load(b, b->url, NULL, false);
-    } else if (rect_contains(address_rect(), x, y)) {
+    } else if (rect_contains(address_rect(b), x, y)) {
         b->address_focus = true;
         b->focus = -1;
     } else if (page && x >= SCROLL_X - 2 && y >= CONTENT_Y && y < CONTENT_Y + CONTENT_H) {
@@ -1310,9 +1383,14 @@ void browser_app(void *arg)
     char *start = arg;                  /* Adresse (kmalloc) oder NULL */
     browser_t *b = kzalloc(sizeof(*b));
     if (b) {
-        textedit_init(&b->edit, (WIDTH - 16 - 12) / FONT_W, 27);
+        b->width = START_WIDTH;
+        b->height = START_HEIGHT;
+        textedit_init(&b->edit, (WIDTH - 16 - 12) / FONT_W,
+                      (CONTENT_H - 42) / TEXTEDIT_LINE_H);
         b->window = window_create("Browser", WIDTH, HEIGHT);
     }
+    if (b && b->window)
+        window_set_resizable(b->window, 480, 300);
     if (!b || !b->window) {
         kfree(b);
         kfree(start);
@@ -1345,6 +1423,14 @@ void browser_app(void *arg)
         redraw = true;
         if (ev.type == EV_CLOSE)
             break;
+        if (ev.type == EV_RESIZE && window_resize(b->window, ev.x, ev.y)) {
+            b->width = ev.x;
+            b->height = ev.y;
+            textedit_resize(&b->edit, (WIDTH - 16 - 12) / FONT_W,
+                            (CONTENT_H - 42) / TEXTEDIT_LINE_H);
+            relayout(b);
+            clamp_scroll(b);
+        }
         if (ev.type == EV_KEY) {
             key_pressed(b, ev.key, ev.mods);
         } else if (ev.type == EV_MOUSE_DOWN) {
@@ -1364,6 +1450,8 @@ void browser_app(void *arg)
         task_sleep(100);
     page_free(b->page);
     page_free(b->incoming);
+    kfree(b->source);
+    kfree(b->incoming_source);
     for (int i = 0; i < b->history_count; i++)
         kfree(b->history[i]);
     while (b->cookies) {

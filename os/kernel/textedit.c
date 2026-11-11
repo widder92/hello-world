@@ -155,6 +155,14 @@ static void scroll_to_cursor(textedit_t *t)
         t->left = column - t->columns + 8;
 }
 
+void textedit_resize(textedit_t *t, int columns, int rows)
+{
+    t->columns = columns < 8 ? 8 : columns;
+    t->rows = rows < 2 ? 2 : rows;
+    if (t->text)
+        scroll_to_cursor(t);
+}
+
 static void move_vertical(textedit_t *t, int lines)
 {
     size_t start = line_start(t, t->cursor);
