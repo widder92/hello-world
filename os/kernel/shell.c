@@ -386,7 +386,8 @@ static void cmd_start(shell_t *sh, char *args)
     if (!gui_available())
         kprintf("Es gibt keinen Bildschirm.\n");
     else if (!gui_launch(app))
-        kprintf("Aufruf: start terminal | monitor | malen | info | claude | editor | aus\n");
+        kprintf("Aufruf: start terminal | monitor | malen | info | claude | editor |\n"
+                "              transfer | aus\n");
 }
 
 static void cmd_edit(shell_t *sh, char *args)

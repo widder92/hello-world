@@ -357,6 +357,7 @@ static const struct {
     { "Info", "info" },
     { "Claude", "claude" },
     { "Editor", "editor" },
+    { "Transfer", "transfer" },
 };
 #define LAUNCHER_COUNT ((int)(sizeof(launchers) / sizeof(launchers[0])))
 
@@ -878,6 +879,7 @@ bool gui_launch_with(const char *app, const char *argument)
         { "update", "update", update_app },
         { "claude", "claude", claude_app },
         { "editor", "editor", editor_app },
+        { "transfer", "transfer", transfer_app },
     };
 
     if (!running)

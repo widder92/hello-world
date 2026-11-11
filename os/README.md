@@ -2,8 +2,9 @@
 
 Ein kleines, von Grund auf selbst geschriebenes Betriebssystem für PCs mit
 64-Bit-Prozessor (x86-64) und UEFI – mit grafischer Oberfläche, Netzwerk,
-signierten Updates und eingebautem Claude. Kein Linux, kein GRUB, keine fremde
-Bibliothek: rund 15 000 Zeilen C und etwas Assembler.
+Texteditor, verschlüsselter Dateiübertragung (SFTP), signierten Updates und
+eingebautem Claude. Kein Linux, kein GRUB, keine fremde Bibliothek: rund
+21 000 Zeilen C und etwas Assembler.
 
 ![HelloOS mit Terminal, Systemmonitor und Malprogramm](docs/screenshot.png)
 
@@ -15,8 +16,12 @@ Bibliothek: rund 15 000 Zeilen C und etwas Assembler.
   Speicherverwaltung und präemptivem Multitasking
 - **Grafische Oberfläche**: verschiebbare Fenster, Taskleiste, Mauszeiger,
   geglättete Schrift – gezeichnet direkt in den Bildspeicher der Grafikkarte
-- **Programme**: Terminal mit Shell (mehrere gleichzeitig), Systemmonitor,
-  Malprogramm, Info- und Ausschalten-Dialog
+- **Programme**: Terminal mit Shell (mehrere gleichzeitig), Texteditor,
+  Dateiübertragung, Systemmonitor, Malprogramm, Info- und Ausschalten-Dialog
+- **Eigene Dateien bleiben erhalten**: Sie werden auf dem USB-Stick gesichert,
+  von dem HelloOS startet, und sind dort auch unter Windows zu sehen
+- **Dateien mit einem Server austauschen** über SFTP – verschlüsselt, mit
+  Prüfung des Serverschlüssels; als Fenster mit zwei Spalten oder im Terminal
 - **Eingabegeräte**: USB-Tastaturen und -Mäuse (xHCI, auch An- und Abstecken
   im Betrieb) sowie PS/2, wie es viele Notebook-Tastaturen intern noch nutzen;
   deutsche und US-Tastaturbelegung
@@ -28,7 +33,7 @@ Bibliothek: rund 15 000 Zeilen C und etwas Assembler.
 - **Updates**: HelloOS sucht regelmäßig nach neuen Versionen, prüft deren
   Signatur, zeigt, was neu ist, und installiert sie nach deiner Zustimmung auf
   dem USB-Stick, von dem es gestartet wurde
-- **RAM-Dateisystem** und 31 Shell-Befehle
+- 33 Shell-Befehle
 - **Serielle Konsole** mit eigener Shell – praktisch für Tests ohne Bildschirm
 
 ![Netzwerk: eine Webseite über HTTPS im Terminal](docs/screenshot-netz.png)
@@ -100,7 +105,7 @@ Was dabei zu beachten ist:
 
 | Aktion | Maus | Tastatur |
 | --- | --- | --- |
-| Programm starten | Knöpfe links in der Taskleiste | F1 Terminal, F2 Monitor, F3 Malen, F4 Info, F5 Claude |
+| Programm starten | Knöpfe links in der Taskleiste | F1 Terminal, F2 Monitor, F3 Malen, F4 Info, F5 Claude, F6 Editor, F7 Transfer |
 | Fenster wechseln | Fenster oder dessen Knopf in der Taskleiste anklicken | Alt+Tab |
 | Fenster verschieben | an der Titelleiste ziehen | – |
 | Fenster schließen | ✕ in der Titelleiste | Alt+F4 |
@@ -118,17 +123,19 @@ Was dabei zu beachten ist:
 | `spawn counter [n]` | Hintergrund-Task, der im Sekundentakt bis *n* zählt |
 | `spawn burn` | Hintergrund-Task, der pausenlos rechnet (zeigt die Präemption) |
 | `kill <pid>` | Task beenden |
-| `start <programm>` | `terminal`, `monitor`, `malen`, `info`, `claude` oder `aus` öffnen |
+| `start <programm>` | `terminal`, `monitor`, `malen`, `info`, `claude`, `editor`, `transfer` oder `aus` öffnen |
 | `net` | Netzwerkkarte, Adressen, Paketzähler; `net dns <adresse>` setzt den DNS-Server |
 | `ping <ziel>` | prüft, ob ein Rechner antwortet |
 | `dns <name>` | löst einen Namen in eine IPv4-Adresse auf |
 | `web <adresse>` | holt eine Webseite und zeigt sie als Text |
-| `get <adresse> <datei>` | lädt eine Datei aus dem Netz ins RAM-Dateisystem |
+| `get <adresse> <datei>` | lädt eine Datei aus dem Netz zu den eigenen Dateien |
+| `sftp <benutzer>@<server>` | Dateien verschlüsselt mit einem Server austauschen (siehe [unten](#webseite-bearbeiten-editor-und-dateiübertragung)) |
 | `update` | sucht jetzt nach einem Update und fragt, ob es installiert werden soll |
 | `news` | zeigt, was in der laufenden Version neu ist |
 | `claude <frage>` | mit Claude sprechen (siehe [Claude](#claude)) |
 | `disk` | zeigt angeschlossene USB-Datenträger |
 | `ls`, `cat <datei>`, `rm <datei>` | Dateien auflisten, anzeigen, löschen |
+| `edit [datei]` | Datei im Texteditor öffnen (oder neu anlegen) |
 | `sha256 <datei>` | Prüfsumme einer Datei |
 | `write <datei> <text>` | Datei (über)schreiben |
 | `append <datei> <text>` | Zeile anhängen |
@@ -140,6 +147,116 @@ Was dabei zu beachten ist:
 
 Pfeil hoch/runter blättert im Verlauf, Strg+C verwirft die Eingabe,
 Strg+L leert das Terminal.
+
+## Eigene Dateien
+
+Was du in HelloOS anlegst – mit `write`, dem Editor, `get` oder per
+Dateiübertragung –, liegt im Arbeitsspeicher und wird bei jeder Änderung
+sofort auf dem USB-Stick gesichert, von dem HelloOS gestartet wurde. Beim
+nächsten Start ist alles wieder da.
+
+- Auf dem Stick liegen die Dateien im Ordner **`DATEIEN`**. Steckst du den
+  Stick an einen Windows-PC, kannst du sie dort ganz normal öffnen, kopieren
+  und neue dazulegen – HelloOS lädt sie beim nächsten Start mit.
+- `ls` zeigt hinter jeder Datei, ob sie gesichert ist. Steckt kein Stick
+  (etwa in QEMU ohne USB-Laufwerk), arbeitet HelloOS nur im Arbeitsspeicher
+  und sagt das auch.
+- Geschrieben wird immer erst die neue Fassung vollständig und dann
+  umgeschaltet. Ein Stromausfall hinterlässt also die alte oder die neue
+  Datei, keine halbe (eine gerade erst angelegte kann dabei leer bleiben).
+
+Grenzen: eine flache Liste ohne Unterordner, höchstens 256 Dateien von je bis
+zu 32 MB; Namen bis 63 Zeichen ohne Leerzeichen und ohne `/ \ : * ? " < > |`.
+Groß- und Kleinschreibung unterscheidet HelloOS bei Namen nicht (wie Windows).
+In QEMU ist „der Stick" die Datei `build/helloos.img` – ein neuer Build ersetzt
+sie und damit auch die darin gespeicherten Dateien.
+
+## Webseite bearbeiten: Editor und Dateiübertragung
+
+![Dateiübertragung: links die eigenen Dateien, rechts der Server](docs/screenshot-transfer.png)
+
+Der Weg einer Änderung an einer Webseite: Datei vom Server holen, im Editor
+ändern, wieder hochladen.
+
+### Dateiübertragung (SFTP)
+
+Knopf „Transfer" in der Taskleiste oder F7. Oben Server, Benutzer und Passwort
+eintragen (den Port nur, wenn dein Anbieter einen anderen als 22 nennt), dann
+„Verbinden". Die Zugangsdaten für **SFTP** stehen bei deinem Webhoster meist
+unter „SSH-Zugang" oder „SFTP".
+
+- **Fingerabdruck:** Beim ersten Verbinden zeigt HelloOS den Fingerabdruck
+  des Serverschlüssels (`SHA256:…`). Vergleiche ihn mit der Angabe deines
+  Anbieters – nur so ist sicher, dass du wirklich mit dessen Server sprichst.
+  Nach deinem „Vertrauen" merkt sich HelloOS den Schlüssel auf dem Stick;
+  ändert er sich später, erscheint eine deutliche Warnung.
+- **Bedienung:** Doppelklick (oder Enter) öffnet einen Ordner auf dem Server
+  bzw. holt eine Datei; links öffnet er die Datei im Editor. Hochladen,
+  Löschen und neue Ordner gehen über die Knöpfe. Bevor etwas überschrieben
+  oder gelöscht wird, fragt HelloOS nach.
+- **Passwort:** Es wird nur für die Anmeldung benutzt und nirgends
+  gespeichert. Server, Port und Benutzer der letzten Verbindung merkt sich
+  HelloOS (Ordner `HELLOOS` auf dem Stick).
+- Im Terminal geht dasselbe mit `sftp benutzer@server` und den Befehlen
+  `ls`, `cd`, `get`, `put`, `rm`, `mkdir`, `mv` (`hilfe` zeigt alle).
+
+Was unterstützt wird: SFTP über SSH 2 mit den Verfahren aktueller Server
+(Schlüsselaustausch curve25519 oder ECDH P-256; Serverschlüssel Ed25519, ECDSA
+oder RSA ab 2048 Bit; Verschlüsselung ChaCha20-Poly1305 oder AES-CTR).
+
+Was **nicht** geht:
+
+- **kein FTP und kein FTPS** – nur SFTP. Bietet dein Hoster ausschließlich FTP
+  an, kann HelloOS dort nichts übertragen.
+- **Anmeldung nur mit Passwort**, nicht mit Schlüsseldatei.
+- Nur einzelne Dateien, keine ganzen Ordner auf einmal; Dateien bis 32 MB.
+- Auf der eigenen Seite gibt es keine Unterordner. Zwei Dateien gleichen
+  Namens aus verschiedenen Server-Ordnern (`index.html`) überschreiben sich
+  hier gegenseitig – HelloOS fragt vorher.
+- Sehr alte Server, die nur veraltete Verfahren anbieten, werden mit einer
+  Meldung abgelehnt, die die angebotenen Verfahren nennt.
+
+### Texteditor
+
+![Der Texteditor mit einer HTML-Datei](docs/screenshot-editor.png)
+
+Knopf „Editor", F6 oder `edit <datei>` im Terminal. Ohne Dateinamen erscheint
+eine Liste zum Anklicken; ein neuer Name legt eine neue Datei an.
+
+| Taste | Wirkung |
+| --- | --- |
+| Strg+S | speichern (und auf dem Stick sichern) |
+| Strg+O | andere Datei öffnen |
+| Pfeile, Pos1, Ende, Bild auf/ab | bewegen; Strg+Pos1 / Strg+Ende: Anfang / Ende der Datei |
+| Tab | bis zur nächsten Vierer-Spalte einrücken |
+| Alt+F4 oder ✕ | schließen – bei ungesicherten Änderungen mit Rückfrage |
+
+Neue Zeilen übernehmen die Einrückung der vorigen, lange Zeilen werden nicht
+umbrochen (der Ausschnitt wandert mit), Windows-Zeilenenden bleiben erhalten.
+Es fehlen: Markieren, Kopieren und Einfügen, Suchen, Rückgängig sowie
+farbige Hervorhebung. Darstellen kann die Schrift nur lateinische Zeichen.
+
+### Wofür das taugt – und wofür nicht
+
+Die Übertragung selbst ist ordentlich abgesichert: verschlüsselt, mit Prüfung
+des Servers, gegen eine Referenzbibliothek und einen echten OpenSSH-Server
+getestet. **Trotzdem ist HelloOS kein System für die Arbeit an einem echten
+Onlineshop:**
+
+- Getestet ist alles nur in QEMU, nie auf echter Hardware und nur gegen
+  OpenSSH – nicht gegen die Server der verschiedenen Webhoster.
+- HelloOS hat keinen Speicherschutz; die Kryptografie ist nicht gegen
+  Seitenkanäle gehärtet. Für Zugangsdaten zu einem Shop mit Kundendaten ist
+  das zu wenig.
+- **WordPress selbst lässt sich hier nicht bedienen.** Das Dashboard
+  (Beiträge, Bestellungen, Plugins, Updates) läuft im Browser und braucht
+  JavaScript – einen solchen Browser hat HelloOS nicht. Möglich ist nur, was
+  über Dateien geht: Theme-Dateien, CSS, einzelne HTML- oder PHP-Dateien.
+- Windows-Programme laufen nicht.
+
+Zum Ausprobieren, Lernen und für eine eigene kleine Seite ist es gedacht. Für
+den Shop gehört ein ausgereiftes System her – etwa ein Linux vom USB-Stick,
+wenn es vom Alltags-Windows getrennt sein soll.
 
 ## Internet
 
@@ -208,8 +325,8 @@ Claude arbeitet mit denselben Befehlen wie du im Terminal, in drei Stufen:
 | Stufe | Befehle |
 | --- | --- |
 | ohne Rückfrage | nur Anzeigen: `info`, `mem`, `uptime`, `date`, `ps`, `ls`, `cat`, `sha256`, `disk`, `news`, `history`, `net` und `keymap` ohne Angaben, außerdem `echo` und `start` |
-| erst nach deiner Zustimmung | alles, was etwas verändert oder ins Netz geht: `write`, `append`, `rm`, `kill`, `spawn`, `web`, `get`, `ping`, `dns`, `update`, `reboot`, `shutdown`, … |
-| nie | `panic` und `claude` selbst |
+| erst nach deiner Zustimmung | alles, was etwas verändert oder ins Netz geht: `write`, `append`, `rm`, `edit`, `kill`, `spawn`, `web`, `get`, `ping`, `dns`, `update`, `reboot`, `shutdown`, … |
+| nie | `panic`, `claude` selbst und `sftp` – Verbindungen zu deinem Server baust nur du auf |
 
 Vor einer Rückfrage steht der vollständige Befehl im Verlauf; im Fenster
 bestätigst du mit „Erlauben" oder J, im Terminal mit j. Dass auch reine
@@ -375,20 +492,22 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `kernel/console.c`, `kernel/serial.c` | Konsolen, `kprintf`, serielle Schnittstelle |
 | `kernel/keyboard.c`, `kernel/ps2.c` | Tastaturbelegungen, PS/2-Tastatur und -Maus |
 | `kernel/pci.c`, `kernel/usb.c` | PCI-Bus, xHCI-Treiber (Tastatur, Maus, Massenspeicher) |
-| `kernel/block.c`, `kernel/fat.c` | Blockgeräte, FAT32 |
+| `kernel/block.c`, `kernel/fat.c` | Blockgeräte, FAT32 (auch lange Dateinamen, Anlegen, Löschen) |
+| `kernel/fs.c`, `kernel/storage.c` | eigene Dateien im Arbeitsspeicher, Sicherung auf dem Stick |
 | `kernel/e1000.c` | Treiber für Intel-Netzwerkkarten |
 | `kernel/net.c`, `kernel/tcp.c` | ARP, IPv4, ICMP, UDP, DHCP, DNS; TCP |
-| `kernel/crypto_*.c` | SHA-2, HMAC/HKDF, ChaCha20-Poly1305, X25519, Ed25519, RSA, ECDSA |
+| `kernel/crypto_*.c` | SHA-2, HMAC/HKDF, ChaCha20-Poly1305, AES-CTR, X25519, Ed25519, RSA, ECDSA, ECDH |
 | `kernel/x509.c`, `kernel/tls_roots.*` | Zertifikate lesen und prüfen, eingebaute Wurzelzertifikate |
 | `kernel/tls.c`, `kernel/http.c` | TLS 1.3, HTTP-Client |
+| `kernel/ssh.c`, `kernel/sftp.c` | SSH-Client, Dateiübertragung per SFTP |
 | `kernel/json.c` | JSON lesen und schreiben |
 | `kernel/claude.c`, `kernel/claude_app.c` | Anbindung an die Claude-API, Chatfenster |
 | `kernel/update.c` | Selbstaktualisierung |
 | `kernel/gfx.c`, `kernel/font_data.c` | Zeichenfunktionen, Schrift |
 | `kernel/gui.c` | Compositor, Fensterverwaltung, Taskleiste |
 | `kernel/terminal.c`, `kernel/shell.c` | Terminalfenster und Kommandozeile |
+| `kernel/editor.c`, `kernel/transfer.c` | Texteditor, Fenster zur Dateiübertragung |
 | `kernel/sysmon.c`, `kernel/paint.c`, `kernel/about.c` | Systemmonitor, Malprogramm, Dialoge |
-| `kernel/fs.c` | RAM-Dateisystem |
 | `tools/mkimage.py` | baut das Disk-Image (GPT, FAT32) |
 | `tools/update-tool.py` | Schlüssel erzeugen, Update-Pakete signieren und prüfen |
 | `tools/mkfont.py` | erzeugt `font_data.c` aus einer TrueType-Schrift |
@@ -399,13 +518,14 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 ## Grenzen und Ideen zum Weiterbauen
 
 HelloOS ist ein Lernsystem. Alles läuft im Kernel-Modus in einem gemeinsamen
-Adressraum; es gibt keinen Speicherschutz und keine Programme von außerhalb,
-und eigene Dateien überleben keinen Neustart. Die Kryptografie ist geprüft,
+Adressraum; es gibt keinen Speicherschutz und keine Programme von außerhalb
+(auch keine Windows-Programme). Die Kryptografie ist geprüft,
 aber nicht gegen Seitenkanäle gehärtet, und der Zufallsgenerator ist einfach
 gehalten. Naheliegende nächste Schritte:
 
 - Claudes Antworten Wort für Wort anzeigen (Streaming), Gespräche speichern
-- eigene Dateien dauerhaft auf dem USB-Stick speichern (FAT32 ist schon da)
+- Unterordner für eigene Dateien, ganze Ordner übertragen, Anmeldung mit Schlüsseldatei
+- im Editor: Markieren, Kopieren und Einfügen, Suchen, Rückgängig
 - weitere Netzwerkkarten (Realtek, Intel I225), USB-Hubs
 - User-Modus (Ring 3) mit Systemaufrufen und getrennten Adressräumen
 - Programme aus Dateien laden (ELF), mehrere Prozessorkerne

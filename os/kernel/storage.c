@@ -143,9 +143,22 @@ bool storage_load(const char *folder, const char *name, size_t max, char **data,
 
 /* --- Beim Start: eigene Dateien in den Arbeitsspeicher holen --------------------------- */
 
+/*
+ * Gelesen wird mit gehaltener Sperre in eine Liste; in die Dateiverwaltung
+ * kommen die Dateien erst danach. Sonst könnten sich dieser Task und einer,
+ * der gerade eine Datei schreibt, gegenseitig blockieren.
+ */
+typedef struct loaded {
+    struct loaded *next;
+    char *data;
+    size_t size;
+    char name[FAT_NAME_MAX];
+} loaded_t;
+
 typedef struct {
     fat_t *fs;
-    int loaded, skipped;
+    loaded_t *first;
+    int skipped;
 } load_t;
 
 static bool load_visit(void *ctx, const char *name, const fat_file_t *file)
@@ -154,12 +167,17 @@ static bool load_visit(void *ctx, const char *name, const fat_file_t *file)
     if (file->directory)
         return true;
 
-    char *data = file->size <= FS_FILE_MAX ? kmalloc((size_t)file->size + 1) : NULL;
-    if (data && fat_read(l->fs, file, data) &&
-        fs_adopt(name, data, file->size) == FS_OK) {
-        l->loaded++;
+    loaded_t *item = file->size <= FS_FILE_MAX ? kmalloc(sizeof(*item)) : NULL;
+    char *data = item ? kmalloc((size_t)file->size + 1) : NULL;
+    if (data && fat_read(l->fs, file, data)) {
+        item->data = data;
+        item->size = file->size;
+        strlcpy(item->name, name, sizeof(item->name));
+        item->next = l->first;
+        l->first = item;
     } else {
         kfree(data);
+        kfree(item);
         l->skipped++;
     }
     return true;
@@ -172,7 +190,7 @@ static void storage_task(void *arg)
     for (;;) {
         fat_t fs;
         fat_file_t dir;
-        load_t l = { &fs, 0, 0 };
+        load_t l = { &fs, NULL, 0 };
 
         storage_lock();
         bool found = mount_stick(&fs);
@@ -185,7 +203,19 @@ static void storage_task(void *arg)
         storage_unlock();
 
         if (found) {
-            klog("Dateien: %d vom USB-Stick geladen (Ordner %s)\n", l.loaded,
+            int loaded = 0;
+            for (loaded_t *item = l.first; item; ) {
+                loaded_t *next = item->next;
+                if (fs_adopt(item->name, item->data, item->size) == FS_OK) {
+                    loaded++;
+                } else {
+                    kfree(item->data);
+                    l.skipped++;
+                }
+                kfree(item);
+                item = next;
+            }
+            klog("Dateien: %d vom USB-Stick geladen (Ordner %s)\n", loaded,
                  STORAGE_FILES);
             if (l.skipped)
                 klog("Dateien: %d übersprungen (zu groß, zu viele oder Name "

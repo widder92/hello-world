@@ -1,5 +1,5 @@
-HelloOS 0.5
-- Claude ist eingebaut: F5 oder der Knopf "Claude" öffnet ein Chatfenster, im Terminal geht "claude <frage>".
-- Claude kann in HelloOS nachsehen und Befehle ausführen; alles, was etwas verändert oder ins Netz geht, fragt vorher nach.
-- Dafür nötig ist ein eigener API-Schlüssel von Anthropic (Datei claude.key auf dem USB-Stick oder "claude key ...").
-- HTTPS prüft jetzt die Zertifikate der Server.
+HelloOS 0.6
+- Eigene Dateien bleiben erhalten: Sie werden auf dem USB-Stick im Ordner DATEIEN gesichert und sind auch unter Windows lesbar.
+- Neuer Texteditor: Knopf "Editor", F6 oder "edit <datei>" im Terminal.
+- Dateien mit einem Server austauschen (SFTP, verschlüsselt): Knopf "Transfer", F7 oder "sftp benutzer@server".
+- Beim ersten Verbinden zeigt HelloOS den Fingerabdruck des Servers und merkt ihn sich.
