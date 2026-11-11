@@ -317,6 +317,8 @@ static void udp_send(ip4_t dst, uint16_t src_port, uint16_t dst_port,
 
 /* --- DHCP: Adresse automatisch beziehen ---------------------------------------------- */
 
+static bool dhcp_complained;            /* ausbleibende Antwort schon gemeldet */
+
 enum { DHCP_DISCOVER = 1, DHCP_OFFER = 2, DHCP_REQUEST = 3, DHCP_ACK = 5, DHCP_NAK = 6 };
 
 static struct {
@@ -447,6 +449,17 @@ static void dhcp_timer(void)
         dhcp_send(DHCP_DISCOVER);
         dhcp.next_ms = now + (dhcp.attempts < 3 ? 2000 : 8000);
         dhcp.attempts++;
+        if (dhcp.attempts == 4 && !dhcp_complained) {
+            /* Einmal melden - mit Zählern, die zeigen, wo es hakt */
+            dhcp_complained = true;
+            char card[112] = "";
+            if (nic->stats)
+                nic->stats(nic, card, sizeof(card));
+            klog("Netzwerk: noch keine Antwort auf die Adressanfrage (DHCP); "
+                 "%llu Pakete gesendet, %llu empfangen\n", tx_packets, rx_packets);
+            if (card[0])
+                klog("Netzwerk: Karte meldet %s\n", card);
+        }
         break;
     case DHCP_REQUESTING:
         if (++dhcp.attempts > 3) {      /* keine Bestätigung: von vorn */
@@ -669,6 +682,7 @@ static void net_task(void *arg)
             if (up != link_up) {
                 link_up = up;
                 klog("Netzwerk: Verbindung %s\n", up ? "hergestellt" : "getrennt");
+                dhcp_complained = false;
                 if (!up) {              /* Kabel gezogen: Adresse verfällt */
                     configured = false;
                     local_ip = 0;
@@ -732,6 +746,8 @@ void net_get_info(net_info_t *out)
         out->tx_packets = tx_packets;
     }
     irq_restore(flags);
+    if (nic && nic->stats)
+        nic->stats(nic, out->card_stats, sizeof(out->card_stats));
 }
 
 void net_set_dns(ip4_t server)

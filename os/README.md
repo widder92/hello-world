@@ -97,8 +97,8 @@ Reagieren Tastatur und Maus nicht, öffnet HelloOS nach etwa 15 Sekunden von
 selbst ein Diagnosefenster mit dem Startprotokoll. Es zeigt für jeden
 USB-Anschluss, welches Gerät dort erkannt wurde und warum es nicht bedient
 wird – ein Foto davon ist die beste Grundlage für eine Fehlermeldung.
-Funkempfänger und Geräte hinter einem USB-Hub sind die häufigsten Fälle
-(siehe [Grenzen](#grenzen-und-ideen-zum-weiterbauen)).
+Der häufigste Fall sind Funkempfänger, die sich nicht im einfachen
+„Boot-Protokoll" melden (siehe unten).
 
 ### Neben Windows: zwei Wege
 
@@ -203,8 +203,12 @@ landen ab jetzt dort.
 
 Was dabei zu beachten ist:
 
-- Stick, Tastatur und Maus **direkt am Rechner** einstecken. USB-Hubs (auch
-  die in Monitoren, Docks oder Tastaturen) werden nicht unterstützt.
+- Stick, Tastatur und Maus dürfen direkt am Rechner oder hinter einem
+  **USB-Hub** stecken – auch hinter den fest eingebauten Hubs, an denen in
+  manchen PCs die Buchsen hängen, und hinter mehreren Hubs in Reihe. Geprüft
+  ist das in QEMU mit dessen (langsamem) USB-1.1-Hub; die Besonderheiten
+  schneller USB-2- und USB-3-Hubs folgen dem Standard, sind in QEMU aber
+  nicht nachstellbar.
 - Unterstützt werden gewöhnliche USB-Tastaturen und -Mäuse (HID
   „Boot-Protokoll"). Bluetooth-Geräte und Touchpads, die nur über I²C
   angebunden sind, funktionieren nicht – dann hilft eine USB-Maus oder die
@@ -662,7 +666,7 @@ sein, die beim Bauen als `UPDATE_URL` galt.
 
 Die Build-Nummer ist die Anzahl der Commits (`git rev-list --count HEAD`).
 Updates brauchen einen Datenträger, den HelloOS beschreiben kann: den
-USB-Stick (direkt am Rechner, ohne Hub) oder die eigene Partition auf einer
+USB-Stick oder die eigene Partition auf einer
 internen NVMe- oder SATA-Platte.
 
 ## Wie es funktioniert
@@ -763,7 +767,7 @@ gehalten. Naheliegende nächste Schritte:
 - Claudes Antworten Wort für Wort anzeigen (Streaming), Gespräche speichern
 - Unterordner für eigene Dateien, ganze Ordner übertragen, Anmeldung mit Schlüsseldatei
 - im Editor: Markieren, Kopieren und Einfügen, Suchen, Rückgängig
-- weitere Netzwerkkarten (Realtek), WLAN, USB-Hubs
+- weitere Netzwerkkarten (Realtek), WLAN
 - User-Modus (Ring 3) mit Systemaufrufen und getrennten Adressräumen
 - Programme aus Dateien laden (ELF), mehrere Prozessorkerne
 - Symbole auf dem Desktop, ein Dateimanager, Fenster an den Kanten ziehen und minimieren

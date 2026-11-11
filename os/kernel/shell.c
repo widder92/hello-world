@@ -453,6 +453,8 @@ static void cmd_net(shell_t *sh, char *args)
     }
     kprintf("Pakete:      %llu empfangen, %llu gesendet\n", info.rx_packets,
             info.tx_packets);
+    if (info.card_stats[0])
+        kprintf("Karte zählt: %s\n", info.card_stats);
 }
 
 /* Prüft, ob das Netz bereit ist, und meldet es sonst dem Benutzer. */

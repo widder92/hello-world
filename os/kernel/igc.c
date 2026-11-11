@@ -31,6 +31,12 @@
 #define REG_ICR     0x1500
 #define REG_IMC     0x150C
 #define REG_EIMC    0x1528
+#define REG_CRCERRS 0x4000              /* Zähler: löschen sich beim Lesen */
+#define REG_RXERRC  0x400C
+#define REG_MPC     0x4010
+#define REG_GPRC    0x4074
+#define REG_GPTC    0x4080
+#define REG_RNBC    0x40A0
 #define REG_MTA     0x5200
 #define REG_RAL     0x5400
 #define REG_RAH     0x5404
@@ -113,6 +119,7 @@ typedef struct {
     tx_desc_t *tx;
     uint8_t *rx_buffers, *tx_buffers;
     uint32_t rx_next, tx_next;
+    uint32_t sent, received, missed, bad;   /* Zähler der Karte, aufsummiert */
     bool modern;                        /* I225/I226 (sonst: 82576, I210, I211) */
     bool ok;
 } port_t;
@@ -367,6 +374,31 @@ static size_t igc_receive(nic_t *self, void *buffer, size_t max)
     }
 }
 
+/*
+ * Die Karte zählt selbst mit, was wirklich über die Leitung ging. Das zeigt,
+ * ob Pakete hinausgehen und ankommen - unabhängig von unserer Buchführung.
+ * (Die Zähler löschen sich beim Lesen, deshalb summieren wir auf.)
+ */
+static void igc_stats(nic_t *self, char *text, size_t size)
+{
+    (void)self;
+    port_t *p = &ports[active];
+    if (!p->ok) {
+        strlcpy(text, "", size);
+        return;
+    }
+    uint64_t flags = irq_save();
+    p->sent += reg_read(p, REG_GPTC);
+    p->received += reg_read(p, REG_GPRC);
+    p->missed += reg_read(p, REG_MPC) + reg_read(p, REG_RNBC);
+    p->bad += reg_read(p, REG_CRCERRS) + reg_read(p, REG_RXERRC);
+    uint32_t head = reg_read(p, REG_TDH), tail = reg_read(p, REG_TDT);
+    irq_restore(flags);
+    ksnprintf(text, size,
+              "%u gesendet, %u empfangen, %u verpasst, %u fehlerhaft, Sendering %u/%u",
+              p->sent, p->received, p->missed, p->bad, head, tail);
+}
+
 nic_t *igc_probe(void)
 {
     pci_device_t found[8];
@@ -404,6 +436,7 @@ nic_t *igc_probe(void)
     nic.link_up = igc_link_up;
     nic.send = igc_send;
     nic.receive = igc_receive;
+    nic.stats = igc_stats;
     nic.driver_data = ports;
     return &nic;
 }

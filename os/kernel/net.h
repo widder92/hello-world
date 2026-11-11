@@ -21,6 +21,8 @@ typedef struct nic {
     bool (*send)(struct nic *self, const void *frame, size_t len);
     /* Holt ein empfangenes Paket ab; liefert dessen Länge oder 0. */
     size_t (*receive)(struct nic *self, void *buffer, size_t max);
+    /* Zähler der Karte als Text, für die Fehlersuche (darf fehlen). */
+    void (*stats)(struct nic *self, char *text, size_t size);
     void *driver_data;
 } nic_t;
 
@@ -39,6 +41,7 @@ typedef struct {
     uint8_t mac[6];
     ip4_t ip, netmask, gateway, dns;
     uint64_t rx_packets, tx_packets;
+    char card_stats[112];               /* Zähler der Karte, falls sie welche führt */
 } net_info_t;
 
 /* Netzwerkkarte suchen und den Netzwerk-Task starten. */

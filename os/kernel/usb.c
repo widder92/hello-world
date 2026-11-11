@@ -5,7 +5,8 @@
  * PC seit etwa 2012; er bedient auch langsame USB-1/2-Geräte. Der Treiber
  * beschränkt sich auf das Nötigste:
  *
- *   - Geräte direkt an den Anschlüssen des Rechners (keine USB-Hubs)
+ *   - Geräte direkt an den Anschlüssen des Rechners und hinter USB-Hubs
+ *     (auch den fest eingebauten, an denen in manchen PCs die Buchsen hängen)
  *   - Tastaturen und Mäuse im einfachen "Boot-Protokoll" (HID)
  *   - USB-Sticks und -Platten (Massenspeicher, "Bulk-Only" mit SCSI-Befehlen)
  *   - Abfragen statt Interrupts: Jeder Controller hat einen eigenen Task,
@@ -29,7 +30,8 @@
 #include "time.h"
 
 #define MAX_CONTROLLERS 4
-#define MAX_DEVICES     8
+#define MAX_DEVICES     16
+#define HUB_MAX_PORTS   15              /* mehr passt nicht in die Wegangabe */
 #define MAX_PORTS       64
 #define RING_TRBS       256             /* eine Seite voller TRBs */
 #define PAGE_SIZE       4096
@@ -150,11 +152,32 @@ typedef struct {
     block_device_t *block;
 } storage_t;
 
+/* Ein Hub verteilt einen Anschluss auf mehrere; wir fragen ihn regelmäßig ab. */
 typedef struct {
+    bool present;                       /* Gerät ist ein Hub */
+    bool ready;                         /* eingerichtet, Anschlüsse haben Strom */
+    uint8_t ports;
+    uint8_t think_time;                 /* nur High-Speed-Hubs */
+    uint8_t power_delay;                /* in 2 ms */
+    uint8_t dci, interval;              /* Endpunkt für Statusmeldungen */
+    uint16_t max_packet;
+    ring_t ring;
+    uint8_t errors;                     /* Abfragen ohne Antwort in Folge */
+    uint16_t gave_up;                   /* Bit je Anschluss: Gerät dort ignoriert */
+    uint64_t next_poll;
+} hub_t;
+
+typedef struct device {
     bool used;
     uint8_t slot;
-    uint8_t port;                       /* ab 0 gezählt */
+    uint8_t port;                       /* Anschluss am Rechner, ab 0 gezählt */
     uint8_t speed;
+    struct device *parent;              /* Hub, an dem das Gerät hängt, oder NULL */
+    uint8_t hub_port;                   /* Anschluss an diesem Hub, ab 1 */
+    uint8_t depth;                      /* Zahl der Hubs zwischen Rechner und Gerät */
+    uint32_t route;                     /* Weg durch die Hubs, 4 Bit je Stufe */
+    uint8_t tt_slot, tt_port;           /* Umsetzer für langsame Geräte am High-Speed-Hub */
+    char place[20];                     /* fürs Protokoll, z. B. "5.2" */
     uint32_t *out_ctx;                  /* vom Controller gepflegt */
     uint32_t *in_ctx;                   /* unsere Anweisungen an den Controller */
     ring_t ep0;
@@ -162,7 +185,7 @@ typedef struct {
     uint16_t vendor, product;
     uint8_t device_class;
     char interfaces[40];                /* Klasse/Unterklasse/Protokoll je Schnittstelle */
-    bool hub;
+    hub_t hub;
     hid_t hid[2];
     storage_t storage;
 } device_t;
@@ -432,6 +455,8 @@ static void handle_event(xhci_t *x, const trb_t *ev)
 
     uint32_t dci = (ev->control >> 16) & 0x1F;
     if (dci == 1) {                     /* Steuertransfer abgeschlossen */
+        if (code == CC_SHORT_PACKET)
+            return;                     /* Datenphase kürzer: Abschluss folgt noch */
         if (slot == x->control_slot) {
             x->control_code = code;
             x->control_done = true;
@@ -783,7 +808,7 @@ static bool storage_start(xhci_t *x, device_t *dev)
     }
 
     char name[24];
-    ksnprintf(name, sizeof(name), "usb%d-%d", x->number, dev->port + 1);
+    ksnprintf(name, sizeof(name), "usb%d-%s", x->number, dev->place);
     block_device_t *block = block_register(name, last + 1);
     if (!block)
         return false;
@@ -791,8 +816,8 @@ static bool storage_start(xhci_t *x, device_t *dev)
     block->write = storage_write;
     block->driver_data = x;
     dev->storage.block = block;
-    klog("USB %d: Datenträger an Anschluss %d (%llu MiB)\n", x->number,
-         dev->port + 1, (last + 1) / 2048);
+    klog("USB %d: Datenträger an Anschluss %s (%llu MiB)\n", x->number,
+         dev->place, (last + 1) / 2048);
     return true;
 }
 
@@ -816,6 +841,7 @@ static void device_free(xhci_t *x, device_t *dev)
         page_put(hid->ring.trbs);
         page_put(hid->buffer);
     }
+    page_put(dev->hub.ring.trbs);
     block_unregister(dev->storage.block);
     page_put(dev->storage.ring_in.trbs);
     page_put(dev->storage.ring_out.trbs);
@@ -826,6 +852,30 @@ static void device_free(xhci_t *x, device_t *dev)
     memset(dev, 0, sizeof(*dev));
 }
 
+/* Entfernt ein Gerät samt allem, was (bei einem Hub) dahinter hängt. */
+static void device_remove(xhci_t *x, device_t *dev)
+{
+    for (int i = 0; i < MAX_DEVICES; i++) {
+        device_t *child = &x->devices[i];
+        if (child->used && child->parent == dev)
+            device_remove(x, child);
+    }
+    device_free(x, dev);
+}
+
+/* Abfrageintervall eines Endpunkts in die Einheit des Controllers umrechnen */
+static uint8_t interval_code(uint8_t speed, uint8_t raw)
+{
+    unsigned interval = raw ? raw : 1;
+    if (speed == SPEED_LOW || speed == SPEED_FULL) {
+        unsigned exponent = 3;
+        while (exponent < 10 && (8u << (exponent - 2)) <= interval * 8)
+            exponent++;
+        return (uint8_t)exponent;
+    }
+    return (uint8_t)(interval > 16 ? 15 : interval - 1);
+}
+
 /* Sucht in der Gerätebeschreibung nach Schnittstellen, die wir bedienen können. */
 static int parse_configuration(device_t *dev, uint16_t total, uint8_t speed)
 {
@@ -834,6 +884,7 @@ static int parse_configuration(device_t *dev, uint16_t total, uint8_t speed)
     hid_t *current = NULL;
     storage_t *st = &dev->storage;
     bool in_storage = false;
+    bool in_hub = false;
     uint8_t *last_burst = NULL;         /* für die Zusatzangabe bei USB 3 */
     int found = 0;
 
@@ -846,8 +897,9 @@ static int parse_configuration(device_t *dev, uint16_t total, uint8_t speed)
                 ksnprintf(dev->interfaces + used, sizeof(dev->interfaces) - used,
                           "%s%u/%u/%u", used ? " " : "", p[5], p[6], p[7]);
                 if (p[5] == 9)
-                    dev->hub = true;
+                    dev->hub.present = true;
             }
+            in_hub = p[5] == 9 && p[3] == 0;
             /* Massenspeicher: Klasse 8, SCSI-Befehle (6), Bulk-Only (0x50) */
             in_storage = p[5] == 8 && p[6] == 6 && p[7] == 0x50 && p[3] == 0 &&
                          !st->dci_in && !st->dci_out;
@@ -884,19 +936,16 @@ static int parse_configuration(device_t *dev, uint16_t total, uint8_t speed)
                 if (current->max_packet > 64)
                     current->max_packet = 64;
 
-                /* Abfrageintervall in die Einheit des Controllers umrechnen */
-                unsigned interval = p[6] ? p[6] : 1;
-                if (speed == SPEED_LOW || speed == SPEED_FULL) {
-                    unsigned exponent = 3;
-                    while (exponent < 10 && (8u << (exponent - 2)) <= interval * 8)
-                        exponent++;
-                    current->interval = (uint8_t)exponent;
-                } else {
-                    current->interval = (uint8_t)(interval > 16 ? 15 : interval - 1);
-                }
+                current->interval = interval_code(speed, p[6]);
                 found++;
                 current = NULL;
             }
+        } else if (p[1] == 5 && p[0] >= 7 && in_hub && !dev->hub.dci &&
+                   (p[2] & 0x80) && (p[3] & 0x03) == 3) {
+            /* Hub: der Endpunkt, über den er Änderungen meldet */
+            dev->hub.dci = (uint8_t)((p[2] & 0x0F) * 2 + 1);
+            dev->hub.max_packet = (uint16_t)((p[4] | (p[5] << 8)) & 0x7FF);
+            dev->hub.interval = interval_code(speed, p[6]);
         }
         p += p[0];
     }
@@ -935,6 +984,92 @@ static bool port_reset(xhci_t *x, int port)
     return rd32(x->op, OP_PORTSC(port)) & PORT_ENABLED;
 }
 
+/* Wartet, ohne dass Eingaben anderer Geräte liegen bleiben. */
+static void pause_ms(xhci_t *x, uint32_t ms)
+{
+    uint64_t deadline = time_ms() + ms;
+    do {
+        poll_events(x);
+        task_sleep(1);
+    } while (time_ms() < deadline);
+}
+
+/* --- Hubs ------------------------------------------------------------------------------ */
+
+/* Merkmale eines Hub-Anschlusses (Nummern laut USB-Standard) */
+enum {
+    HUB_PORT_RESET = 4,
+    HUB_PORT_POWER = 8,
+    HUB_C_CONNECTION = 16,
+    HUB_C_ENABLE = 17,
+    HUB_C_SUSPEND = 18,
+    HUB_C_OVER_CURRENT = 19,
+    HUB_C_RESET = 20,
+    HUB_C_LINK_STATE = 25,              /* ab hier nur USB 3 */
+    HUB_C_CONFIG_ERROR = 26,
+    HUB_BH_RESET = 28,
+    HUB_C_BH_RESET = 29,
+};
+
+#define HUB_STATUS_CONNECTED    (1u << 0)
+#define HUB_STATUS_ENABLED      (1u << 1)
+#define HUB_STATUS_RESET        (1u << 4)
+#define HUB_STATUS_LOW_SPEED    (1u << 9)   /* nur USB 2 */
+#define HUB_STATUS_HIGH_SPEED   (1u << 10)  /* nur USB 2 */
+
+/* Liest die Beschreibung des Hubs: wie viele Anschlüsse, welche Wartezeiten. */
+static const char *hub_describe(xhci_t *x, device_t *dev)
+{
+    hub_t *hub = &dev->hub;
+    bool super = dev->speed >= SPEED_SUPER;
+
+    /* USB-3-Hubs müssen wissen, auf welcher Stufe sie sitzen. */
+    if (super && !control(x, dev, 0x20, 12, dev->depth, 0, 0))
+        return "Hub nimmt seine Stufe nicht an";
+    if (!control(x, dev, 0xA0, 6, super ? 0x2A00 : 0x2900, 0, super ? 12 : 8))
+        return "Hub-Beschreibung nicht lesbar";
+    hub->ports = dev->buffer[2];
+    if (hub->ports > HUB_MAX_PORTS)
+        hub->ports = HUB_MAX_PORTS;
+    if (hub->ports == 0)
+        return "Hub ohne Anschlüsse";
+    hub->think_time = (dev->buffer[3] >> 5) & 0x3;
+    hub->power_delay = dev->buffer[5];
+    return NULL;
+}
+
+/* Schaltet die Anschlüsse des Hubs ein; ab dann wird er regelmäßig abgefragt. */
+static const char *hub_start(xhci_t *x, device_t *dev)
+{
+    hub_t *hub = &dev->hub;
+    for (int port = 1; port <= hub->ports; port++) {
+        if (!control(x, dev, 0x23, 3, HUB_PORT_POWER, (uint16_t)port, 0))
+            return "Hub schaltet seine Anschlüsse nicht ein";
+    }
+    uint32_t wait = (uint32_t)hub->power_delay * 2;
+    pause_ms(x, wait < 100 ? 100 : wait);
+    hub->ready = true;
+    hub->next_poll = 0;
+    klog("USB %d: Hub an Anschluss %s mit %d Anschlüssen\n", x->number,
+         dev->place, hub->ports);
+    return NULL;
+}
+
+static bool hub_port_status(xhci_t *x, device_t *hub, int port,
+                            uint16_t *status, uint16_t *change)
+{
+    if (!control(x, hub, 0xA3, 0, 0, (uint16_t)port, 4))
+        return false;
+    *status = (uint16_t)(hub->buffer[0] | (hub->buffer[1] << 8));
+    *change = (uint16_t)(hub->buffer[2] | (hub->buffer[3] << 8));
+    return true;
+}
+
+static void hub_clear(xhci_t *x, device_t *hub, int port, uint16_t feature)
+{
+    control(x, hub, 0x23, 1, feature, (uint16_t)port, 0);
+}
+
 /* Liefert NULL bei Erfolg, sonst eine kurze Beschreibung des Problems. */
 static const char *device_setup(xhci_t *x, device_t *dev)
 {
@@ -956,8 +1091,9 @@ static const char *device_setup(xhci_t *x, device_t *dev)
     uint32_t *slot = context(x, dev->in_ctx, 1);
     uint32_t *ep0 = context(x, dev->in_ctx, 2);
     ctrl[1] = 0x3;
-    slot[0] = ((uint32_t)dev->speed << 20) | (1u << 27);
+    slot[0] = dev->route | ((uint32_t)dev->speed << 20) | (1u << 27);
     slot[1] = (uint32_t)(dev->port + 1) << 16;
+    slot[2] = dev->tt_slot | ((uint32_t)dev->tt_port << 8);
     ep0[1] = (3u << 1) | (4u << 3) | ((uint32_t)packet0 << 16);
     ep0[2] = (uint32_t)(uint64_t)dev->ep0.trbs | 1;
     ep0[3] = (uint32_t)((uint64_t)dev->ep0.trbs >> 32);
@@ -989,7 +1125,7 @@ static const char *device_setup(xhci_t *x, device_t *dev)
         dev->vendor = (uint16_t)(dev->buffer[8] | (dev->buffer[9] << 8));
         dev->product = (uint16_t)(dev->buffer[10] | (dev->buffer[11] << 8));
         if (dev->device_class == 9)
-            dev->hub = true;
+            dev->hub.present = true;
     }
 
     /* Konfiguration lesen: erst den Kopf (mit der Gesamtlänge), dann alles */
@@ -1002,20 +1138,39 @@ static const char *device_setup(xhci_t *x, device_t *dev)
     if (!control(x, dev, 0x80, 6, 0x0200, 0, total))
         return "Konfiguration nicht lesbar";
     int usable = parse_configuration(dev, total, dev->speed);
-    klog("USB %d Anschluss %d: Gerät %04x:%04x, %s, Schnittstellen %s\n",
-         x->number, dev->port + 1, dev->vendor, dev->product,
+    klog("USB %d Anschluss %s: Gerät %04x:%04x, %s, Schnittstellen %s\n",
+         x->number, dev->place, dev->vendor, dev->product,
          speed_name(dev->speed), dev->interfaces[0] ? dev->interfaces : "-");
-    if (dev->hub)
-        return "USB-Hub - Geräte dahinter werden noch nicht unterstützt";
-    if (usable == 0)
+    hub_t *hub = &dev->hub;
+    if (hub->present && dev->depth >= 5)
+        return "zu viele Hubs hintereinander";
+    if (!hub->present && usable == 0)
         return "kein unterstützter Gerätetyp";
 
     if (!control(x, dev, 0x00, 9, config_value, 0, 0))     /* SET_CONFIGURATION */
         return "Konfiguration nicht wählbar";
 
+    if (hub->present) {
+        const char *problem = hub_describe(x, dev);
+        if (problem)
+            return problem;
+    }
+
     /* Endpunkte für die Berichte beim Controller anmelden */
     uint32_t add_flags = 1;
     uint32_t last_dci = 1;
+    if (hub->present && hub->dci) {
+        /* Den Meldeendpunkt des Hubs anmelden; abgefragt wird der Hub direkt. */
+        ring_init(&hub->ring);
+        uint32_t *ep = context(x, dev->in_ctx, hub->dci + 1);
+        ep[0] = (uint32_t)hub->interval << 16;
+        ep[1] = (3u << 1) | (7u << 3) | ((uint32_t)hub->max_packet << 16);
+        ep[2] = (uint32_t)(uint64_t)hub->ring.trbs | 1;
+        ep[3] = (uint32_t)((uint64_t)hub->ring.trbs >> 32);
+        ep[4] = hub->max_packet | ((uint32_t)hub->max_packet << 16);
+        add_flags |= 1u << hub->dci;
+        last_dci = hub->dci;
+    }
     for (int i = 0; i < 2; i++) {
         hid_t *hid = &dev->hid[i];
         if (hid->kind == HID_NONE)
@@ -1061,11 +1216,26 @@ static const char *device_setup(xhci_t *x, device_t *dev)
     }
     ctrl[0] = 0;
     ctrl[1] = add_flags;
-    slot[0] = ((uint32_t)dev->speed << 20) | (last_dci << 27);
+    slot[0] = dev->route | ((uint32_t)dev->speed << 20) | (last_dci << 27);
+    slot[1] = (uint32_t)(dev->port + 1) << 16;
+    slot[2] = dev->tt_slot | ((uint32_t)dev->tt_port << 8);
+    if (hub->present) {
+        /* Der Controller muss wissen, dass hier ein Hub sitzt. */
+        slot[0] |= 1u << 26;
+        slot[1] |= (uint32_t)hub->ports << 24;
+        if (dev->speed == SPEED_HIGH)
+            slot[2] |= (uint32_t)hub->think_time << 16;
+    }
     if (!command(x, (uint64_t)dev->in_ctx,
                  TRB_TYPE(TRB_CONFIGURE_ENDPOINT) |
                      ((uint32_t)dev->slot << 24)))
         return "Endpunkt nicht einrichtbar";
+
+    if (hub->present) {
+        const char *problem = hub_start(x, dev);
+        if (problem)
+            return problem;
+    }
 
     for (int i = 0; i < 2; i++) {
         hid_t *hid = &dev->hid[i];
@@ -1078,12 +1248,13 @@ static const char *device_setup(xhci_t *x, device_t *dev)
         hid_request(x, dev, hid);
         hid->active = true;
         input_devices++;
-        klog("USB %d: %s an Anschluss %d\n", x->number,
-             hid->kind == HID_KEYBOARD ? "Tastatur" : "Maus", dev->port + 1);
+        klog("USB %d: %s an Anschluss %s\n", x->number,
+             hid->kind == HID_KEYBOARD ? "Tastatur" : "Maus", dev->place);
     }
     if (st->present && !storage_start(x, dev)) {
         st->present = false;
-        if (dev->hid[0].kind == HID_NONE && dev->hid[1].kind == HID_NONE)
+        if (dev->hid[0].kind == HID_NONE && dev->hid[1].kind == HID_NONE &&
+            !hub->present)
             return "Datenträger antwortet nicht";
     }
     return NULL;
@@ -1106,44 +1277,205 @@ static const char *code_text(uint32_t code)
     }
 }
 
-static void port_connected(xhci_t *x, int port)
+/*
+ * Richtet ein frisch aktiviertes Gerät ein: direkt am Rechner (parent NULL)
+ * oder an Anschluss hub_port eines Hubs.
+ */
+static bool device_attach(xhci_t *x, device_t *parent, int root_port,
+                          int hub_port, uint8_t speed)
 {
-    if (x->failures[port] >= 3)
-        return;                         /* aufgegeben, bis neu eingesteckt wird */
-
     device_t *dev = NULL;
     for (int i = 0; i < MAX_DEVICES && !dev; i++) {
         if (!x->devices[i].used)
             dev = &x->devices[i];
     }
-    if (!dev)
-        return;
+    if (!dev) {
+        klog("USB %d: zu viele Geräte - eines wird nicht bedient\n", x->number);
+        return false;
+    }
 
-    task_sleep(100);                    /* Kontakte zur Ruhe kommen lassen */
+    memset(dev, 0, sizeof(*dev));
+    dev->used = true;
+    dev->port = (uint8_t)root_port;
+    dev->speed = speed;
+    if (parent) {
+        dev->parent = parent;
+        dev->hub_port = (uint8_t)hub_port;
+        dev->depth = (uint8_t)(parent->depth + 1);
+        dev->route = parent->route |
+                     ((uint32_t)(hub_port & 0xF) << (4 * parent->depth));
+        ksnprintf(dev->place, sizeof(dev->place), "%s.%d", parent->place,
+                  hub_port);
+        /*
+         * Langsame Geräte an einem High-Speed-Hub: Der Hub übersetzt, und der
+         * Controller muss wissen, welcher Hub das an welchem Anschluss tut.
+         */
+        if (speed == SPEED_LOW || speed == SPEED_FULL) {
+            if (parent->speed == SPEED_HIGH) {
+                dev->tt_slot = parent->slot;
+                dev->tt_port = (uint8_t)hub_port;
+            } else {
+                dev->tt_slot = parent->tt_slot;
+                dev->tt_port = parent->tt_port;
+            }
+        }
+    } else {
+        ksnprintf(dev->place, sizeof(dev->place), "%d", root_port + 1);
+    }
+
+    x->last_code = 1;
+    const char *problem = device_setup(x, dev);
+    if (!problem)
+        return true;
+
+    /* Kein Gerät für uns oder ein Fehler: Anschluss in Ruhe lassen */
+    if (x->last_code == 1)
+        klog("USB %d: Gerät an Anschluss %s ignoriert (%s)\n", x->number,
+             dev->place, problem);
+    else
+        klog("USB %d: Gerät an Anschluss %s ignoriert (%s, %s, %s)\n",
+             x->number, dev->place, problem, speed_name(dev->speed),
+             code_text(x->last_code));
+    device_remove(x, dev);
+    return false;
+}
+
+static void port_connected(xhci_t *x, int port)
+{
+    if (x->failures[port] >= 3)
+        return;                         /* aufgegeben, bis neu eingesteckt wird */
+
+    pause_ms(x, 100);                   /* Kontakte zur Ruhe kommen lassen */
     if (!port_reset(x, port)) {
         if (++x->failures[port] == 3)
             klog("USB %d: Anschluss %d lässt sich nicht aktivieren (Status %08x)\n",
                  x->number, port + 1, rd32(x->op, OP_PORTSC(port)));
         return;
     }
-    memset(dev, 0, sizeof(*dev));
-    dev->used = true;
-    dev->port = (uint8_t)port;
-    dev->speed = (uint8_t)PORT_SPEED(rd32(x->op, OP_PORTSC(port)));
-
-    x->last_code = 1;
-    const char *problem = device_setup(x, dev);
-    if (problem) {
-        /* Kein Eingabegerät oder Fehler: Anschluss in Ruhe lassen */
-        if (x->last_code == 1)
-            klog("USB %d: Gerät an Anschluss %d ignoriert (%s)\n", x->number,
-                 port + 1, problem);
-        else
-            klog("USB %d: Gerät an Anschluss %d ignoriert (%s, %s, %s)\n",
-                 x->number, port + 1, problem, speed_name(dev->speed),
-                 code_text(x->last_code));
-        device_free(x, dev);
+    uint8_t speed = (uint8_t)PORT_SPEED(rd32(x->op, OP_PORTSC(port)));
+    if (!device_attach(x, NULL, port, 0, speed))
         x->failures[port] = 3;
+}
+
+static device_t *hub_child(xhci_t *x, const device_t *hub, int port)
+{
+    for (int i = 0; i < MAX_DEVICES; i++) {
+        device_t *dev = &x->devices[i];
+        if (dev->used && dev->parent == hub && dev->hub_port == port)
+            return dev;
+    }
+    return NULL;
+}
+
+/* An einem Hub-Anschluss steckt etwas Neues: aktivieren und einrichten. */
+static void hub_port_connected(xhci_t *x, device_t *hub, int port)
+{
+    bool super = hub->speed >= SPEED_SUPER;
+    uint16_t status = 0, change = 0;
+
+    pause_ms(x, 100);                   /* Kontakte zur Ruhe kommen lassen */
+    if (!hub_port_status(x, hub, port, &status, &change) ||
+        !(status & HUB_STATUS_CONNECTED))
+        return;                         /* schon wieder weg */
+
+    /* Reset; hilft er bei USB 3 nicht, einmal die gründlichere Variante */
+    bool enabled = false;
+    for (int attempt = 0; attempt < (super ? 2 : 1) && !enabled; attempt++) {
+        uint16_t feature = attempt == 0 ? HUB_PORT_RESET : HUB_BH_RESET;
+        if (!control(x, hub, 0x23, 3, feature, (uint16_t)port, 0))
+            break;
+        for (int i = 0; i < 50; i++) {
+            pause_ms(x, 10);
+            if (!hub_port_status(x, hub, port, &status, &change))
+                break;
+            if (!(status & HUB_STATUS_RESET) && (change & ((1u << 4) | (1u << 5))))
+                break;
+        }
+        hub_clear(x, hub, port, HUB_C_RESET);
+        if (super) {
+            hub_clear(x, hub, port, HUB_C_BH_RESET);
+            hub_clear(x, hub, port, HUB_C_LINK_STATE);
+        }
+        pause_ms(x, 20);                /* Erholungszeit nach dem Reset */
+        if (!hub_port_status(x, hub, port, &status, &change))
+            break;
+        if (change & 1)
+            hub_clear(x, hub, port, HUB_C_CONNECTION);
+        enabled = (status & HUB_STATUS_CONNECTED) && (status & HUB_STATUS_ENABLED);
+    }
+    if (!enabled) {
+        klog("USB %d: Anschluss %s.%d lässt sich nicht aktivieren (Status %04x)\n",
+             x->number, hub->place, port, status);
+        hub->hub.gave_up |= (uint16_t)(1u << port);
+        return;
+    }
+
+    uint8_t speed = SPEED_FULL;
+    if (super)
+        speed = SPEED_SUPER;
+    else if (status & HUB_STATUS_LOW_SPEED)
+        speed = SPEED_LOW;
+    else if (status & HUB_STATUS_HIGH_SPEED)
+        speed = SPEED_HIGH;
+    if (!device_attach(x, hub, hub->port, port, speed))
+        hub->hub.gave_up |= (uint16_t)(1u << port);
+}
+
+/* Fragt einen Hub, was sich an seinen Anschlüssen getan hat. */
+static void hub_poll(xhci_t *x, device_t *hub)
+{
+    hub_t *h = &hub->hub;
+    bool super = hub->speed >= SPEED_SUPER;
+
+    for (int port = 1; port <= h->ports; port++) {
+        uint16_t status, change;
+        if (!hub_port_status(x, hub, port, &status, &change)) {
+            if (++h->errors >= 3) {
+                klog("USB %d: Hub an Anschluss %s antwortet nicht mehr\n",
+                     x->number, hub->place);
+                h->ready = false;
+            }
+            return;
+        }
+        h->errors = 0;
+
+        device_t *child = hub_child(x, hub, port);
+        if (change & 1) {               /* ein- oder abgesteckt */
+            hub_clear(x, hub, port, HUB_C_CONNECTION);
+            h->gave_up &= (uint16_t)~(1u << port);
+            if (child) {
+                klog("USB %d: Gerät an Anschluss %s entfernt\n", x->number,
+                     child->place);
+                device_remove(x, child);
+                child = NULL;
+            }
+        }
+        /* Die übrigen Meldungen nur quittieren, sonst bleiben sie stehen. */
+        if (!super && (change & (1u << 1)))
+            hub_clear(x, hub, port, HUB_C_ENABLE);
+        if (!super && (change & (1u << 2)))
+            hub_clear(x, hub, port, HUB_C_SUSPEND);
+        if (change & (1u << 3))
+            hub_clear(x, hub, port, HUB_C_OVER_CURRENT);
+        if (change & (1u << 4))
+            hub_clear(x, hub, port, HUB_C_RESET);
+        if (super && (change & (1u << 5)))
+            hub_clear(x, hub, port, HUB_C_BH_RESET);
+        if (super && (change & (1u << 6)))
+            hub_clear(x, hub, port, HUB_C_LINK_STATE);
+        if (super && (change & (1u << 7)))
+            hub_clear(x, hub, port, HUB_C_CONFIG_ERROR);
+
+        if (!(status & HUB_STATUS_CONNECTED)) {
+            if (child) {
+                klog("USB %d: Gerät an Anschluss %s entfernt\n", x->number,
+                     child->place);
+                device_remove(x, child);
+            }
+            continue;
+        }
+        if (!child && !(h->gave_up & (1u << port)))
+            hub_port_connected(x, hub, port);
     }
 }
 
@@ -1153,7 +1485,8 @@ static void scan_ports(xhci_t *x)
         uint32_t status = rd32(x->op, OP_PORTSC(port));
         device_t *dev = NULL;
         for (int i = 0; i < MAX_DEVICES; i++) {
-            if (x->devices[i].used && x->devices[i].port == port)
+            if (x->devices[i].used && !x->devices[i].parent &&
+                x->devices[i].port == port)
                 dev = &x->devices[i];
         }
 
@@ -1164,12 +1497,22 @@ static void scan_ports(xhci_t *x)
             if (dev) {                  /* abgesteckt (oder neu eingesteckt) */
                 klog("USB %d: Gerät an Anschluss %d entfernt\n", x->number,
                      port + 1);
-                device_free(x, dev);
+                device_remove(x, dev);
                 dev = NULL;
             }
         }
         if ((status & PORT_CONNECTED) && !dev)
             port_connected(x, port);
+    }
+
+    /* Hubs: jeden etwa zweimal pro Sekunde nach Neuigkeiten fragen */
+    for (int i = 0; i < MAX_DEVICES; i++) {
+        device_t *hub = &x->devices[i];
+        if (!hub->used || !hub->hub.ready || time_ms() < hub->hub.next_poll)
+            continue;
+        hub_poll(x, hub);
+        if (hub->used)
+            hub->hub.next_poll = time_ms() + 500;
     }
 }
 
