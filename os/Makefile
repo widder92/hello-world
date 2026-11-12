@@ -119,7 +119,7 @@ check: | $(BUILD)
 	$(PYTHON) tests/crypto_test.py
 	cc -O1 -g -fsanitize=address,undefined -Wall -Wno-builtin-declaration-mismatch \
 	    -Wno-format-truncation \
-	    -o $(BUILD)/web_test tests/web_test.c kernel/html.c kernel/url.c
+	    -o $(BUILD)/web_test tests/web_test.c kernel/html.c kernel/url.c kernel/css.c
 	$(BUILD)/web_test
 	cc -O1 -g -fsanitize=address,undefined -Wall -o $(BUILD)/block_test tests/block_test.c
 	$(BUILD)/block_test
@@ -133,6 +133,9 @@ check: | $(BUILD)
 	cc -O1 -g -fsanitize=address,undefined -Wall -Wextra -o $(BUILD)/font_test \
 	    tests/font_test.c kernel/truetype.c
 	$(PYTHON) tests/font_test.py $(BUILD)/font_test fonts/DejaVuSans.ttf fonts/DejaVuSans-Bold.ttf
+	cc -O1 -g -fsanitize=address,undefined -Wall -Wextra -o $(BUILD)/css_test \
+	    tests/css_test.c kernel/css.c
+	$(BUILD)/css_test
 
 clean:
 	rm -rf $(BUILD)

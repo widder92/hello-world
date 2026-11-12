@@ -10,7 +10,10 @@
 #include <stdint.h>
 
 enum { STYLE_BOLD = 1, STYLE_LINK = 2, STYLE_HEADING = 4, STYLE_MUTED = 8,
-       STYLE_ITALIC = 16, STYLE_MONO = 32 };
+       STYLE_ITALIC = 16, STYLE_MONO = 32, STYLE_UNDERLINE = 64 };
+
+/* Farbangaben in Stücken und Zeilen: 0 heißt "keine"; sonst dieses Bit plus 0xRRGGBB */
+#define HTML_COLOR_SET 0x01000000u
 
 /* Ein Stück einer Zeile: Text in einer Darstellung - oder ein Formularfeld. */
 typedef struct {
@@ -18,7 +21,9 @@ typedef struct {
     uint16_t bytes;
     uint16_t column, width;             /* in Zeichen - mit Schriftauskunft in Pixeln */
     uint8_t style;
-    uint8_t level;                      /* Stufe der Überschrift (1 bis 6) oder 0 */
+    uint8_t size;                       /* Schriftgröße in Pixeln; 0 im Zeichenraster */
+    uint32_t color;                     /* Textfarbe laut Seite, oder 0: die übliche */
+    uint32_t background;                /* Hintergrund nur dieses Stücks, oder 0 */
     int16_t link;                       /* Nummer des Links oder -1 */
     int16_t widget;                     /* Nummer des Formularfelds oder -1 */
 } span_t;
@@ -27,8 +32,10 @@ typedef struct {
     uint32_t first, count;              /* Stücke dieser Zeile */
     int16_t image;                      /* Zeile gehört zu diesem Bild, oder -1 */
     uint16_t image_row;                 /* die wievielte Zeile des Bildes */
-    uint8_t tall;                       /* große Überschrift: belegt auch die nächste Zeile */
+    uint8_t tall;                       /* große Schrift: belegt auch die nächste Zeile */
     uint8_t filler;                     /* diese Zeile ist der untere Teil einer solchen */
+    uint8_t align;                      /* 0/1 links, 2 Mitte, 3 rechts (wie CSS_LEFT ...) */
+    uint32_t background;                /* Hintergrund der ganzen Zeile, oder 0 */
 } line_t;
 
 typedef enum {
@@ -113,6 +120,7 @@ typedef struct {
     int image_count, image_cap;
     int heading_line;                   /* Zeile der ersten Hauptüberschrift oder -1 */
     bool pixels;                        /* Spalten und Breiten der Stücke sind Pixel, nicht Zeichen */
+    uint32_t background;                /* Hintergrund der Seite laut ihrer Gestaltung, oder 0 */
     bool failed;                        /* Speicher ging aus - die Seite ist unvollständig */
 } page_t;
 
@@ -122,13 +130,32 @@ page_t *html_layout(const char *html, size_t len, const char *base_url, int colu
  * Schriftauskunft: Wer in echter Schrift setzen will, sagt dem Seitenaufbau,
  * wie breit ein Stück Text wird. Alle Breiten und Spalten der Seite sind dann
  * Pixel statt Zeichen; `columns` beim Aufruf ist die Breite in Pixeln, und
- * große Überschriften (Stufe 1 und 2) belegen zwei Zeilen.
+ * Zeilen mit großer Schrift (ab 19 Pixel) belegen zwei Zeilen.
+ *
+ * In diesem Modus wertet der Seitenaufbau auch die Gestaltung der Seite aus:
+ * style-Attribute und - falls mitgegeben - ihre Stylesheets (css.h).
  */
+struct css_sheet;
+
 typedef struct {
     int cell_width;                     /* Breite eines Zeichens der Rasterschrift (Felder, Einzüge) */
-    int (*width)(void *ctx, const char *text, size_t len, uint8_t style, uint8_t level);
+    int (*width)(void *ctx, const char *text, size_t len, uint8_t style, uint8_t size);
     void *ctx;
+    uint8_t base_size;                  /* Schriftgröße des Fließtexts */
+    uint8_t heading_size[3];            /* ... und der Überschriften der Stufen 1 bis 3 */
+    /* Die üblichen Farben des Browsers: nötig, um unlesbare Kombinationen zu erkennen */
+    uint32_t text_color, link_color, page_color;
+    const struct css_sheet *css;        /* Stylesheets der Seite oder NULL */
 } html_text_t;
+
+/*
+ * Sucht die Stylesheets einer Seite, in der Reihenfolge ihres Auftretens:
+ * den Inhalt von <style> (linked false) und die Adressen verlinkter Dateien
+ * (linked true, vollständige Adresse).
+ */
+typedef void (*html_style_found_t)(void *ctx, bool linked, const char *text, size_t len);
+void html_find_styles(const char *html, size_t len, const char *base_url,
+                      html_style_found_t found, void *ctx);
 
 /* Wie html_layout(), aber mit Bildern als Blöcken und/oder in echter Schrift. */
 page_t *html_layout_rich(const char *html, size_t len, const char *base_url, int columns,

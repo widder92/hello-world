@@ -1,4 +1,5 @@
 #include "html.h"
+#include "css.h"
 #include "claude.h"
 #include "console.h"
 #include "memory.h"
@@ -60,11 +61,26 @@ typedef struct {
 
 /* Was ein offenes Element verändert hat und bei seinem Ende zurückzunehmen ist */
 enum { U_HIDDEN = 1, U_BOLD = 2, U_LINK = 4, U_PRE = 8, U_HEADING = 16, U_LIST = 32,
-       U_QUOTE = 64, U_CAPTURE = 128, U_ITALIC = 256, U_MONO = 512 };
+       U_QUOTE = 64, U_CAPTURE = 128, U_ITALIC = 256, U_MONO = 512,
+       U_BREAK = 1024,                  /* laut Gestaltung ein eigener Block: danach neue Zeile */
+       U_INLINE = 2048 };               /* laut Gestaltung im Textfluss: keine neue Zeile */
+
+/* Was die Gestaltung der Seite für das laufende Element festlegt (wird vererbt) */
+typedef struct {
+    uint32_t color;                     /* 0 oder HTML_COLOR_SET | Farbe */
+    uint32_t background;                /* Hintergrund des umgebenden Blocks */
+    uint32_t highlight;                 /* Hintergrund nur des Textstücks */
+    int8_t bold, italic, underline;     /* -1: wie das Element es von sich aus hält */
+    uint8_t size;                       /* Schriftgröße in Pixeln; 0: die übliche */
+    uint8_t align;
+    bool list_plain;                    /* Listen ohne Punkte */
+} style_t;
 
 typedef struct {
     uint8_t tag;
     uint16_t undo;
+    css_node_t node;                    /* woran Stylesheet-Regeln das Element erkennen */
+    style_t saved;                      /* was vor dem Element galt */
 } element_t;
 
 typedef struct {
@@ -74,6 +90,10 @@ typedef struct {
     const html_pictures_t *pictures;    /* NULL: Bilder nur als Ersatztext */
     const html_text_t *text;            /* NULL: festes Zeichenraster */
     int unit;                           /* Breite eines Rasterzeichens: 1 oder Pixel */
+    style_t cur;                        /* geltende Gestaltung */
+    uint32_t page_color;                /* Hintergrund der Seite, für die Lesbarkeitsprüfung */
+    const char *name;                   /* Name des Elements, das gerade beginnt */
+    size_t name_len;
 
     element_t stack[STACK_MAX];
     int depth;
@@ -438,17 +458,57 @@ static bool raw_line(parser_t *ps)
     memset(line, 0, sizeof(*line));
     line->first = (uint32_t)page->span_count;
     line->image = -1;
+    line->background = ps->cur.background;
+    line->align = ps->cur.align;
     return true;
+}
+
+/* Rückt eine fertige Zeile in die Mitte oder nach rechts, wenn die Gestaltung das will. */
+static void finish_line(parser_t *ps)
+{
+    page_t *page = ps->page;
+    if (!ps->text || page->line_count == 0)
+        return;
+    line_t *line = &page->lines[page->line_count - 1];
+    if (line->count == 0 || line->align < CSS_CENTER || line->image >= 0)
+        return;
+    span_t *spans = &page->spans[line->first];
+    int room = ps->columns - (spans[line->count - 1].column + spans[line->count - 1].width);
+    if (room <= 0)
+        return;
+    int shift = line->align == CSS_CENTER ? room / 2 : room;
+    for (uint32_t i = 0; i < line->count; i++) {
+        spans[i].column = (uint16_t)(spans[i].column + shift);
+        if (spans[i].widget >= 0 && spans[i].widget < page->widget_count)
+            page->widgets[spans[i].widget].column += shift;
+    }
+    line->align = 0;                    /* erledigt */
+}
+
+/* Eine noch leere Zeile übernimmt Hintergrund und Ausrichtung dessen, was jetzt gilt. */
+static void sync_line(parser_t *ps)
+{
+    page_t *page = ps->page;
+    if (!ps->text || page->line_count == 0 || ps->has_content)
+        return;
+    line_t *line = &page->lines[page->line_count - 1];
+    if (line->image < 0 && !line->filler) {
+        line->background = ps->cur.background;
+        line->align = ps->cur.align;
+    }
 }
 
 static void push_line(parser_t *ps)
 {
     page_t *page = ps->page;
-    /* Eine große Überschrift braucht den Platz von zwei Zeilen. */
+    finish_line(ps);
+    /* Große Schrift braucht den Platz von zwei Zeilen. */
     if (page->line_count > 0 && page->lines[page->line_count - 1].tall) {
+        uint32_t background = page->lines[page->line_count - 1].background;
         if (!raw_line(ps))
             return;
         page->lines[page->line_count - 1].filler = 1;
+        page->lines[page->line_count - 1].background = background;
     }
     if (!raw_line(ps))
         return;
@@ -487,17 +547,54 @@ static void paragraph(parser_t *ps)
 
 static uint8_t current_style(const parser_t *ps)
 {
-    return (uint8_t)((ps->bold > 0 ? STYLE_BOLD : 0) |
-                     (ps->heading > 0 ? STYLE_HEADING | STYLE_BOLD : 0) |
-                     (ps->link >= 0 ? STYLE_LINK : 0) | (ps->muted ? STYLE_MUTED : 0) |
-                     (ps->italic > 0 ? STYLE_ITALIC : 0) |
+    bool link = ps->link >= 0;
+    bool bold = ps->cur.bold >= 0 ? ps->cur.bold : (ps->bold > 0 || ps->heading > 0);
+    bool italic = ps->cur.italic >= 0 ? ps->cur.italic : ps->italic > 0;
+    bool underline = ps->cur.underline >= 0 ? ps->cur.underline : link;
+    return (uint8_t)((bold ? STYLE_BOLD : 0) | (ps->heading > 0 ? STYLE_HEADING : 0) |
+                     (link ? STYLE_LINK : 0) | (ps->muted ? STYLE_MUTED : 0) |
+                     (italic ? STYLE_ITALIC : 0) | (underline ? STYLE_UNDERLINE : 0) |
                      (ps->mono > 0 || ps->pre > 0 ? STYLE_MONO : 0));
 }
 
-static uint8_t current_level(const parser_t *ps)
+/* Schriftgröße in Pixeln: laut Gestaltung, sonst nach Überschriftsstufe; 0 im Zeichenraster */
+static uint8_t current_size(const parser_t *ps)
 {
-    return (uint8_t)(ps->heading > 0 && ps->heading_level >= 1 && ps->heading_level <= 6
-                         ? ps->heading_level : 0);
+    if (!ps->text)
+        return 0;
+    if (ps->cur.size)
+        return ps->cur.size;
+    if (ps->heading > 0 && ps->heading_level >= 1 && ps->heading_level <= 3)
+        return ps->text->heading_size[ps->heading_level - 1];
+    return ps->text->base_size;
+}
+
+static int brightness(uint32_t rgb)
+{
+    return (int)(((rgb >> 16) & 0xFF) * 299 + ((rgb >> 8) & 0xFF) * 587 + (rgb & 0xFF) * 114) / 1000;
+}
+
+/*
+ * Textfarbe für das nächste Stück: die der Seite - außer sie wäre auf dem
+ * Hintergrund kaum zu lesen. Das passiert, wenn eine Seite helle Schrift auf
+ * ein Hintergrundbild setzt, das wir nicht zeigen, oder nur eines von beiden
+ * festlegt. Dann gilt die übliche dunkle Schrift bzw. auf dunklem Grund helle.
+ */
+static uint32_t current_color(const parser_t *ps, uint8_t style)
+{
+    if (!ps->text)
+        return 0;
+    uint32_t behind = ps->cur.highlight ? ps->cur.highlight
+                    : ps->cur.background ? ps->cur.background : ps->page_color;
+    uint32_t usual = (style & STYLE_LINK) ? ps->text->link_color : ps->text->text_color;
+    uint32_t wanted = ps->cur.color ? ps->cur.color : usual;
+    int difference = brightness(wanted & 0xFFFFFF) - brightness(behind & 0xFFFFFF);
+    if (difference < 0)
+        difference = -difference;
+    if (difference >= 70)
+        return ps->cur.color;
+    bool dark = brightness(behind & 0xFFFFFF) < 128;
+    return HTML_COLOR_SET | (dark ? 0xF2F2F2 : (ps->text->text_color & 0xFFFFFF));
 }
 
 static int count_chars(const char *text, size_t len);
@@ -507,7 +604,7 @@ static int measure(const parser_t *ps, const char *text, size_t len)
 {
     if (!ps->text)
         return count_chars(text, len);
-    return ps->text->width(ps->text->ctx, text, len, current_style(ps), current_level(ps));
+    return ps->text->width(ps->text->ctx, text, len, current_style(ps), current_size(ps));
 }
 
 /* Setzt Text (oder ein Formularfeld) in die laufende Zeile, bricht nötigenfalls um. */
@@ -524,8 +621,10 @@ static void place(parser_t *ps, const char *bytes, size_t n, int width, int widg
         space = 0;
         spaced = false;
     }
-    if (!ps->has_content)
+    if (!ps->has_content) {
+        sync_line(ps);
         ps->column = indent(ps);
+    }
 
     /* Text in den Vorrat der Seite */
     if (page->pool_len + n + 2 > page->pool_cap) {
@@ -545,10 +644,12 @@ static void place(parser_t *ps, const char *bytes, size_t n, int width, int widg
     }
 
     line_t *line = &page->lines[page->line_count - 1];
-    uint8_t style = current_style(ps), level = current_level(ps);
+    uint8_t style = current_style(ps), size = current_size(ps);
+    uint32_t color = current_color(ps, style);
     span_t *last = line->count ? &page->spans[page->span_count - 1] : NULL;
     bool merge = last && widget < 0 && last->widget < 0 && last->style == style &&
-                 last->level == level &&
+                 last->size == size && last->color == color &&
+                 last->background == ps->cur.highlight &&
                  last->link == ps->link && last->text + last->bytes == page->pool_len &&
                  last->column + last->width == ps->column &&
                  last->bytes + n + 1 < 60000;
@@ -568,15 +669,17 @@ static void place(parser_t *ps, const char *bytes, size_t n, int width, int widg
         span->column = (uint16_t)(ps->column + space);
         span->width = (uint16_t)width;
         span->style = style;
-        span->level = level;
+        span->size = size;
+        span->color = color;
+        span->background = ps->cur.highlight;
         span->link = (int16_t)ps->link;
         span->widget = (int16_t)widget;
         memcpy(page->pool + page->pool_len, bytes, n);
         page->pool_len += n;
         line->count++;
     }
-    /* In echter Schrift sind die beiden obersten Überschriftsstufen zwei Zeilen hoch. */
-    if (ps->text && widget < 0 && (level == 1 || level == 2))
+    /* Große Schrift ist zwei Zeilen hoch. */
+    if (ps->text && widget < 0 && size >= 19 && !(style & STYLE_MONO))
         line->tall = 1;
     ps->column += space + width;
     ps->has_content = true;
@@ -877,6 +980,7 @@ static void pop(parser_t *ps)
     default: flush_word(ps); break;
     }
 
+    ps->cur = e.saved;
     if (e.undo & U_HIDDEN)
         ps->hidden--;
     if (e.undo & U_BOLD)
@@ -910,11 +1014,17 @@ static void pop(parser_t *ps)
             paragraph(ps);
         break;
     case T_BLOCK: case T_LI: case T_TR: case T_DT: case T_DD:
-        new_line(ps, false);
+        if (e.undo & U_INLINE)
+            ps->space_pending = true;   /* nebeneinander: nur ein Abstand */
+        else
+            new_line(ps, false);
         break;
     default:
         break;
     }
+    if (e.undo & U_BREAK)
+        new_line(ps, false);
+    sync_line(ps);
 }
 
 /* Schließt das innerste offene Element dieser Art - aber nicht über eine Grenze hinweg. */
@@ -1105,12 +1215,9 @@ static void remember_anchor(parser_t *ps, const attr_t *attrs, int count)
     page->anchor_count++;
 }
 
-static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
+/* Was ein neues Element stillschweigend beendet */
+static void close_implied(parser_t *ps, tag_t tag)
 {
-    page_t *page = ps->page;
-    uint16_t undo = 0;
-
-    /* Was ein neues Element stillschweigend beendet */
     switch (tag) {
     case T_P: case T_BLOCK: case T_UL: case T_OL: case T_TABLE: case T_HEADING:
     case T_PRE: case T_FORM: case T_BLOCKQUOTE: case T_HR: case T_DL:
@@ -1135,11 +1242,145 @@ static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
     default:
         break;
     }
+}
 
-    if (tag == T_SKIP || wants_hidden(attrs, count)) {
+/* Elemente, die von sich aus im Textfluss stehen */
+static bool inline_tag(tag_t tag)
+{
+    return tag == T_UNKNOWN || tag == T_A || tag == T_BOLD || tag == T_ITALIC ||
+           tag == T_MONO || tag == T_TD || tag == T_TH;
+}
+
+/*
+ * Überträgt, was Stylesheets und style-Attribut für ein Element festlegen,
+ * in die geltende Gestaltung. Vorher fällt zurück, was das Element von sich
+ * aus anders hält als seine Umgebung (ein Link ist blau, <b> ist fett ...).
+ */
+static void apply_style(parser_t *ps, tag_t tag, const css_style_t *cs)
+{
+    style_t *cur = &ps->cur;
+    int around = current_size(ps);      /* Schriftgröße der Umgebung, für Angaben wie "120%" */
+
+    if (tag == T_BOLD || tag == T_HEADING || tag == T_TH)
+        cur->bold = -1;
+    if (tag == T_ITALIC)
+        cur->italic = -1;
+    if (tag == T_A) {
+        cur->color = 0;
+        cur->underline = -1;
+    }
+    if (tag == T_HEADING) {
+        cur->size = 0;
+        around = ps->heading_level >= 1 && ps->heading_level <= 3
+                     ? ps->text->heading_size[ps->heading_level - 1] : ps->text->base_size;
+    }
+
+    if (cs->has & CSS_COLOR)
+        cur->color = HTML_COLOR_SET | cs->color;
+    if (cs->has & CSS_WEIGHT)
+        cur->bold = cs->bold;
+    if (cs->has & CSS_SLANT)
+        cur->italic = cs->italic;
+    if (cs->has & CSS_UNDERLINE)
+        cur->underline = cs->underline;
+    if (cs->has & CSS_ALIGN)
+        cur->align = cs->align;
+    if (cs->has & CSS_LIST)
+        cur->list_plain = cs->list_plain;
+    if (cs->has & CSS_SIZE) {
+        /* Seiten rechnen mit 16 Pixeln Grundgröße, wir mit base_size */
+        int px = cs->size_px ? (cs->size_px * ps->text->base_size + 8) / 16
+                             : (around * cs->size_percent + 50) / 100;
+        cur->size = (uint8_t)(px < 10 ? 10 : px > 28 ? 28 : px);
+    }
+    if (cs->has & CSS_BACKGROUND) {
+        uint32_t color = HTML_COLOR_SET | cs->background;
+        bool page_level = same_word(ps->name, ps->name_len, "body") ||
+                          same_word(ps->name, ps->name_len, "html");
+        bool block = (cs->has & CSS_DISPLAY) ? cs->display == CSS_BLOCK : !inline_tag(tag);
+        if (page_level) {
+            ps->page->background = color;
+            ps->page_color = color;
+        } else if (block) {
+            cur->background = color;
+            cur->highlight = 0;
+        } else {
+            cur->highlight = color;
+        }
+    }
+}
+
+static void element_start(parser_t *ps, tag_t tag, const attr_t *attrs, int count,
+                          bool css_hidden, int display);
+
+static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
+{
+    close_implied(ps, tag);
+
+    style_t saved = ps->cur;
+    css_node_t node;
+    bool css_hidden = false;
+    int display = 0;
+    memset(&node, 0, sizeof(node));
+    if (ps->text) {
+        const attr_t *id = find_attr(attrs, count, "id");
+        const attr_t *class = find_attr(attrs, count, "class");
+        const attr_t *style = find_attr(attrs, count, "style");
+        node.tag = ps->name;
+        node.tag_len = ps->name_len;
+        if (id) {
+            node.id = id->value;
+            node.id_len = id->value_len;
+        }
+        if (class) {
+            node.classes = class->value;
+            node.classes_len = class->value_len;
+        }
+        node.parent = ps->depth > 0 ? &ps->stack[ps->depth - 1].node : NULL;
+
+        css_style_t cs;
+        css_match(ps->text->css, &node, style ? style->value : NULL,
+                  style ? style->value_len : 0, &cs);
+        css_hidden = ((cs.has & CSS_DISPLAY) && cs.display == CSS_NONE) ||
+                     ((cs.has & CSS_VISIBILITY) && cs.hidden);
+        if (cs.has & CSS_DISPLAY)
+            display = cs.display;
+        apply_style(ps, tag, &cs);
+    }
+
+    int depth = ps->depth;
+    element_start(ps, tag, attrs, count, css_hidden, display);
+    if (ps->depth > depth) {
+        ps->stack[ps->depth - 1].node = node;
+        ps->stack[ps->depth - 1].saved = saved;
+    } else {
+        ps->cur = saved;                /* Element ohne Inhalt: gilt nicht weiter */
+    }
+    sync_line(ps);
+}
+
+static void element_start(parser_t *ps, tag_t tag, const attr_t *attrs, int count,
+                          bool css_hidden, int display)
+{
+    page_t *page = ps->page;
+    uint16_t undo = 0;
+
+    if (tag == T_SKIP || css_hidden || wants_hidden(attrs, count)) {
         flush_word(ps);
         ps->hidden++;
         undo |= U_HIDDEN;
+    }
+    /*
+     * Laut Gestaltung ein eigener Block, obwohl das Element sonst im Textfluss
+     * steht. In Tabellenzellen gilt das nicht: Die stehen hier nebeneinander
+     * in einer Zeile, und Umbrüche darin zerrissen die Zeile.
+     */
+    bool in_cell = false;
+    for (int i = ps->depth - 1; i >= 0 && !in_cell; i--)
+        in_cell = ps->stack[i].tag == T_TD || ps->stack[i].tag == T_TH;
+    if (display == CSS_BLOCK && inline_tag(tag) && tag != T_TD && tag != T_TH && !in_cell) {
+        new_line(ps, false);
+        undo |= U_BREAK;
     }
     if (ps->hidden == 0)
         remember_anchor(ps, attrs, count);
@@ -1212,24 +1453,34 @@ static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
         ps->heading++;
         undo |= U_HEADING;
         break;
-    case T_BLOCK: case T_DT:
-        new_line(ps, false);
-        break;
-    case T_DD:
-        new_line(ps, false);
+    case T_BLOCK: case T_DT: case T_DD:
+        if (display == CSS_INLINE)
+            undo |= U_INLINE;           /* etwa Menüpunkte nebeneinander */
+        else
+            new_line(ps, false);
         break;
     case T_UL: case T_OL:
         if (ps->list_depth == 0)
             paragraph(ps);
         else
             new_line(ps, false);
+        if (ps->cur.list_plain)
+            break;                      /* Liste ohne Punkte: auch ohne Einzug */
         if (ps->list_depth < LISTS_MAX)
             ps->counter[ps->list_depth] = tag == T_OL ? 1 : 0;
         ps->list_depth++;
         undo |= U_LIST;
         break;
     case T_LI: {
+        if (display == CSS_INLINE) {    /* etwa Menüpunkte nebeneinander */
+            flush_word(ps);
+            ps->space_pending = true;
+            undo |= U_INLINE;
+            break;
+        }
         new_line(ps, false);
+        if (ps->cur.list_plain)
+            break;                      /* Liste ohne Punkte */
         char bullet[12] = "-";
         if (ps->text)
             strlcpy(bullet, "\xE2\x80\xA2", sizeof(bullet));    /* runder Punkt */
@@ -1395,6 +1646,109 @@ static const char *find_close(const char *p, const char *end, const char *name)
     return end;
 }
 
+/* Liest die Attribute eines Elements (name, name=wert, name="wert") bis hinter das ">". */
+static int read_attributes(const char **cursor, const char *end, attr_t *attrs, bool closing)
+{
+    const char *p = *cursor;
+    int count = 0;
+    while (p < end && *p != '>') {
+        if (is_space(*p) || *p == '/') {
+            p++;
+            continue;
+        }
+        attr_t a = { p, "", 0, 0 };
+        while (p < end && !is_space(*p) && *p != '=' && *p != '>' && *p != '/')
+            p++;
+        a.name_len = (size_t)(p - a.name);
+        while (p < end && is_space(*p))
+            p++;
+        if (p < end && *p == '=') {
+            p++;
+            while (p < end && is_space(*p))
+                p++;
+            if (p < end && (*p == '"' || *p == '\'')) {
+                char quote = *p++;
+                a.value = p;
+                while (p < end && *p != quote)
+                    p++;
+                a.value_len = (size_t)(p - a.value);
+                p += p < end;
+            } else {
+                a.value = p;
+                while (p < end && !is_space(*p) && *p != '>')
+                    p++;
+                a.value_len = (size_t)(p - a.value);
+            }
+        }
+        if (a.name_len == 0) {
+            p++;                        /* etwas Unverständliches: weiter */
+        } else if (!closing && count < ATTRS_MAX) {
+            attrs[count++] = a;
+        }
+    }
+    p += p < end;                       /* das '>' */
+    *cursor = p;
+    return count;
+}
+
+void html_find_styles(const char *html, size_t len, const char *base_url,
+                      html_style_found_t found, void *ctx)
+{
+    const char *p = html, *end = html + len;
+    char *full = kmalloc(URL_SIZE);
+    if (!full)
+        return;
+
+    while (p < end) {
+        if (*p != '<') {
+            p++;
+            continue;
+        }
+        if (end - p >= 4 && memcmp(p, "<!--", 4) == 0) {
+            p += 4;
+            while (p + 3 <= end && memcmp(p, "-->", 3) != 0)
+                p++;
+            continue;
+        }
+        const char *name = p + 1;
+        size_t name_len = 0;
+        while (name + name_len < end && is_alpha(name[name_len]))
+            name_len++;
+        bool style = same_word(name, name_len, "style");
+        bool link = same_word(name, name_len, "link");
+        bool script = same_word(name, name_len, "script");
+        if (!style && !link && !script) {
+            p++;
+            continue;
+        }
+        p = name + name_len;
+        attr_t attrs[ATTRS_MAX];
+        int count = read_attributes(&p, end, attrs, false);
+
+        /* Für den Druck gedachte Stylesheets zählen nicht */
+        const attr_t *media = find_attr(attrs, count, "media");
+        bool for_screen = !media || media->value_len == 0 || has_token(media, "all") ||
+                          has_token(media, "screen");
+        if (script) {
+            p = find_close(p, end, "script");
+        } else if (style) {
+            const char *stop = find_close(p, end, "style");
+            if (for_screen && stop > p)
+                found(ctx, false, p, (size_t)(stop - p));
+            p = stop;
+        } else {
+            const attr_t *rel = find_attr(attrs, count, "rel");
+            char *href = attr_text(attrs, count, "href");
+            if (rel && has_token(rel, "stylesheet") && !has_token(rel, "alternate") &&
+                for_screen && !find_attr(attrs, count, "disabled") && href && href[0] &&
+                url_resolve(base_url, href, full, URL_SIZE))
+                found(ctx, true, full, strlen(full));
+            kfree(href);
+        }
+    }
+    kfree(full);
+}
+
 static void parse(parser_t *ps, const char *html, size_t len)
 {
     const char *p = html, *end = html + len;
@@ -1437,45 +1791,10 @@ static void parse(parser_t *ps, const char *html, size_t len)
             ps->heading_level = name[1] - '0';
         p = name + name_len;
 
-        /* Attribute: name, name=wert, name="wert", name='wert' */
+        ps->name = name;
+        ps->name_len = name_len;
         attr_t attrs[ATTRS_MAX];
-        int count = 0;
-        while (p < end && *p != '>') {
-            if (is_space(*p) || *p == '/') {
-                p++;
-                continue;
-            }
-            attr_t a = { p, "", 0, 0 };
-            while (p < end && !is_space(*p) && *p != '=' && *p != '>' && *p != '/')
-                p++;
-            a.name_len = (size_t)(p - a.name);
-            while (p < end && is_space(*p))
-                p++;
-            if (p < end && *p == '=') {
-                p++;
-                while (p < end && is_space(*p))
-                    p++;
-                if (p < end && (*p == '"' || *p == '\'')) {
-                    char quote = *p++;
-                    a.value = p;
-                    while (p < end && *p != quote)
-                        p++;
-                    a.value_len = (size_t)(p - a.value);
-                    p += p < end;
-                } else {
-                    a.value = p;
-                    while (p < end && !is_space(*p) && *p != '>')
-                        p++;
-                    a.value_len = (size_t)(p - a.value);
-                }
-            }
-            if (a.name_len == 0) {
-                p++;                    /* etwas Unverständliches: weiter */
-            } else if (!closing && count < ATTRS_MAX) {
-                attrs[count++] = a;
-            }
-        }
-        p += p < end;                   /* das '>' */
+        int count = read_attributes(&p, end, attrs, closing);
 
         if (closing) {
             end_tag(ps, tag);
@@ -1548,6 +1867,7 @@ static page_t *begin(parser_t *ps, const char *base, int columns)
     ps->base = base;
     ps->columns = columns < 20 ? 20 : columns > 250 ? 250 : columns;
     ps->unit = 1;
+    ps->cur.bold = ps->cur.italic = ps->cur.underline = -1;
     ps->link = -1;
     ps->form = -1;
     ps->select = -1;
@@ -1567,6 +1887,7 @@ page_t *html_layout_rich(const char *html, size_t len, const char *base_url, int
             /* echte Schrift: alle Breiten in Pixeln */
             ps->text = text;
             ps->unit = text->cell_width;
+            ps->page_color = HTML_COLOR_SET | (text->page_color & 0xFFFFFF);
             page->pixels = true;
             ps->columns = columns < 160 ? 160 : columns > 8000 ? 8000 : columns;
         }
@@ -1574,6 +1895,8 @@ page_t *html_layout_rich(const char *html, size_t len, const char *base_url, int
             pictures->line_height > 0 && pictures->max_rows > 0)
             ps->pictures = pictures;
         parse(ps, html, len);
+        flush_word(ps);
+        finish_line(ps);
     }
     kfree(ps);
     return page;

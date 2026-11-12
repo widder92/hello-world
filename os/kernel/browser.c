@@ -20,6 +20,7 @@
 #include "http.h"
 #include "image.h"
 #include "cpu.h"
+#include "css.h"
 #include "input.h"
 #include "json.h"
 #include "memory.h"
@@ -60,6 +61,11 @@
 #define PICTURE_ROWS     34                         /* höchstens so viele Zeilen je Bild */
 #define PICTURE_WORKERS  2
 #define C_PLACEHOLDER    RGB(238, 238, 234)
+
+/* Stylesheets einer Seite */
+#define STYLES_MAX       12                         /* so viele Dateien höchstens */
+#define STYLE_FILE_MAX   (2u * 1024 * 1024)
+#define STYLE_TIME_MS    20000                      /* Geduld für alle zusammen */
 
 #define C_BACKGROUND RGB(252, 252, 250)
 #define C_TOOLBAR    RGB(232, 230, 224)
@@ -104,6 +110,7 @@ typedef struct {
 
     char url[URL_SIZE];                 /* Adresse der gezeigten Seite */
     page_t *page;
+    css_sheet_t *css;                   /* ihre Stylesheets (oder NULL) */
     char *source;                       /* ihr Quelltext - zum Neu-Umbrechen bei anderer Breite */
     size_t source_len;
     bool source_html;
@@ -126,6 +133,7 @@ typedef struct {
     page_t *incoming;
     char incoming_url[URL_SIZE];
     char *incoming_source;
+    css_sheet_t *incoming_css;
     size_t incoming_len;
     bool incoming_html;
     int incoming_columns;
@@ -463,19 +471,6 @@ static html_pictures_t picture_source(browser_t *b)
 
 #define TEXT_SIZE 15                    /* Fließtext */
 
-/* Schriftgröße je Überschriftsstufe; 4 bis 6 sind fett in Textgröße */
-static int text_size(uint8_t level)
-{
-    return level == 1 ? 26 : level == 2 ? 21 : level == 3 ? 17 : TEXT_SIZE;
-}
-
-/* Abstand der Grundlinie von der Oberkante der Zeile */
-static int text_baseline(uint8_t level)
-{
-    /* Große Überschriften stehen oben in ihren zwei Zeilen: der Abstand liegt darunter. */
-    return level == 1 ? 27 : level == 2 ? 23 : level == 3 ? 16 : 15;
-}
-
 static int text_flags(uint8_t style)
 {
     return ((style & STYLE_BOLD) ? FONT_BOLD : 0) | ((style & STYLE_ITALIC) ? FONT_ITALIC : 0);
@@ -489,7 +484,7 @@ static bool text_is_grid(uint8_t style)
 
 /* Auskunft für den Seitenaufbau: wie breit ein Stück Text wird */
 static int page_text_width(void *ctx, const char *text, size_t len, uint8_t style,
-                           uint8_t level)
+                           uint8_t size)
 {
     (void)ctx;
     if (text_is_grid(style)) {
@@ -500,23 +495,67 @@ static int page_text_width(void *ctx, const char *text, size_t len, uint8_t styl
         }
         return count * FONT_W;
     }
-    return font_width(text, len, text_size(level), text_flags(style));
-}
-
-static html_text_t text_source(void)
-{
-    return (html_text_t){ .cell_width = FONT_W, .width = page_text_width };
+    return font_width(text, len, size ? size : TEXT_SIZE, text_flags(style));
 }
 
 /* Setzt eine Seite für die jetzige Fensterbreite. */
 static page_t *layout_page(browser_t *b, const char *source, size_t len, const char *url,
-                           bool html)
+                           bool html, const css_sheet_t *css)
 {
     if (!html)
         return html_plain_text(source, len, COLUMNS);
     html_pictures_t pictures = picture_source(b);
-    html_text_t text = text_source();
+    html_text_t text = {
+        .cell_width = FONT_W, .width = page_text_width,
+        .base_size = TEXT_SIZE, .heading_size = { 26, 21, 17 },
+        .text_color = C_TEXT, .link_color = C_LINK, .page_color = C_BACKGROUND,
+        .css = css,
+    };
     return html_layout_rich(source, len, url, LAYOUT_W, &pictures, &text);
+}
+
+/* --- Stylesheets der Seite laden -------------------------------------------------------------- */
+
+typedef struct {
+    browser_t *b;
+    css_sheet_t *css;
+    int files;
+    uint64_t deadline;
+} styles_ctx_t;
+
+static void style_found(void *ctx, bool linked, const char *text, size_t len)
+{
+    styles_ctx_t *c = ctx;
+    if (!linked) {
+        css_add(c->css, text, len);
+        return;
+    }
+    if (c->files >= STYLES_MAX || time_ms() >= c->deadline || c->b->closing)
+        return;
+    c->files++;
+    http_response_t response;
+    http_options_t options = {
+        .method = "GET",
+        .headers = "Accept: text/css,*/*;q=0.1\r\n",
+        .max_body = STYLE_FILE_MAX,
+        .timeout_ms = 10000,
+    };
+    if (!http_request(text, &options, &response))
+        return;
+    if (response.status == 200 && response.body)
+        css_add(c->css, response.body, response.length);
+    kfree(response.body);
+}
+
+/* Sammelt die Stylesheets einer Seite ein; NULL bei Speichermangel. */
+static css_sheet_t *load_styles(browser_t *b, const char *html, size_t len, const char *url)
+{
+    css_sheet_t *css = css_create(LAYOUT_W);
+    if (!css)
+        return NULL;
+    styles_ctx_t ctx = { b, css, 0, time_ms() + STYLE_TIME_MS };
+    html_find_styles(html, len, url, style_found, &ctx);
+    return css;
 }
 
 static void picture_release(browser_t *b, picture_t *pic)
@@ -709,11 +748,13 @@ static int pictures_pending(browser_t *b, bool start)
 }
 
 static void deliver(browser_t *b, page_t *page, const char *url, char *source,
-                    size_t len, bool html, int columns)
+                    size_t len, bool html, int columns, css_sheet_t *css)
 {
     while (b->incoming_ready && !b->closing)
         task_sleep(20);
     kfree(b->incoming_source);
+    css_free(b->incoming_css);
+    b->incoming_css = css;
     b->incoming_source = source;
     b->incoming_len = len;
     b->incoming_html = html;
@@ -770,10 +811,10 @@ static void worker(void *arg)
         int columns = LAYOUT_W;
         size_t len = sizeof(start_page) - 1;
         char *copy = kmalloc(len + 1);
-        page_t *page = copy ? layout_page(b, start_page, len, START_PAGE, true) : NULL;
+        page_t *page = copy ? layout_page(b, start_page, len, START_PAGE, true, NULL) : NULL;
         if (page) {
             memcpy(copy, start_page, len + 1);
-            deliver(b, page, url, copy, len, true, columns);
+            deliver(b, page, url, copy, len, true, columns, NULL);
         } else {
             kfree(copy);
         }
@@ -865,9 +906,15 @@ static void worker(void *arg)
             }
         }
         int columns = LAYOUT_W;
-        page_t *page = layout_page(b, content, length, url, html);
+        css_sheet_t *css = NULL;
+        if (html) {
+            set_status(b, false, "Lade Gestaltung von %s ...", host);
+            css = load_styles(b, content, length, url);
+        }
+        page_t *page = layout_page(b, content, length, url, html, css);
         if (!page) {
             kfree(content);
+            css_free(css);
             set_status(b, true, "Nicht genug Speicher für diese Seite");
             break;
         }
@@ -877,7 +924,7 @@ static void worker(void *arg)
             set_status(b, true, "Die Seite ist zu groß - sie wird unvollständig gezeigt");
         else
             set_status(b, false, "");
-        deliver(b, page, url, content, length, html, columns);
+        deliver(b, page, url, content, length, html, columns, css);
         break;
     }
 
@@ -942,7 +989,7 @@ static void relayout(browser_t *b, bool force)
     page_t *old = b->page;
     if (!old || !b->source || (b->page_columns == LAYOUT_W && !force))
         return;
-    page_t *fresh = layout_page(b, b->source, b->source_len, b->url, b->source_html);
+    page_t *fresh = layout_page(b, b->source, b->source_len, b->url, b->source_html, b->css);
     if (!fresh)
         return;
 
@@ -1001,7 +1048,10 @@ static void take_incoming(browser_t *b)
         return;
     page_free(b->page);
     kfree(b->source);
+    css_free(b->css);
     b->page = b->incoming;
+    b->css = b->incoming_css;
+    b->incoming_css = NULL;
     b->source = b->incoming_source;
     b->source_len = b->incoming_len;
     b->source_html = b->incoming_html;
@@ -1351,14 +1401,37 @@ static void draw_page(browser_t *b, surface_t *s)
 {
     const page_t *page = b->page;
     gfx_set_clip(s, rect_make(0, CONTENT_Y, SCROLL_X - 2, CONTENT_H));
-    for (int row = 0; row < ROWS && b->scroll + row < page->line_count; row++) {
+    /*
+     * Zeilen mit großer Schrift sind zwei Zeilen hoch. Beginnt die Anzeige in
+     * der unteren Hälfte einer solchen, wird die Zeile darüber mitgezeichnet
+     * (ihr oberer Teil fällt dem Ausschnitt zum Opfer).
+     */
+    int first_row = b->scroll > 0 && b->scroll < page->line_count &&
+                    page->lines[b->scroll].filler ? -1 : 0;
+    for (int row = first_row; row < ROWS && b->scroll + row < page->line_count; row++) {
         const line_t *line = &page->lines[b->scroll + row];
         int y = CONTENT_Y + row * ROW_H;
+        if (line->filler)
+            continue;                   /* gehört zur Zeile darüber */
         if (line->image >= 0 && line->image < page->image_count) {
             draw_picture_row(b, s, &page->images[line->image], line->image_row, y);
             continue;
         }
         int unit = page->pixels ? 1 : FONT_W;
+        if (line->background)           /* farbig hinterlegter Abschnitt der Seite */
+            gfx_fill(s, 0, y, SCROLL_X - 2, line->tall ? 2 * ROW_H : ROW_H,
+                     line->background & 0xFFFFFF);
+
+        /* Alle Stücke einer Zeile stehen auf derselben Grundlinie: der der größten Schrift */
+        int largest = TEXT_SIZE;
+        for (uint32_t i = 0; i < line->count; i++) {
+            const span_t *span = &page->spans[line->first + i];
+            if (span->widget < 0 && !(span->style & STYLE_MONO) && span->size > largest)
+                largest = span->size;
+        }
+        int baseline = line->tall ? y + 4 + (largest * 9 + 5) / 10
+                                  : y + (largest >= 17 ? 16 : 15);
+
         for (uint32_t i = 0; i < line->count; i++) {
             const span_t *span = &page->spans[line->first + i];
             int x = CONTENT_X + span->column * unit;
@@ -1366,11 +1439,14 @@ static void draw_page(browser_t *b, surface_t *s)
                 draw_widget(b, s, span->widget, x, y);
                 continue;
             }
-            color_t color = span->style & STYLE_LINK ? C_LINK
+            if (span->background)
+                gfx_fill(s, x, y, span->width * unit, line->tall ? 2 * ROW_H : ROW_H,
+                         span->background & 0xFFFFFF);
+            color_t color = span->color ? (span->color & 0xFFFFFF)
+                          : span->style & STYLE_LINK ? C_LINK
                           : span->style & STYLE_HEADING ? C_HEADING
                           : span->style & STYLE_MUTED ? C_MUTED : C_TEXT;
             const char *text = page->pool + span->text;
-            int baseline = y + text_baseline(page->pixels ? span->level : 0);
             if (!page->pixels || text_is_grid(span->style)) {
                 /* Rasterschrift: Zeichen für Zeichen in festen Schritten */
                 const char *end = text + span->bytes;
@@ -1381,11 +1457,11 @@ static void draw_page(browser_t *b, surface_t *s)
                     cx += FONT_W;
                 }
             } else {
-                font_draw(s, x, baseline, text, span->bytes, text_size(span->level),
+                font_draw(s, x, baseline, text, span->bytes, span->size ? span->size : TEXT_SIZE,
                           text_flags(span->style), color);
             }
-            if (span->style & STYLE_LINK)
-                gfx_fill(s, x, baseline + 2, span->width * unit, 1, C_LINK);
+            if (span->style & STYLE_UNDERLINE)
+                gfx_fill(s, x, baseline + 2, span->width * unit, 1, color);
         }
     }
     gfx_reset_clip(s);
@@ -1455,6 +1531,9 @@ static void draw(browser_t *b)
         }
     }
 
+    if (b->page && b->page->background)     /* die Seite hat eine eigene Hintergrundfarbe */
+        gfx_fill(s, 0, CONTENT_Y - 4, SCROLL_X - 2, STATUS_Y - CONTENT_Y + 4,
+                 b->page->background & 0xFFFFFF);
     if (b->page)
         draw_page(b, s);
     if (b->page && b->overlay != OVERLAY_NONE)
@@ -1932,6 +2011,8 @@ void browser_app(void *arg)
     page_free(b->incoming);
     kfree(b->source);
     kfree(b->incoming_source);
+    css_free(b->css);
+    css_free(b->incoming_css);
     for (int i = 0; i < b->history_count; i++)
         kfree(b->history[i]);
     while (b->cookies) {

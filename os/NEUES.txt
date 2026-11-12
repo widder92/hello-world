@@ -1,5 +1,5 @@
-HelloOS 0.15
-- Echte Schriften: HelloOS zeichnet Text jetzt mit einem eigenen Schriftrenderer in jeder Größe - in Fenstertiteln, Menüs, Dialogen und im Browser.
-- Browser: Seiten erscheinen in echter Schrift mit großen Überschriften, fett und kursiv; auch griechische und kyrillische Zeichen sowie typografische Anführungszeichen werden gezeigt.
-- Dieses Update ist größer als sonst (etwa 2 MB), weil die Schriftdateien dazugehören.
-- Weiterhin nicht möglich: JavaScript und die Gestaltung von Seiten (Farben, Spalten).
+HelloOS 0.16
+- Browser: Seiten erscheinen mit ihrer Gestaltung - Textfarben, Hintergründe, Schriftgrößen, mittig oder rechts ausgerichteter Text, Menüs nebeneinander. Was eine Seite ausblendet, bleibt ausgeblendet.
+- Der Browser lädt dafür die Stylesheets der Seite mit; das Laden dauert dadurch etwas länger.
+- Wäre Text auf seinem Hintergrund kaum zu lesen, nimmt der Browser die übliche Farbe.
+- Weiterhin nicht möglich: Spalten und Raster der Seite, Hintergrundbilder, JavaScript.

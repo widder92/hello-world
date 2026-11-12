@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "../kernel/css.h"
 #include "../kernel/html.h"
 #include "../kernel/url.h"
 
@@ -57,7 +58,7 @@ static picture_state_t picture_stub(void *ctx, const char *url, int *width, int 
 }
 
 /* Schriftauskunft für den Test: 7 Pixel je Zeichen, fett 9, Überschrift 1 doppelt, Raster 8 */
-static int width_stub(void *ctx, const char *text, size_t len, uint8_t style, uint8_t level)
+static int width_stub(void *ctx, const char *text, size_t len, uint8_t style, uint8_t size)
 {
     (void)ctx;
     int chars = 0;
@@ -67,9 +68,30 @@ static int width_stub(void *ctx, const char *text, size_t len, uint8_t style, ui
     }
     if (style & STYLE_MONO)
         return chars * 8;
-    if (level == 1)
+    if (size >= 26)
         return chars * 14;
     return chars * ((style & STYLE_BOLD) ? 9 : 7);
+}
+
+/* Merkt sich, welche Stylesheets html_find_styles() gemeldet hat */
+static int found_count;
+static char found_text[400];
+
+static void note_style(void *ctx, bool linked, const char *text, size_t len)
+{
+    (void)ctx;
+    size_t used = strlen(found_text);
+    snprintf(found_text + used, sizeof(found_text) - used, "|%c:%.*s", linked ? 'L' : 'S',
+             (int)len, text);
+    found_count++;
+}
+
+static void note_style_quiet(void *ctx, bool linked, const char *text, size_t len)
+{
+    (void)ctx;
+    (void)linked;
+    (void)text;
+    (void)len;
 }
 
 static int failures, checks;
@@ -276,7 +298,9 @@ int main(void)
         "der lang genug ist, um umzubrechen, damit die Breite gepr\xC3\xBC" "ft werden kann.</p>"
         "<ul><li>Punkt</li></ul><p>Feld: <input name=a size=10> <code>abc</code></p>"
         "<h3>Klein</h3>";
-    html_text_t text = { .cell_width = 8, .width = width_stub };
+    html_text_t text = { .cell_width = 8, .width = width_stub, .base_size = 15,
+                         .heading_size = { 26, 21, 17 }, .text_color = 0x222630,
+                         .link_color = 0x1E5ABE, .page_color = 0xFCFCFA };
     p = html_layout_rich(rich_page, sizeof(rich_page) - 1, "https://a.de/", 300, NULL, &text);
     check(p && !p->failed && p->pixels, "Seite in echter Schrift gesetzt");
     if (p) {
@@ -304,7 +328,7 @@ int main(void)
                     italic = true;
                 if ((sp->style & STYLE_MONO) && sp->width == 3 * 8)
                     mono = true;
-                if (sp->level == 1)
+                if (sp->size == 26)
                     widths_ok = widths_ok && sp->width == 5 * 14;     /* "Titel" in doppelter Breite */
             }
         }
@@ -317,6 +341,89 @@ int main(void)
               p->widgets[0].column > 30, "Formularfeld: Breite in Zeichen, Platz in Pixeln");
     }
     page_free(p);
+
+    /* Gestaltung: Stylesheet, style-Attribute, Lesbarkeit */
+    static const char sheet_text[] =
+        ".weg { display: none } .rot { color: #c00 } .mitte { text-align: center }\n"
+        ".kasten { background: #e8f0fe } ul.menu { list-style: none } ul.menu li { display: inline }\n"
+        "h2 { font-size: 16px; font-weight: normal } a { text-decoration: none }\n"
+        ".hell { color: #fffff0 } .dunkel { background: #101418 } .gross { font-size: 32px }";
+    static const char styled_page[] =
+        "<p class=rot>Rot</p><p class=weg>Unsichtbar</p><p class=mitte>Mitte</p>"
+        "<div class=kasten><p>Im Kasten</p></div>"
+        "<ul class=menu><li>Eins</li><li>Zwei</li></ul>"
+        "<h2>Klein</h2><p><a href=x>Link</a> <span style=\"color:#00f;background:yellow\">markiert</span></p>"
+        "<p class=hell>Helle Schrift auf hellem Grund</p>"
+        "<div class=dunkel><p>Dunkler Kasten ohne Schriftfarbe</p></div>"
+        "<p class=gross>Gross</p><p style=\"display:none\">Auch weg</p>";
+    css_sheet_t *sheet = css_create(300);
+    css_add(sheet, sheet_text, sizeof(sheet_text) - 1);
+    text.css = sheet;
+    p = html_layout_rich(styled_page, sizeof(styled_page) - 1, "https://a.de/", 300, NULL, &text);
+    check(p && !p->failed, "Seite mit Stylesheet gesetzt");
+    if (p) {
+        bool red = false, hidden = false, centered = false, boxed = false, menu_row = false;
+        bool small_heading = false, plain_link = false, marked = false, rescued = false;
+        bool light_on_dark = false, large = false, bullet = false;
+        for (int i = 0; i < p->line_count; i++) {
+            const line_t *l = &p->lines[i];
+            const char *t = line_text(p, i);
+            if (strstr(t, "nsichtbar") || strstr(t, "Auch weg"))
+                hidden = true;
+            if (strstr(t, "Eins Zwei"))
+                menu_row = true;
+            for (uint32_t k = 0; k < l->count; k++) {
+                const span_t *sp = &p->spans[l->first + k];
+                const char *text_at = p->pool + sp->text;
+                if (sp->bytes >= 3 && memcmp(text_at, "\xE2\x80\xA2", 3) == 0)
+                    bullet = true;
+                if (sp->bytes == 3 && memcmp(text_at, "Rot", 3) == 0)
+                    red = sp->color == (HTML_COLOR_SET | 0xCC0000);
+                if (sp->bytes == 5 && memcmp(text_at, "Mitte", 5) == 0)
+                    centered = sp->column == (300 - 5 * 7) / 2;
+                if (sp->bytes >= 9 && memcmp(text_at, "Im Kasten", 9) == 0)
+                    boxed = l->background == (HTML_COLOR_SET | 0xE8F0FE);
+                if (sp->bytes == 5 && memcmp(text_at, "Klein", 5) == 0)
+                    small_heading = sp->size == 15 && !(sp->style & STYLE_BOLD) && !l->tall;
+                if (sp->bytes == 4 && memcmp(text_at, "Link", 4) == 0)
+                    plain_link = (sp->style & STYLE_LINK) && !(sp->style & STYLE_UNDERLINE);
+                if (sp->bytes == 8 && memcmp(text_at, "markiert", 8) == 0)
+                    marked = sp->color == (HTML_COLOR_SET | 0x0000FF) &&
+                             sp->background == (HTML_COLOR_SET | 0xFFFF00);
+                if (sp->bytes >= 5 && memcmp(text_at, "Helle", 5) == 0)
+                    rescued = sp->color == (HTML_COLOR_SET | 0x222630);
+                if (sp->bytes >= 7 && memcmp(text_at, "Dunkler", 7) == 0)
+                    light_on_dark = sp->color == (HTML_COLOR_SET | 0xF2F2F2) &&
+                                    l->background == (HTML_COLOR_SET | 0x101418);
+                if (sp->bytes == 5 && memcmp(text_at, "Gross", 5) == 0)
+                    large = sp->size == 28 && l->tall;
+            }
+        }
+        check(red && marked, "Farben aus Stylesheet und style-Attribut");
+        check(!hidden, "display:none blendet aus");
+        check(centered, "text-align: center rückt die Zeile in die Mitte");
+        check(boxed, "Hintergrund eines Abschnitts gilt für seine Zeilen");
+        check(menu_row && !bullet, "Liste ohne Punkte, Einträge nebeneinander");
+        check(small_heading && large, "Schriftgrößen aus dem Stylesheet (mit Obergrenze)");
+        check(plain_link, "Link ohne Unterstreichung");
+        check(rescued && light_on_dark, "unlesbare Farbkombinationen werden korrigiert");
+    }
+    page_free(p);
+    text.css = NULL;
+
+    /* Stylesheets einer Seite finden */
+    static const char head[] =
+        "<html><head><style>a{color:red}</style><!-- <style>x</style> -->"
+        "<link rel=\"stylesheet\" href=\"/s/haupt.css?a=1&amp;b=2\">"
+        "<link rel=stylesheet media=print href=druck.css><link rel=icon href=bild.ico>"
+        "<script>var s = '<style>nein</style>';</script>"
+        "<style media=\"screen\">b{color:blue}</style></head></html>";
+    found_count = 0;
+    found_text[0] = '\0';
+    html_find_styles(head, sizeof(head) - 1, "https://a.de/x/y.html", note_style, NULL);
+    check(found_count == 3 &&
+          strcmp(found_text, "|S:a{color:red}|L:https://a.de/s/haupt.css?a=1&b=2|S:b{color:blue}") == 0,
+          "Stylesheets: zwei eingebettete und ein verlinktes, in der Reihenfolge der Seite");
 
     /* Ohne Bildquelle bleibt alles beim Alten */
     p = html_layout(pictures_page, sizeof(pictures_page) - 1, "https://a.de/x/", 40);
@@ -352,11 +459,14 @@ int main(void)
         else
             p = html_layout_rich(broken, len, "https://a.de/", 160 + (int)(r % 900), &pictures,
                                  &text);
+        if (round % 7 == 0)
+            html_find_styles(broken, len, "https://a.de/", note_style_quiet, NULL);
         if (!p)
             failures++;
         page_free(p);
     }
     free(broken);
+    css_free(sheet);
     check(1, "3000 beschädigte Seiten verarbeitet");
 
     printf("%d Prüfungen am Browser-Unterbau, %d Fehler\n", checks, failures);

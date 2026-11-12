@@ -21,8 +21,10 @@ fremde Bibliothek: rund 24 000 Zeilen C und etwas Assembler.
 - **Programme**: Browser, Terminal mit Shell (mehrere gleichzeitig), Texteditor,
   Dateiübertragung, Systemmonitor, Malprogramm, Info- und Ausschalten-Dialog
 - **Browser**: zeigt Webseiten in echter Schrift mit Überschriften, Links,
-  Formularen und Bildern (PNG, JPEG, GIF), meldet sich an (Cookies) und prüft
-  bei https den Server – ohne JavaScript und ohne die Gestaltung der Seite
+  Formularen und Bildern (PNG, JPEG, GIF), wertet die Stylesheets der Seite
+  aus (Farben, Hintergründe, Schriftgrößen, Ausrichtung, Ausgeblendetes),
+  meldet sich an (Cookies) und prüft bei https den Server – ohne JavaScript
+  und ohne mehrspaltige Anordnung
 - **Echte Schriften**: ein eigener TrueType-Renderer zeichnet Text in jeder
   Größe aus den eingebauten Schriftdateien (DejaVu Sans) – in Fenstertiteln,
   Menüs, Dialogen und im Browser
@@ -336,10 +338,12 @@ Was dabei zu wissen ist:
 ![Der Browser mit der Bearbeitungsseite eines WordPress-Beitrags](docs/screenshot-browser.png)
 
 Startmenü → „Browser", F8 oder `browse adresse` im Terminal. Es ist ein
-**einfacher Browser**: Er holt eine Seite, lässt ihre Gestaltung und ihre
-Skripte weg und setzt, was übrig bleibt, selbst – in einer Spalte, in echter
-Schrift: Überschriften in drei Größen, fett, kursiv, Listen, Tabellen
-(zeilenweise), Links, Formulare und Bilder.
+**einfacher Browser**: Er holt eine Seite samt ihren Stylesheets, lässt ihre
+Skripte weg und setzt sie selbst – in einer Spalte, in echter Schrift:
+Überschriften, fett, kursiv, Listen, Tabellen (zeilenweise), Links, Formulare
+und Bilder, mit den Farben, Hintergründen und Schriftgrößen der Seite.
+
+![Eine gestaltete Seite: dunkler Kopf mit Menü, Seitenhintergrund, farbige Überschriften, hinterlegter Kasten](docs/screenshot-gestaltung.png)
 
 ![Eine Seite in echter Schrift: Überschriften, Fließtext, Listen](docs/screenshot-schrift.png)
 
@@ -363,15 +367,28 @@ Was er kann:
   verlinktes Bild folgt dem Link. Was nicht geladen werden kann, erscheint
   als Ersatztext („[Bild: …]").
 - Das Mausrad blättert.
+- **Gestaltung der Seite (CSS), in Auszügen:** Der Browser lädt die
+  Stylesheets der Seite (höchstens zwölf Dateien) und wendet an, was er
+  kann: Textfarbe, Hintergrundfarbe von Seite, Abschnitten und Textstücken,
+  fett/kursiv, Schriftgröße (10 bis 28 Pixel), Ausrichtung links/Mitte/rechts,
+  Unterstreichung, ausgeblendete Elemente (`display: none`), Listen ohne
+  Punkte und Einträge nebeneinander. Er versteht Auswahlen nach Element,
+  Klasse und Kennung samt Verschachtelung, Rangfolge und `!important`,
+  Variablen (`var(--name)`) und `@media` nach Fensterbreite. Regeln, die er
+  nicht prüfen kann (`:hover`, Attribute, Nachbarn), lässt er aus. Wäre Text
+  auf seinem Hintergrund kaum zu lesen – etwa helle Schrift auf einem
+  Hintergrundbild, das nicht gezeigt wird –, nimmt er die übliche Farbe.
 
 Was er **nicht** kann – und das ist bei heutigen Webseiten viel:
 
 - **kein JavaScript.** Seiten und Funktionen, die darauf beruhen, bleiben leer,
   reagieren nicht oder sagen selbst, dass sie JavaScript brauchen.
-- keine Gestaltung (CSS): keine Farben, Spalten oder Schriften der Seite –
-  alles steht untereinander in der eingebauten Schrift. Sie kennt lateinische,
-  griechische und kyrillische Zeichen; andere (etwa chinesische) erscheinen
-  als leeres Kästchen. Schrift von rechts nach links wird nicht gesetzt.
+- keine Anordnung nach der Gestaltung: keine Spalten, Raster, schwebenden
+  Kästen, Abstände, Rahmen, Breiten oder Hintergrundbilder – alles steht
+  untereinander in der eingebauten Schrift (die Schriftarten der Seite werden
+  nicht geladen). Sie kennt lateinische, griechische und kyrillische Zeichen;
+  andere (etwa chinesische) erscheinen als leeres Kästchen. Schrift von
+  rechts nach links wird nicht gesetzt.
 - keine Bilder in den Formaten WebP, AVIF und SVG, keine Hintergrundbilder
   (die legt die Gestaltung fest), keine bewegten GIFs, keine Videos
 - kein Hochladen von Dateien, keine Lesezeichen, keine Tabs, kein Passwortspeicher
@@ -764,6 +781,7 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `kernel/x509.c`, `kernel/tls_roots.*` | Zertifikate lesen und prüfen, eingebaute Wurzelzertifikate |
 | `kernel/tls.c`, `kernel/http.c`, `kernel/url.c` | TLS 1.3, HTTP-Client, Web-Adressen |
 | `kernel/html.c`, `kernel/browser.c` | HTML zerlegen und als Text setzen; das Browser-Fenster |
+| `kernel/css.c` | Stylesheets lesen und auf Elemente anwenden |
 | `kernel/image*.c`, `kernel/inflate.c` | Bilder entschlüsseln (PNG, JPEG, GIF) und verkleinern |
 | `kernel/ssh.c`, `kernel/sftp.c` | SSH-Client, Dateiübertragung per SFTP |
 | `kernel/json.c` | JSON lesen und schreiben |
@@ -786,6 +804,7 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `tests/block_test.c` | Schreibsperre für interne Platten prüfen |
 | `tests/hid_test.c` | Auswertung der HID-Berichte prüfen (Mäuse, Tastaturen, Funkempfänger) |
 | `tests/image_test.c`, `tests/image_test.py` | Bild-Dekoder gegen eine Referenz prüfen, auch mit beschädigten Dateien |
+| `tests/css_test.c` | Stylesheets prüfen: Auswahlen, Rangfolge, Farben, Variablen, `@media`, beschädigte Eingaben |
 | `tests/font_test.c`, `tests/font_test.py` | Schriftrenderer Zeichen für Zeichen gegen FreeType prüfen, auch mit beschädigten Schriftdateien |
 
 ## Grenzen und Ideen zum Weiterbauen
@@ -803,7 +822,7 @@ gehalten. Naheliegende nächste Schritte:
 - User-Modus (Ring 3) mit Systemaufrufen und getrennten Adressräumen
 - Programme aus Dateien laden (ELF), mehrere Prozessorkerne
 - Symbole auf dem Desktop, ein Dateimanager, Fenster an den Kanten ziehen und minimieren
-- im Browser: Farben und einfache Gestaltung der Seite, Tabellen als Tabellen, Bilder neben dem Text, WebP-Bilder, Lesezeichen (JavaScript bleibt außer Reichweite)
+- im Browser: Tabellen als Tabellen, Bilder neben dem Text, Abstände und Rahmen, WebP-Bilder, Lesezeichen (JavaScript bleibt außer Reichweite)
 - echte Schrift auch in Terminal, Editor und Eingabefeldern; Hinting für schärfere kleine Schrift
 
 ## Die ältere 32-Bit-Version
