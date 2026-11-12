@@ -23,6 +23,8 @@ typedef struct {
 
 typedef struct {
     uint32_t first, count;              /* Stücke dieser Zeile */
+    int16_t image;                      /* Zeile gehört zu diesem Bild, oder -1 */
+    uint16_t image_row;                 /* die wievielte Zeile des Bildes */
 } line_t;
 
 typedef enum {
@@ -55,6 +57,36 @@ typedef struct {
     int line;
 } anchor_t;
 
+/*
+ * Ein Bild steht als Block für sich: rows Zeilen ab line. Ist es noch nicht
+ * geladen, hält der Block den Platz frei (oder zeigt in einer Zeile den
+ * Ersatztext).
+ */
+typedef struct {
+    char *url;                          /* vollständige Adresse */
+    char *alt;                          /* Ersatztext, kann fehlen (NULL) */
+    int link;                           /* Link, in dem das Bild steht, oder -1 */
+    int line, rows;
+    int column;                         /* Einrückung in Zeichen */
+    int width, height;                  /* Größe auf dem Bildschirm; 0: unbekannt */
+    bool ready;                         /* war beim Setzen der Seite geladen */
+} page_image_t;
+
+/* Was der Seitenaufbau über ein Bild wissen kann */
+typedef enum { PICTURE_UNKNOWN, PICTURE_READY, PICTURE_BROKEN } picture_state_t;
+
+/*
+ * Wer Bilder zeigen will, gibt dem Seitenaufbau das mit: die Maße des
+ * Zeichenrasters und eine Auskunft, ob ein Bild schon geladen ist (und wie
+ * groß es dann ist).
+ */
+typedef struct {
+    int cell_width, line_height;        /* Pixel je Zeichen und je Zeile */
+    int max_rows;                       /* höchstens so viele Zeilen je Bild */
+    picture_state_t (*lookup)(void *ctx, const char *url, int *width, int *height);
+    void *ctx;
+} html_pictures_t;
+
 typedef struct {
     char *title;
     char *pool;
@@ -73,12 +105,17 @@ typedef struct {
     int form_count, form_cap;
     anchor_t *anchors;
     int anchor_count, anchor_cap;
+    page_image_t *images;
+    int image_count, image_cap;
     int heading_line;                   /* Zeile der ersten Hauptüberschrift oder -1 */
     bool failed;                        /* Speicher ging aus - die Seite ist unvollständig */
 } page_t;
 
 /* Baut die Seite für eine Breite von columns Zeichen; NULL bei Speichermangel. */
 page_t *html_layout(const char *html, size_t len, const char *base_url, int columns);
+/* Wie html_layout(), plant aber Bilder als Blöcke ein. */
+page_t *html_layout_pictures(const char *html, size_t len, const char *base_url,
+                             int columns, const html_pictures_t *pictures);
 /* Wie html_layout(), aber für reinen Text (alles wird wörtlich gezeigt). */
 page_t *html_plain_text(const char *text, size_t len, int columns);
 void page_free(page_t *page);

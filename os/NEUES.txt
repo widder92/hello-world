@@ -1,3 +1,5 @@
-HelloOS 0.13
-- Behoben: Der Mauszeiger sprang manchmal von selbst, und Fenster wie "Ausschalten" gingen ungewollt auf. HelloOS liest Mäuse und Funkempfänger jetzt so, wie sie ihre Daten selbst beschreiben, und übergeht alles, was keine Maus- oder Tastaturdaten sind.
+HelloOS 0.14
+- Der Browser zeigt Bilder: PNG, JPEG und GIF. Die Seite ist sofort lesbar, die Bilder erscheinen nach und nach; ein Klick auf ein verlinktes Bild folgt dem Link.
 - Das Mausrad blättert im Browser, im Editor und im Claude-Fenster.
+- Aus 0.13: Der Mauszeiger springt nicht mehr von selbst, und Fenster gehen nicht mehr ungewollt auf.
+- Weiterhin nicht möglich: JavaScript und die Gestaltung von Seiten (Farben, Spalten, Schriften).

@@ -68,6 +68,7 @@ typedef struct {
     page_t *page;
     const char *base;
     int columns;
+    const html_pictures_t *pictures;    /* NULL: Bilder nur als Ersatztext */
 
     element_t stack[STACK_MAX];
     int depth;
@@ -160,6 +161,11 @@ void page_free(page_t *page)
         kfree(page->forms[i].action);
     for (int i = 0; i < page->anchor_count; i++)
         kfree(page->anchors[i].id);
+    for (int i = 0; i < page->image_count; i++) {
+        kfree(page->images[i].url);
+        kfree(page->images[i].alt);
+    }
+    kfree(page->images);
     kfree(page->title);
     kfree(page->pool);
     kfree(page->spans);
@@ -418,6 +424,8 @@ static void push_line(parser_t *ps)
     }
     page->lines[page->line_count].first = (uint32_t)page->span_count;
     page->lines[page->line_count].count = 0;
+    page->lines[page->line_count].image = -1;
+    page->lines[page->line_count].image_row = 0;
     page->line_count++;
     ps->has_content = false;
     ps->space_pending = false;
@@ -867,6 +875,152 @@ static tag_t lookup_tag(const char *name, size_t len)
     return T_UNKNOWN;
 }
 
+/* --- Bilder ------------------------------------------------------------------------------------ */
+
+#define IMAGES_MAX 300
+
+/* Die Adresse des Bildes: "src", bei nachladenden Seiten auch deren Ersatzangaben. */
+static char *picture_address(parser_t *ps, const attr_t *attrs, int count)
+{
+    static const char *const names[] = { "src", "data-src", "data-lazy-src", "data-original" };
+    char *full = kmalloc(URL_SIZE);
+    if (!full)
+        return NULL;
+    for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        char *value = attr_text(attrs, count, names[i]);
+        bool usable = value && value[0] && !same_word(value, strlen(value) < 5 ? strlen(value) : 5, "data:") &&
+                      url_resolve(ps->base, value, full, URL_SIZE) &&
+                      (memcmp(full, "http://", 7) == 0 || memcmp(full, "https://", 8) == 0);
+        kfree(value);
+        if (usable)
+            return full;
+    }
+    kfree(full);
+    return NULL;
+}
+
+/*
+ * Plant ein Bild als eigenen Block ein. Liefert false, wenn stattdessen der
+ * Ersatztext in den Lauftext soll (Bild nicht ladbar oder keine Adresse).
+ */
+static bool place_picture(parser_t *ps, const attr_t *attrs, int count)
+{
+    const html_pictures_t *pictures = ps->pictures;
+    page_t *page = ps->page;
+    if (page->failed || page->image_count >= IMAGES_MAX)
+        return false;
+    char *url = picture_address(ps, attrs, count);
+    if (!url)
+        return false;
+
+    int hint_w = attr_number(attrs, count, "width", 0);
+    int hint_h = attr_number(attrs, count, "height", 0);
+    int natural_w = 0, natural_h = 0;
+    picture_state_t state = pictures->lookup(pictures->ctx, url, &natural_w, &natural_h);
+    bool ready = state == PICTURE_READY && natural_w > 0 && natural_h > 0;
+
+    /* Zählpixel und Abstandhalter sind keine Bilder für den Leser */
+    bool tiny = (hint_w > 0 && hint_w <= 2) || (hint_h > 0 && hint_h <= 2) ||
+                (ready && (natural_w <= 2 || natural_h <= 2));
+    if (tiny) {
+        kfree(url);
+        return true;
+    }
+    if (state == PICTURE_BROKEN) {
+        kfree(url);
+        return false;
+    }
+
+    /*
+     * Seiten, die Bilder erst per Skript nachladen, nennen dasselbe Bild oft
+     * gleich noch einmal für Browser ohne Skripte: nur einmal zeigen.
+     */
+    flush_word(ps);
+    if (page->image_count > 0 && !ps->has_content) {
+        const page_image_t *last = &page->images[page->image_count - 1];
+        if (strcmp(last->url, url) == 0 && last->line + last->rows == page->line_count - 1) {
+            kfree(url);
+            return true;
+        }
+    }
+
+    /* Gewünschte Größe: die Angabe der Seite, sonst die des Bildes selbst */
+    int width = 0, height = 0;
+    if (ready) {
+        width = hint_w > 0 ? hint_w : natural_w;
+        height = (int)((int64_t)width * natural_h / natural_w);
+    } else if (hint_w > 0 && hint_h > 0) {
+        width = hint_w;
+        height = hint_h;
+    }
+
+    /* Ein Listenpunkt, hinter dem nur das Bild käme, entfällt. */
+    flush_word(ps);
+    if (ps->only_bullet && page->line_count > 0) {
+        line_t *line = &page->lines[page->line_count - 1];
+        page->span_count = (int)line->first;
+        line->count = 0;
+        ps->column = 0;
+        ps->has_content = false;
+        ps->only_bullet = false;
+    }
+    new_line(ps, false);
+
+    int column = indent(ps);
+    int rows = 1;
+    if (width > 0 && height > 0) {
+        int available = (ps->columns - column) * pictures->cell_width;
+        int tallest = pictures->max_rows * pictures->line_height;
+        if (width > available) {
+            height = (int)((int64_t)height * available / width);
+            width = available;
+        }
+        if (height > tallest) {
+            width = (int)((int64_t)width * tallest / height);
+            height = tallest;
+        }
+        if (width < 1)
+            width = 1;
+        if (height < 1)
+            height = 1;
+        rows = (height + pictures->line_height - 1) / pictures->line_height;
+    }
+
+    if (!ENSURE(page, page->images, page->image_count, page->image_cap)) {
+        page->failed = true;
+        kfree(url);
+        return true;
+    }
+    int index = page->image_count++;
+    page_image_t *image = &page->images[index];
+    memset(image, 0, sizeof(*image));
+    image->url = url;
+    image->alt = attr_text(attrs, count, "alt");
+    if (image->alt) {
+        if (!image->alt[0] || strlen(image->alt) > 120) {
+            kfree(image->alt);
+            image->alt = NULL;
+        } else {
+            claude_plain_text(image->alt);
+        }
+    }
+    image->link = ps->link;
+    image->line = page->line_count - 1;
+    image->rows = rows;
+    image->column = column;
+    image->width = width;
+    image->height = height;
+    image->ready = ready;
+
+    for (int row = 0; row < rows && !page->failed; row++) {
+        line_t *line = &page->lines[page->line_count - 1];
+        line->image = (int16_t)index;
+        line->image_row = (uint16_t)row;
+        push_line(ps);
+    }
+    return true;
+}
+
 static void remember_anchor(parser_t *ps, const attr_t *attrs, int count)
 {
     page_t *page = ps->page;
@@ -943,6 +1097,11 @@ static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
             ps->hidden--;
         return;
     case T_IMG: {
+        if (ps->pictures && ps->hidden == 0 && place_picture(ps, attrs, count)) {
+            if (undo & U_HIDDEN)
+                ps->hidden--;
+            return;
+        }
         char *alt = attr_text(attrs, count, "alt");
         if (alt && alt[0] && strlen(alt) < 80) {
             char text[100];
@@ -1311,14 +1470,24 @@ static page_t *begin(parser_t *ps, const char *base, int columns)
     return page;
 }
 
-page_t *html_layout(const char *html, size_t len, const char *base_url, int columns)
+page_t *html_layout_pictures(const char *html, size_t len, const char *base_url,
+                             int columns, const html_pictures_t *pictures)
 {
     parser_t *ps = kmalloc(sizeof(*ps));
     page_t *page = ps ? begin(ps, base_url, columns) : NULL;
-    if (page)
+    if (page) {
+        if (pictures && pictures->lookup && pictures->cell_width > 0 &&
+            pictures->line_height > 0 && pictures->max_rows > 0)
+            ps->pictures = pictures;
         parse(ps, html, len);
+    }
     kfree(ps);
     return page;
+}
+
+page_t *html_layout(const char *html, size_t len, const char *base_url, int columns)
+{
+    return html_layout_pictures(html, len, base_url, columns, NULL);
 }
 
 page_t *html_plain_text(const char *text, size_t len, int columns)

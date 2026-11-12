@@ -1,11 +1,15 @@
 /*
  * Ein einfacher Browser: holt Seiten über http(s), zeigt sie als Text mit
- * Links und Formularen (siehe html.h), merkt sich Cookies für die Dauer des
- * Fensters und kann Formulare absenden - genug zum Lesen, Suchen und Anmelden.
+ * Links, Formularen und Bildern (siehe html.h), merkt sich Cookies für die
+ * Dauer des Fensters und kann Formulare absenden - genug zum Lesen, Suchen
+ * und Anmelden.
  *
- * Was fehlt, ist alles, was moderne Seiten "lebendig" macht: JavaScript,
- * Stylesheets, Bilder. Seiten, die darauf angewiesen sind, bleiben leer oder
- * sagen das selbst.
+ * Bilder (PNG, JPEG, GIF) lädt ein Helfer im Hintergrund nach: Die Seite ist
+ * sofort lesbar, die Bilder füllen ihre Plätze, sobald sie da sind.
+ *
+ * Was fehlt, ist alles, was moderne Seiten "lebendig" macht: JavaScript und
+ * Stylesheets. Seiten, die darauf angewiesen sind, bleiben leer oder sagen
+ * das selbst.
  */
 #include "apps.h"
 #include "console.h"
@@ -13,6 +17,8 @@
 #include "gui.h"
 #include "html.h"
 #include "http.h"
+#include "image.h"
+#include "cpu.h"
 #include "input.h"
 #include "json.h"
 #include "memory.h"
@@ -44,6 +50,15 @@
 #define REDIRECTS    10
 #define START_PAGE   "about:start"
 
+/* Bilder */
+#define PICTURES_MAX     300
+#define PICTURE_FILE_MAX (12u * 1024 * 1024)        /* größte Bilddatei */
+#define PICTURE_KEEP_W   1600                       /* breiter wird nichts aufbewahrt */
+#define PICTURE_MEMORY   (96u * 1024 * 1024)        /* für alle Bilder eines Fensters */
+#define PICTURE_ROWS     34                         /* höchstens so viele Zeilen je Bild */
+#define PICTURE_WORKERS  2
+#define C_PLACEHOLDER    RGB(238, 238, 234)
+
 #define C_BACKGROUND RGB(252, 252, 250)
 #define C_TOOLBAR    RGB(232, 230, 224)
 #define C_TEXT       RGB(34, 38, 48)
@@ -67,6 +82,18 @@ typedef struct cookie {
 } cookie_t;
 
 typedef enum { OVERLAY_NONE, OVERLAY_PICKER, OVERLAY_TEXT } overlay_t;
+
+/* Ein Bild im Vorrat des Fensters; gesucht wird über die Adresse. */
+typedef enum { PIC_WAITING, PIC_LOADING, PIC_READY, PIC_BROKEN } pic_state_t;
+
+typedef struct {
+    char *url;
+    pic_state_t state;
+    bool wanted;                        /* die gezeigte Seite braucht es */
+    int width, height;                  /* Größe des Bildes selbst */
+    image_t *bitmap;                    /* aufbewahrte Fassung (höchstens so groß) */
+    image_t *shown;                     /* auf die zuletzt gezeigte Größe gebracht */
+} picture_t;
 
 typedef struct {
     window_t *window;
@@ -105,6 +132,17 @@ typedef struct {
 
     char status[200];
     bool status_error;
+
+    /*
+     * Bilder: Die Liste teilen sich Fenster und Helfer; jeder Zugriff
+     * geschieht bei gesperrten Unterbrechungen (kurz, nie während des Ladens).
+     */
+    picture_t pictures[PICTURES_MAX];
+    int picture_count;
+    size_t picture_bytes;
+    int picture_workers;
+    bool pictures_changed;              /* seit dem letzten Setzen der Seite kam etwas an */
+    uint64_t pictures_settle;           /* frühestens dann neu setzen */
 
     overlay_t overlay;
     int overlay_widget;
@@ -381,6 +419,233 @@ static bool mentions(const char *text, size_t len, const char *word)
 }
 
 /* Übergibt eine fertige Seite samt Quelltext (kmalloc) an den Fenster-Task. */
+/* --- Bilder ------------------------------------------------------------------------------------ */
+
+/* Sucht ein Bild im Vorrat. Nur bei gesperrten Unterbrechungen aufrufen. */
+static picture_t *picture_find(browser_t *b, const char *url)
+{
+    for (int i = 0; i < b->picture_count; i++) {
+        if (strcmp(b->pictures[i].url, url) == 0)
+            return &b->pictures[i];
+    }
+    return NULL;
+}
+
+/* Auskunft für den Seitenaufbau: Ist das Bild da, und wie groß ist es? */
+static picture_state_t picture_lookup(void *ctx, const char *url, int *width, int *height)
+{
+    browser_t *b = ctx;
+    picture_state_t result = PICTURE_UNKNOWN;
+    uint64_t flags = irq_save();
+    const picture_t *pic = picture_find(b, url);
+    if (pic && pic->state == PIC_READY) {
+        *width = pic->width;
+        *height = pic->height;
+        result = PICTURE_READY;
+    } else if (pic && pic->state == PIC_BROKEN) {
+        result = PICTURE_BROKEN;
+    }
+    irq_restore(flags);
+    return result;
+}
+
+static html_pictures_t picture_source(browser_t *b)
+{
+    return (html_pictures_t){
+        .cell_width = FONT_W, .line_height = ROW_H, .max_rows = PICTURE_ROWS,
+        .lookup = picture_lookup, .ctx = b,
+    };
+}
+
+static void picture_release(browser_t *b, picture_t *pic)
+{
+    if (pic->bitmap)
+        b->picture_bytes -= (size_t)pic->bitmap->width * (size_t)pic->bitmap->height * 4;
+    image_free(pic->bitmap);
+    image_free(pic->shown);
+    kfree(pic->url);
+}
+
+/*
+ * Gleicht den Vorrat mit der gezeigten Seite ab: Was sie braucht, wird
+ * vorgemerkt; was keine Seite mehr braucht, verschwindet.
+ */
+static void pictures_sync(browser_t *b)
+{
+    const page_t *page = b->page;
+    picture_t *doomed = kmalloc(PICTURES_MAX * sizeof(picture_t));
+    int doomed_count = 0;
+
+    uint64_t flags = irq_save();
+    for (int i = 0; i < b->picture_count; i++)
+        b->pictures[i].wanted = false;
+    irq_restore(flags);
+
+    for (int i = 0; page && i < page->image_count; i++) {
+        const char *url = page->images[i].url;
+        size_t size = strlen(url) + 1;
+        char *copy = kmalloc(size);     /* außerhalb der Sperre besorgen */
+        if (!copy)
+            break;
+        memcpy(copy, url, size);
+
+        flags = irq_save();
+        picture_t *pic = picture_find(b, url);
+        if (!pic && b->picture_count < PICTURES_MAX) {
+            pic = &b->pictures[b->picture_count++];
+            memset(pic, 0, sizeof(*pic));
+            pic->url = copy;
+            pic->state = PIC_WAITING;
+            copy = NULL;
+        }
+        if (pic)
+            pic->wanted = true;
+        irq_restore(flags);
+        kfree(copy);
+    }
+
+    /* Aussortieren; was gerade geladen wird, bleibt bis zum nächsten Mal */
+    flags = irq_save();
+    int kept = 0;
+    for (int i = 0; i < b->picture_count; i++) {
+        picture_t *pic = &b->pictures[i];
+        if (!pic->wanted && pic->state != PIC_LOADING && doomed) {
+            if (pic->bitmap)
+                b->picture_bytes -= (size_t)pic->bitmap->width * (size_t)pic->bitmap->height * 4;
+            doomed[doomed_count++] = *pic;
+        } else {
+            b->pictures[kept++] = *pic;
+        }
+    }
+    b->picture_count = kept;
+    irq_restore(flags);
+
+    for (int i = 0; i < doomed_count; i++) {
+        image_free(doomed[i].bitmap);
+        image_free(doomed[i].shown);
+        kfree(doomed[i].url);
+    }
+    kfree(doomed);
+}
+
+/* Holt ein Bild und bringt es in die Form, in der es aufbewahrt wird. */
+static image_t *picture_fetch(const char *url, int *width, int *height)
+{
+    http_response_t response;
+    http_options_t options = {
+        .method = "GET",
+        .headers = "Accept: image/png,image/jpeg,image/gif;q=0.9,*/*;q=0.1\r\n",
+        .max_body = PICTURE_FILE_MAX,
+        .timeout_ms = 15000,
+    };
+    if (!http_request(url, &options, &response))
+        return NULL;
+    image_t *result = NULL;
+    if (response.status == 200 && response.body) {
+        const char *error;
+        image_t *image = image_decode((const uint8_t *)response.body, response.length, &error);
+        kfree(response.body);           /* die Datei wird nicht mehr gebraucht */
+        response.body = NULL;
+        if (image) {
+            *width = image->width;
+            *height = image->height;
+            int keep_w = image->width, keep_h = image->height;
+            if (keep_w > PICTURE_KEEP_W) {
+                keep_h = (int)((int64_t)keep_h * PICTURE_KEEP_W / keep_w);
+                keep_w = PICTURE_KEEP_W;
+                if (keep_h < 1)
+                    keep_h = 1;
+            }
+            /* verkleinert und mit dem Seitenhintergrund unterlegt aufbewahren */
+            result = image_scale(image, keep_w, keep_h, C_BACKGROUND);
+            image_free(image);
+        }
+    }
+    kfree(response.body);
+    return result;
+}
+
+/* Helfer-Task: arbeitet die vorgemerkten Bilder ab. */
+static void picture_worker(void *arg)
+{
+    browser_t *b = arg;
+    char *url = kmalloc(URL_SIZE);
+
+    while (url && !b->closing) {
+        bool found = false;
+        uint64_t flags = irq_save();
+        for (int i = 0; i < b->picture_count && !found; i++) {
+            picture_t *pic = &b->pictures[i];
+            if (pic->state == PIC_WAITING && pic->wanted) {
+                pic->state = PIC_LOADING;
+                strlcpy(url, pic->url, URL_SIZE);
+                found = true;
+            }
+        }
+        irq_restore(flags);
+        if (!found)
+            break;
+
+        int width = 0, height = 0;
+        image_t *bitmap = picture_fetch(url, &width, &height);
+        size_t bytes = bitmap ? (size_t)bitmap->width * (size_t)bitmap->height * 4 : 0;
+
+        flags = irq_save();
+        picture_t *pic = picture_find(b, url);
+        if (pic && pic->state == PIC_LOADING) {
+            if (bitmap && b->picture_bytes + bytes <= PICTURE_MEMORY) {
+                pic->bitmap = bitmap;
+                pic->width = width;
+                pic->height = height;
+                pic->state = PIC_READY;
+                b->picture_bytes += bytes;
+                bitmap = NULL;
+            } else {
+                pic->state = PIC_BROKEN;
+            }
+            b->pictures_changed = true;
+        }
+        irq_restore(flags);
+        image_free(bitmap);             /* nicht mehr gefragt oder kein Platz */
+    }
+    kfree(url);
+
+    uint64_t flags = irq_save();
+    b->picture_workers--;
+    irq_restore(flags);
+}
+
+/* Startet Helfer, solange Bilder warten. Liefert, wie viele noch ausstehen. */
+static int pictures_pending(browser_t *b, bool start)
+{
+    int waiting = 0, loading = 0;
+    uint64_t flags = irq_save();
+    for (int i = 0; i < b->picture_count; i++) {
+        if (!b->pictures[i].wanted)
+            continue;
+        if (b->pictures[i].state == PIC_WAITING)
+            waiting++;
+        else if (b->pictures[i].state == PIC_LOADING)
+            loading++;
+    }
+    int workers = b->picture_workers;
+    irq_restore(flags);
+
+    while (start && waiting > 0 && workers < PICTURE_WORKERS && workers < waiting + loading) {
+        flags = irq_save();
+        b->picture_workers++;
+        irq_restore(flags);
+        if (task_create("browser-bild", picture_worker, b, NULL) < 0) {
+            flags = irq_save();
+            b->picture_workers--;
+            irq_restore(flags);
+            break;
+        }
+        workers++;
+    }
+    return waiting + loading;
+}
+
 static void deliver(browser_t *b, page_t *page, const char *url, char *source,
                     size_t len, bool html, int columns)
 {
@@ -538,7 +803,8 @@ static void worker(void *arg)
             }
         }
         int columns = COLUMNS;
-        page_t *page = html ? html_layout(content, length, url, columns)
+        html_pictures_t pictures = picture_source(b);
+        page_t *page = html ? html_layout_pictures(content, length, url, columns, &pictures)
                             : html_plain_text(content, length, columns);
         if (!page) {
             kfree(content);
@@ -595,16 +861,30 @@ static void set_address(browser_t *b, const char *text)
 
 static void clamp_scroll(browser_t *b);
 
+/* Zählt die Textzeilen vor einer Zeile (Bildzeilen zählen nicht mit). */
+static int text_lines_before(const page_t *page, int line)
+{
+    int count = 0;
+    for (int i = 0; i < line && i < page->line_count; i++) {
+        if (page->lines[i].image < 0)
+            count++;
+    }
+    return count;
+}
+
 /*
- * Setzt die gezeigte Seite für die jetzige Fensterbreite neu. Was der Benutzer
- * in Formularfelder eingetragen hat, wandert in die neue Fassung mit.
+ * Setzt die gezeigte Seite neu: für eine andere Fensterbreite oder (force)
+ * weil Bilder angekommen sind. Was der Benutzer in Formularfelder eingetragen
+ * hat, wandert in die neue Fassung mit, und er bleibt an derselben Stelle.
  */
-static void relayout(browser_t *b)
+static void relayout(browser_t *b, bool force)
 {
     page_t *old = b->page;
-    if (!old || !b->source || b->page_columns == COLUMNS)
+    if (!old || !b->source || (b->page_columns == COLUMNS && !force))
         return;
-    page_t *fresh = b->source_html ? html_layout(b->source, b->source_len, b->url, COLUMNS)
+    html_pictures_t pictures = picture_source(b);
+    page_t *fresh = b->source_html ? html_layout_pictures(b->source, b->source_len, b->url,
+                                                          COLUMNS, &pictures)
                                    : html_plain_text(b->source, b->source_len, COLUMNS);
     if (!fresh)
         return;
@@ -626,7 +906,31 @@ static void relayout(browser_t *b)
         b->focus = -1;
         b->overlay = OVERLAY_NONE;
     }
-    b->scroll = old->line_count > 0 ? b->scroll * fresh->line_count / old->line_count : 0;
+
+    if (b->page_columns == COLUMNS && b->scroll < old->line_count) {
+        /*
+         * Gleiche Breite: Der Text ist derselbe geblieben, nur Bilder haben
+         * ihre Größe geändert. Die oberste sichtbare Zeile wiederfinden.
+         */
+        const line_t *top = &old->lines[b->scroll];
+        if (top->image >= 0 && top->image < fresh->image_count) {
+            const page_image_t *image = &fresh->images[top->image];
+            int row = top->image_row < image->rows ? top->image_row : image->rows - 1;
+            b->scroll = image->line + (row > 0 ? row : 0);
+        } else {
+            int wanted = text_lines_before(old, b->scroll), seen = 0, line = 0;
+            for (; line < fresh->line_count; line++) {
+                if (fresh->lines[line].image >= 0)
+                    continue;
+                if (seen == wanted)
+                    break;
+                seen++;
+            }
+            b->scroll = line;
+        }
+    } else {
+        b->scroll = old->line_count > 0 ? b->scroll * fresh->line_count / old->line_count : 0;
+    }
     b->page = fresh;
     b->page_columns = COLUMNS;
     page_free(old);
@@ -659,7 +963,10 @@ static void take_incoming(browser_t *b)
     b->scroll = heading > ROWS / 2 ? heading - 1 : 0;
     if (b->scroll > 0 && !b->status[0])
         set_status(b, false, "Zum Seitenanfang mit Pos1 - dort stehen Menüs und Links");
-    relayout(b);                        /* falls das Fenster inzwischen breiter oder schmaler ist */
+    relayout(b, false);                 /* falls das Fenster inzwischen breiter oder schmaler ist */
+    pictures_sync(b);
+    b->pictures_changed = false;
+    pictures_pending(b, true);
 
     if (b->job_remember &&
         (b->history_count == 0 || strcmp(b->history[b->history_count - 1], b->url) != 0)) {
@@ -921,13 +1228,77 @@ static void draw_widget(const browser_t *b, surface_t *s, int index, int x, int 
     }
 }
 
-static void draw_page(const browser_t *b, surface_t *s)
+/*
+ * Zeichnet die Zeile row eines Bildblocks an die Stelle y: einen Streifen des
+ * Bildes - oder, solange es fehlt, den freigehaltenen Platz mit Ersatztext.
+ */
+static void draw_picture_row(browser_t *b, surface_t *s, const page_image_t *image,
+                             int row, int y)
+{
+    int x = CONTENT_X + image->column * FONT_W;
+    int right = SCROLL_X - 2;
+
+    /* Den Zeiger auf das Bild holen; freigegeben wird es nur von diesem Task. */
+    uint64_t flags = irq_save();
+    picture_t *pic = picture_find(b, image->url);
+    image_t *bitmap = pic && pic->state == PIC_READY ? pic->bitmap : NULL;
+    irq_restore(flags);
+
+    if (bitmap && image->width > 0 && image->height > 0) {
+        if (bitmap->width != image->width || bitmap->height != image->height) {
+            /* andere Größe gefragt: einmal umrechnen und merken */
+            if (!pic->shown || pic->shown->width != image->width ||
+                pic->shown->height != image->height) {
+                image_free(pic->shown);
+                pic->shown = image_scale(bitmap, image->width, image->height, C_BACKGROUND);
+            }
+            bitmap = pic->shown;
+        }
+        if (bitmap) {
+            int first = row * ROW_H;
+            for (int line = 0; line < ROW_H && first + line < bitmap->height; line++) {
+                int ty = y + line;
+                if (ty < CONTENT_Y || ty >= CONTENT_Y + CONTENT_H || ty >= s->height)
+                    continue;
+                int count = bitmap->width;
+                if (x + count > right)
+                    count = right - x;
+                if (count > 0)
+                    memcpy(s->pixels + (size_t)ty * s->stride + x,
+                           bitmap->pixels + (size_t)(first + line) * bitmap->width,
+                           (size_t)count * sizeof(uint32_t));
+            }
+            return;
+        }
+    }
+
+    /* Platzhalter */
+    if (image->width > 0) {
+        int height = image->height - row * ROW_H;
+        gfx_fill(s, x, y, image->width, height > ROW_H ? ROW_H : height, C_PLACEHOLDER);
+    }
+    if (row == 0) {
+        char text[160];
+        if (image->alt)
+            ksnprintf(text, sizeof(text), "[Bild: %s]", image->alt);
+        else
+            strlcpy(text, "[Bild]", sizeof(text));
+        draw_clipped(s, x + (image->width > 0 ? 4 : 0), y, text, (right - x - 8) / FONT_W,
+                     image->link >= 0 ? C_LINK : C_MUTED, false);
+    }
+}
+
+static void draw_page(browser_t *b, surface_t *s)
 {
     const page_t *page = b->page;
     gfx_set_clip(s, rect_make(0, CONTENT_Y, SCROLL_X - 2, CONTENT_H));
     for (int row = 0; row < ROWS && b->scroll + row < page->line_count; row++) {
         const line_t *line = &page->lines[b->scroll + row];
         int y = CONTENT_Y + row * ROW_H;
+        if (line->image >= 0 && line->image < page->image_count) {
+            draw_picture_row(b, s, &page->images[line->image], line->image_row, y);
+            continue;
+        }
         for (uint32_t i = 0; i < line->count; i++) {
             const span_t *span = &page->spans[line->first + i];
             int x = CONTENT_X + span->column * FONT_W;
@@ -1031,6 +1402,10 @@ static void draw(browser_t *b)
     } else if (b->busy) {
         ksnprintf(text, sizeof(text), "%s  (%llu s)", b->status[0] ? b->status : "Lade ...",
                   (time_ms() - b->busy_since) / 1000);
+        gfx_text(s, 10, y, text, C_TEXT, false);
+    } else if (b->page && !b->status_error && pictures_pending(b, false) > 0) {
+        ksnprintf(text, sizeof(text), "Lade Bilder ... noch %d von %d",
+                  pictures_pending(b, false), b->page->image_count);
         gfx_text(s, 10, y, text, C_TEXT, false);
     } else if (b->status[0]) {
         draw_clipped(s, 10, y, b->status, (WIDTH - 20) / FONT_W,
@@ -1367,6 +1742,15 @@ static void mouse_pressed(browser_t *b, int x, int y)
         if (line >= page->line_count || x < CONTENT_X)
             return;
         const line_t *l = &page->lines[line];
+        if (l->image >= 0 && l->image < page->image_count) {
+            /* Bild in einem Link: ein Klick darauf folgt dem Link */
+            const page_image_t *image = &page->images[l->image];
+            int left = CONTENT_X + image->column * FONT_W;
+            int width = image->width > 120 ? image->width : 120;
+            if (image->link >= 0 && x >= left && x < left + width)
+                follow_link(b, page->links[image->link]);
+            return;
+        }
         for (uint32_t i = 0; i < l->count; i++) {
             const span_t *span = &page->spans[l->first + i];
             if (column < span->column || column >= span->column + span->width)
@@ -1409,18 +1793,36 @@ void browser_app(void *arg)
 
     bool dragging = false;              /* Maustaste auf dem Rollbalken gedrückt */
     bool was_busy = false, redraw = true;
+    int was_pending = 0;
     for (;;) {
         if (b->incoming_ready || b->busy || was_busy)
             redraw = true;              /* Sekundenanzeige, neue Seite, Fehlermeldung */
         was_busy = b->busy;
         take_incoming(b);
+
+        /*
+         * Bilder: Sind welche angekommen, die Seite neu setzen - aber nicht
+         * bei jedem einzelnen, sonst springt sie ständig.
+         */
+        int pending = pictures_pending(b, true);
+        if (b->pictures_changed && !b->busy && b->overlay == OVERLAY_NONE &&
+            time_ms() >= b->pictures_settle) {
+            b->pictures_changed = false;
+            b->pictures_settle = time_ms() + (pending > 0 ? 900 : 0);
+            relayout(b, true);
+            redraw = true;
+        }
+        if (pending > 0 || was_pending > 0)
+            redraw = true;              /* Fortschritt in der Statuszeile */
+        was_pending = pending;
+
         if (redraw)
             draw(b);
         redraw = false;
 
-        /* Immer mit Frist warten: Der Helfer kann jederzeit fertig werden. */
+        /* Immer mit Frist warten: Die Helfer können jederzeit fertig werden. */
         event_t ev;
-        if (!window_get_event(b->window, &ev, b->busy ? 200 : 400))
+        if (!window_get_event(b->window, &ev, b->busy || pending > 0 ? 200 : 400))
             continue;
         redraw = true;
         if (ev.type == EV_CLOSE)
@@ -1430,7 +1832,7 @@ void browser_app(void *arg)
             b->height = ev.y;
             textedit_resize(&b->edit, (WIDTH - 16 - 12) / FONT_W,
                             (CONTENT_H - 42) / TEXTEDIT_LINE_H);
-            relayout(b);
+            relayout(b, false);
             clamp_scroll(b);
         }
         if (ev.type == EV_KEY) {
@@ -1451,8 +1853,10 @@ void browser_app(void *arg)
     /* Fenster sofort schließen; auf einen noch laufenden Helfer aber warten. */
     b->closing = true;
     window_destroy(b->window);
-    while (b->busy)
+    while (b->busy || b->picture_workers > 0)
         task_sleep(100);
+    for (int i = 0; i < b->picture_count; i++)
+        picture_release(b, &b->pictures[i]);
     page_free(b->page);
     page_free(b->incoming);
     kfree(b->source);

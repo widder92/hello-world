@@ -20,9 +20,9 @@ fremde Bibliothek: rund 24 000 Zeilen C und etwas Assembler.
   Grafikkarte
 - **Programme**: Browser, Terminal mit Shell (mehrere gleichzeitig), Texteditor,
   Dateiübertragung, Systemmonitor, Malprogramm, Info- und Ausschalten-Dialog
-- **Browser**: zeigt Webseiten als Text mit Links und Formularen, meldet sich
-  an (Cookies) und prüft bei https den Server – ohne JavaScript, Gestaltung
-  und Bilder
+- **Browser**: zeigt Webseiten als Text mit Links, Formularen und Bildern
+  (PNG, JPEG, GIF), meldet sich an (Cookies) und prüft bei https den Server –
+  ohne JavaScript und Gestaltung
 - **Eigene Dateien bleiben erhalten**: Sie werden auf dem Datenträger
   gesichert, von dem HelloOS startet, und sind dort auch unter Windows zu sehen
 - **Neben Windows**: vom USB-Stick – oder fest eingerichtet in einer eigenen
@@ -68,7 +68,7 @@ make check      # prüft Kryptografie und Browser-Unterbau auf dem Entwicklungsr
 
 In QEMU steckt das Image als USB-Stick an einem emulierten USB-3-Controller,
 dazu kommt eine emulierte Netzwerkkarte mit Internetzugang über den
-Wirtsrechner. `make check` braucht zusätzlich das Python-Paket `cryptography`
+Wirtsrechner. `make check` braucht zusätzlich die Python-Pakete `cryptography` und `Pillow`
 und einen gewöhnlichen C-Compiler (`cc`).
 
 Liegt die Firmware an einem ungewöhnlichen Ort: `make run OVMF=/pfad/zu/OVMF.fd`.
@@ -333,9 +333,12 @@ Was dabei zu wissen ist:
 ![Der Browser mit der Bearbeitungsseite eines WordPress-Beitrags](docs/screenshot-browser.png)
 
 Startmenü → „Browser", F8 oder `browse adresse` im Terminal. Es ist ein
-**einfacher Browser**, in der Art eines Textbrowsers: Er holt eine Seite, lässt
-Gestaltung, Bilder und Skripte weg und zeigt, was übrig bleibt – Überschriften,
-Text, Listen, Tabellen (zeilenweise), Links und Formulare.
+**einfacher Browser**, in der Art eines Textbrowsers mit Bildern: Er holt eine
+Seite, lässt Gestaltung und Skripte weg und zeigt, was übrig bleibt –
+Überschriften, Text, Listen, Tabellen (zeilenweise), Links, Formulare und
+Bilder.
+
+![Eine Seite mit Bildern: Logo mit durchsichtigem Rand und ein großes Foto](docs/screenshot-bilder.png)
 
 Was er kann:
 
@@ -348,13 +351,23 @@ Was er kann:
   verschlüsselt ist. Soll ein Passwort unverschlüsselt (http) gesendet werden,
   fragt der Browser vorher nach.
 - Dateien, die keine Webseiten sind, landen bei den eigenen Dateien
+- **Bilder** in den Formaten PNG, JPEG (auch „progressiv") und GIF (das erste
+  Einzelbild). Die Seite ist sofort lesbar; die Bilder lädt ein Helfer im
+  Hintergrund nach, die Statuszeile zählt mit. Jedes Bild steht als Block für
+  sich, große werden auf die Fensterbreite verkleinert. Ein Klick auf ein
+  verlinktes Bild folgt dem Link. Was nicht geladen werden kann, erscheint
+  als Ersatztext („[Bild: …]").
+- Das Mausrad blättert.
 
 Was er **nicht** kann – und das ist bei heutigen Webseiten viel:
 
 - **kein JavaScript.** Seiten und Funktionen, die darauf beruhen, bleiben leer,
   reagieren nicht oder sagen selbst, dass sie JavaScript brauchen.
-- keine Gestaltung (CSS), keine Bilder, keine Videos, keine Schriften außer
-  der einen eingebauten; nicht-lateinische Schrift erscheint als „?"
+- keine Gestaltung (CSS): keine Farben, Spalten oder Schriften der Seite –
+  alles steht untereinander in der einen eingebauten Schrift;
+  nicht-lateinische Schrift erscheint als „?"
+- keine Bilder in den Formaten WebP, AVIF und SVG, keine Hintergrundbilder
+  (die legt die Gestaltung fest), keine bewegten GIFs, keine Videos
 - kein Hochladen von Dateien, keine Lesezeichen, keine Tabs, kein Passwortspeicher
 - Lange Menüs einer Seite stehen als Liste am Seitenanfang. Der Browser
   springt deshalb beim Laden zur Hauptüberschrift; mit Pos1 geht es nach oben.
@@ -745,6 +758,7 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `kernel/x509.c`, `kernel/tls_roots.*` | Zertifikate lesen und prüfen, eingebaute Wurzelzertifikate |
 | `kernel/tls.c`, `kernel/http.c`, `kernel/url.c` | TLS 1.3, HTTP-Client, Web-Adressen |
 | `kernel/html.c`, `kernel/browser.c` | HTML zerlegen und als Text setzen; das Browser-Fenster |
+| `kernel/image*.c`, `kernel/inflate.c` | Bilder entschlüsseln (PNG, JPEG, GIF) und verkleinern |
 | `kernel/ssh.c`, `kernel/sftp.c` | SSH-Client, Dateiübertragung per SFTP |
 | `kernel/json.c` | JSON lesen und schreiben |
 | `kernel/claude.c`, `kernel/claude_app.c` | Anbindung an die Claude-API, Chatfenster |
@@ -763,6 +777,8 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `tests/crypto_test.py` | Kryptografie gegen `hashlib` und `cryptography` prüfen |
 | `tests/web_test.c` | Web-Adressen und HTML-Umsetzung prüfen, auch mit beschädigten Seiten |
 | `tests/block_test.c` | Schreibsperre für interne Platten prüfen |
+| `tests/hid_test.c` | Auswertung der HID-Berichte prüfen (Mäuse, Tastaturen, Funkempfänger) |
+| `tests/image_test.c`, `tests/image_test.py` | Bild-Dekoder gegen eine Referenz prüfen, auch mit beschädigten Dateien |
 
 ## Grenzen und Ideen zum Weiterbauen
 
@@ -779,7 +795,7 @@ gehalten. Naheliegende nächste Schritte:
 - User-Modus (Ring 3) mit Systemaufrufen und getrennten Adressräumen
 - Programme aus Dateien laden (ELF), mehrere Prozessorkerne
 - Symbole auf dem Desktop, ein Dateimanager, Fenster an den Kanten ziehen und minimieren
-- im Browser: Bilder, einfache Gestaltung, Lesezeichen (JavaScript bleibt außer Reichweite)
+- im Browser: WebP-Bilder, einfache Gestaltung, Lesezeichen (JavaScript bleibt außer Reichweite)
 
 ## Die ältere 32-Bit-Version
 

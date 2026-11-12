@@ -16,6 +16,7 @@ void *memset(void *, int, size_t);
 void *memcpy(void *, const void *, size_t);
 int memcmp(const void *, const void *, size_t);
 int strcmp(const char *, const char *);
+char *strstr(const char *, const char *);
 size_t strlen(const char *);
 
 /* Was der Kernel sonst bereitstellt */
@@ -40,6 +41,20 @@ int ksnprintf(char *b, size_t n, const char *f, ...)
     return r;
 }
 void claude_plain_text(char *text) { (void)text; }
+
+/* Auskunft über Bilder für den Test: zwei sind "geladen", eines ist kaputt */
+static picture_state_t picture_stub(void *ctx, const char *url, int *width, int *height)
+{
+    (void)ctx;
+    if (strstr(url, "da.png")) {
+        *width = 400;
+        *height = 200;
+        return PICTURE_READY;
+    }
+    if (strstr(url, "kaputt"))
+        return PICTURE_BROKEN;
+    return PICTURE_UNKNOWN;
+}
 
 static int failures, checks;
 
@@ -190,6 +205,60 @@ int main(void)
     check(p && p->line_count >= 2 && strcmp(line_text(p, 0), "a") == 0, "reiner Text");
     page_free(p);
 
+    /* Bilder als Blöcke: Größe, Platzhalter, Zählpixel, doppelt genannte Bilder */
+    static const char pictures_page[] =
+        "<p>Davor</p>"
+        "<img src=\"da.png\" alt=\"Geladen\">"                       /* 400x200 -> auf 320 Pixel */
+        "<p>Mitte <img src=\"pixel.gif\" width=1 height=1> weiter</p>"
+        "<a href=\"ziel.html\"><img src=\"kommt.jpg\" alt=\"Kommt noch\" width=\"160\" height=\"90\"></a>"
+        "<img src=\"unbekannt.jpg\">"
+        "<img data-src=\"faul.png\" src=\"data:image/gif;base64,R0lG\" alt=\"Faul\">"
+        "<noscript><img src=\"faul.png\" alt=\"Faul\"></noscript>"
+        "<p>Kaputt: <img src=\"kaputt.png\" alt=\"Ersatz\"> Ende</p>"
+        "<ul><li><img src=\"da.png\" alt=\"In Liste\"> Punkt</li></ul>";
+    html_pictures_t pictures = { .cell_width = 8, .line_height = 18, .max_rows = 30,
+                                 .lookup = picture_stub };
+    p = html_layout_pictures(pictures_page, sizeof(pictures_page) - 1, "https://a.de/x/",
+                             40, &pictures);
+    check(p && !p->failed && p->image_count == 5, "fünf Bilder eingeplant (Zählpixel, Doppeltes und Kaputtes nicht)");
+    if (p && p->image_count == 5) {
+        const page_image_t *im = p->images;
+        check(strcmp(im[0].url, "https://a.de/x/da.png") == 0 && im[0].ready &&
+              im[0].width == 320 && im[0].height == 160 && im[0].rows == 9,
+              "geladenes Bild: auf die Breite verkleinert, neun Zeilen");
+        bool rows_ok = true;
+        for (int r = 0; r < im[0].rows; r++) {
+            const line_t *l = &p->lines[im[0].line + r];
+            rows_ok = rows_ok && l->image == 0 && l->image_row == r && l->count == 0;
+        }
+        check(rows_ok, "die Zeilen des Blocks verweisen auf das Bild");
+        check(strcmp(line_text(p, im[0].line - 1), "") == 0 || strcmp(line_text(p, im[0].line - 2), "Davor") == 0,
+              "Text davor bleibt stehen");
+        check(!im[1].ready && im[1].width == 160 && im[1].height == 90 && im[1].rows == 5 &&
+              im[1].link >= 0 && strcmp(p->links[im[1].link], "https://a.de/x/ziel.html") == 0,
+              "noch nicht geladen, Größe angegeben: Platz freigehalten, Link gemerkt");
+        check(!im[2].ready && im[2].rows == 1 && im[2].width == 0 && !im[2].alt,
+              "noch nicht geladen, Größe unbekannt: eine Zeile");
+        check(strcmp(im[3].url, "https://a.de/x/faul.png") == 0 && im[3].alt &&
+              strcmp(im[3].alt, "Faul") == 0, "nachladendes Bild: Adresse aus data-src, nur einmal");
+        check(im[4].column == 2 && im[4].width == 304, "Bild in einer Liste: eingerückt und schmaler");
+        bool found = false, bullet_alone = false;
+        for (int i = 0; i < p->line_count; i++) {
+            if (strstr(line_text(p, i), "Kaputt: [Bild: Ersatz] Ende"))
+                found = true;
+            if (strcmp(line_text(p, i), "-") == 0 || strcmp(line_text(p, i), "- ") == 0)
+                bullet_alone = true;
+        }
+        check(found, "nicht ladbares Bild: Ersatztext im Lauftext");
+        check(!bullet_alone, "kein einsamer Listenpunkt über dem Bild");
+    }
+    page_free(p);
+
+    /* Ohne Bildquelle bleibt alles beim Alten */
+    p = html_layout(pictures_page, sizeof(pictures_page) - 1, "https://a.de/x/", 40);
+    check(p && p->image_count == 0, "ohne Bildanzeige keine Bildblöcke");
+    page_free(p);
+
     /* Beschädigte Seiten: abschneiden, Bytes kippen, Stücke verdoppeln */
     unsigned seed = 12345;
     char *broken = malloc(3 * sizeof(sample));
@@ -211,7 +280,9 @@ int main(void)
             memcpy(broken + len + n, sample + from, n);
             len += 2 * n;
         }
-        p = html_layout(broken, len, "https://a.de/", 20 + (int)(r % 200));
+        p = round % 2 ? html_layout(broken, len, "https://a.de/", 20 + (int)(r % 200))
+                      : html_layout_pictures(broken, len, "https://a.de/", 20 + (int)(r % 200),
+                                             &pictures);
         if (!p)
             failures++;
         page_free(p);

@@ -113,7 +113,7 @@ update-package: $(EFI)
 test: $(IMAGE)
 	QEMU="$(QEMU)" OVMF="$(OVMF)" ./tools/smoke-test.sh $(IMAGE)
 
-# Läuft auf dem Entwicklungsrechner; braucht das Python-Paket "cryptography".
+# Läuft auf dem Entwicklungsrechner; braucht die Python-Pakete "cryptography" und "Pillow".
 check: | $(BUILD)
 	$(PYTHON) tests/crypto_test.py
 	cc -O1 -g -fsanitize=address,undefined -Wall -Wno-builtin-declaration-mismatch \
@@ -125,6 +125,10 @@ check: | $(BUILD)
 	cc -O1 -g -fsanitize=address,undefined -Wall -Wextra -o $(BUILD)/hid_test \
 	    tests/hid_test.c kernel/hid.c
 	$(BUILD)/hid_test
+	cc -O1 -g -fsanitize=address,undefined -Wall -Wextra -o $(BUILD)/image_test \
+	    tests/image_test.c kernel/image.c kernel/image_png.c kernel/image_jpeg.c \
+	    kernel/image_gif.c kernel/inflate.c
+	$(PYTHON) tests/image_test.py $(BUILD)/image_test
 
 clean:
 	rm -rf $(BUILD)
