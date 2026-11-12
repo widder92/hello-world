@@ -71,7 +71,7 @@ struct window {
 
 /* Rohdaten der Eingabegeräte, bevor die Fensterverwaltung sie verteilt */
 typedef struct {
-    enum { RAW_KEY, RAW_MOUSE } type;
+    enum { RAW_KEY, RAW_MOUSE, RAW_POINTER, RAW_WHEEL } type;
     int a, b, c;
 } raw_event_t;
 
@@ -1162,6 +1162,16 @@ static bool pop_raw(raw_event_t *out)
     return have;
 }
 
+/* Das Mausrad gilt dem Fenster unter dem Zeiger. */
+static void handle_wheel(int steps)
+{
+    window_t *w = window_at(mouse_x, mouse_y);
+    if (!w || steps == 0)
+        return;
+    event_t ev = { .type = EV_SCROLL, .x = mouse_x, .y = steps, .buttons = mouse_buttons };
+    post_event(w, &ev);
+}
+
 /* Kam seit dem Start irgendeine Eingabe an? (für die Diagnose) */
 static volatile bool input_seen;
 
@@ -1187,10 +1197,18 @@ static void gui_task(void *arg)
 
         raw_event_t ev;
         while (pop_raw(&ev)) {
-            if (ev.type == RAW_KEY)
+            if (ev.type == RAW_KEY) {
                 handle_key(ev.a, ev.b);
-            else
+            } else if (ev.type == RAW_MOUSE) {
                 handle_mouse(ev.a, ev.b, ev.c);
+            } else if (ev.type == RAW_POINTER) {
+                /* feste Position: als Bewegung vom jetzigen Ort dorthin */
+                int x = (int)((int64_t)ev.a * (screen.width - 1) / 65535);
+                int y = (int)((int64_t)ev.b * (screen.height - 1) / 65535);
+                handle_mouse(x - mouse_x, y - mouse_y, ev.c);
+            } else {
+                handle_wheel(ev.a);
+            }
         }
         collect_closed_windows();
         free_retired();
@@ -1249,6 +1267,18 @@ void gui_post_mouse(int dx, int dy, int buttons)
 {
     input_seen = true;
     push_raw((raw_event_t){ RAW_MOUSE, dx, dy, buttons });
+}
+
+void gui_post_pointer(int x, int y, int buttons)
+{
+    input_seen = true;
+    push_raw((raw_event_t){ RAW_POINTER, x, y, buttons });
+}
+
+void gui_post_wheel(int steps)
+{
+    input_seen = true;
+    push_raw((raw_event_t){ RAW_WHEEL, steps, 0, 0 });
 }
 
 /* --- Anwendungen starten ------------------------------------------------------------ */

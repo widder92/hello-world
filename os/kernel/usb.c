@@ -7,7 +7,9 @@
  *
  *   - Geräte direkt an den Anschlüssen des Rechners und hinter USB-Hubs
  *     (auch den fest eingebauten, an denen in manchen PCs die Buchsen hängen)
- *   - Tastaturen und Mäuse im einfachen "Boot-Protokoll" (HID)
+ *   - Tastaturen und Mäuse (HID). Tastaturen im einfachen "Boot-Protokoll";
+ *     alles andere so, wie es das Gerät selbst beschreibt (siehe hid.h) -
+ *     nötig für Funkempfänger, die mehrere Arten von Berichten mischen
  *   - USB-Sticks und -Platten (Massenspeicher, "Bulk-Only" mit SCSI-Befehlen)
  *   - Abfragen statt Interrupts: Jeder Controller hat einen eigenen Task,
  *     der regelmäßig nachsieht, ob es Neuigkeiten gibt
@@ -20,6 +22,7 @@
 #include "block.h"
 #include "console.h"
 #include "gui.h"
+#include "hid.h"
 #include "input.h"
 #include "memory.h"
 #include "cpu.h"
@@ -125,11 +128,22 @@ typedef struct {
 
 /* --- Geräte ---------------------------------------------------------------------- */
 
-typedef enum { HID_NONE, HID_KEYBOARD, HID_MOUSE } hid_kind_t;
+#define MAX_HID 3                       /* Schnittstellen je Gerät */
+
+/*
+ * HID_KEYBOARD und HID_MOUSE: festes Standardformat ("Boot-Protokoll").
+ * HID_DESCRIBED: Format laut Beschreibung des Geräts - kann Maus, Tastatur
+ * oder beides sein und daneben Berichte enthalten, die wir übergehen.
+ */
+typedef enum { HID_NONE, HID_KEYBOARD, HID_MOUSE, HID_DESCRIBED } hid_kind_t;
 
 typedef struct {
     hid_kind_t kind;
     uint8_t interface;
+    uint8_t subclass, protocol;         /* 1/1: Standardtastatur, 1/2: Standardmaus */
+    uint16_t report_length;             /* Länge der Beschreibung */
+    hid_layout_t *layout;               /* ausgewertete Beschreibung (HID_DESCRIBED) */
+    uint16_t request_length;            /* so viele Bytes holen wir je Bericht ab */
     uint8_t dci;                        /* Nummer des Endpunkts im Controller */
     uint8_t interval;
     uint16_t max_packet;
@@ -186,7 +200,7 @@ typedef struct device {
     uint8_t device_class;
     char interfaces[40];                /* Klasse/Unterklasse/Protokoll je Schnittstelle */
     hub_t hub;
-    hid_t hid[2];
+    hid_t hid[MAX_HID];
     storage_t storage;
 } device_t;
 
@@ -411,16 +425,41 @@ static void keyboard_report(xhci_t *x, hid_t *hid, const uint8_t *report)
 static void hid_report(xhci_t *x, hid_t *hid, uint32_t length)
 {
     const uint8_t *report = hid->buffer;
-    if (hid->kind == HID_KEYBOARD && length >= 8)
+    if (hid->kind == HID_KEYBOARD && length >= 8) {
         keyboard_report(x, hid, report);
-    else if (hid->kind == HID_MOUSE && length >= 3)
+    } else if (hid->kind == HID_MOUSE && length >= 3) {
         gui_post_mouse((int8_t)report[1], (int8_t)report[2], report[0] & 0x07);
+    } else if (hid->kind == HID_DESCRIBED) {
+        /*
+         * Erst nachsehen, was für ein Bericht das ist. Was weder Maus noch
+         * Tastatur ist (Sondertasten, Akkustand, Herstellerdaten), wird
+         * übergangen - als Mausbewegung gedeutet, ließe es den Zeiger springen.
+         */
+        const uint8_t *payload;
+        size_t payload_length;
+        const hid_report_t *kind = hid_match(hid->layout, report, length,
+                                             &payload, &payload_length);
+        hid_mouse_t mouse;
+        uint8_t keys[8];
+        if (!kind)
+            return;
+        if (hid_decode_mouse(kind, payload, payload_length, &mouse)) {
+            if (mouse.absolute)
+                gui_post_pointer(mouse.dx, mouse.dy, mouse.buttons);
+            else
+                gui_post_mouse(mouse.dx, mouse.dy, mouse.buttons);
+            if (mouse.wheel)
+                gui_post_wheel(mouse.wheel);
+        } else if (hid_decode_keyboard(kind, payload, payload_length, keys)) {
+            keyboard_report(x, hid, keys);
+        }
+    }
 }
 
 /* Bittet das Gerät um den nächsten Bericht. */
 static void hid_request(xhci_t *x, device_t *dev, hid_t *hid)
 {
-    ring_push(&hid->ring, (uint64_t)hid->buffer, hid->max_packet,
+    ring_push(&hid->ring, (uint64_t)hid->buffer, hid->request_length,
               TRB_TYPE(TRB_NORMAL) | TRB_IOC | TRB_ISP);
     x->doorbell[dev->slot] = hid->dci;
 }
@@ -474,13 +513,15 @@ static void handle_event(xhci_t *x, const trb_t *ev)
     device_t *dev = device_by_slot(x, slot);
     if (!dev)
         return;
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < MAX_HID; i++) {
         hid_t *hid = &dev->hid[i];
         if (hid->kind == HID_NONE || hid->dci != dci)
             continue;
         if (code == CC_SUCCESS || code == CC_SHORT_PACKET) {
             uint32_t residual = ev->status & 0xFFFFFF;
-            hid_report(x, hid, hid->max_packet - residual);
+            if (residual > hid->request_length)
+                residual = hid->request_length;
+            hid_report(x, hid, hid->request_length - residual);
             hid_request(x, dev, hid);
         }
         /* Bei Fehlern fragen wir nicht weiter - meist wurde abgesteckt. */
@@ -830,12 +871,13 @@ static void device_free(xhci_t *x, device_t *dev)
         x->dcbaa[dev->slot] = 0;
     }
     /* Noch gedrückte Tasten loslassen */
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < MAX_HID; i++) {
         hid_t *hid = &dev->hid[i];
-        if (hid->kind == HID_KEYBOARD) {
+        if (hid->active && hid->kind != HID_MOUSE) {
             static const uint8_t nothing[8];
             keyboard_report(x, hid, nothing);
         }
+        kfree(hid->layout);
         if (hid->active)
             input_devices--;
         page_put(hid->ring.trbs);
@@ -905,13 +947,19 @@ static int parse_configuration(device_t *dev, uint16_t total, uint8_t speed)
                          !st->dci_in && !st->dci_out;
             if (in_storage)
                 st->interface = p[2];
-            bool boot_hid = p[5] == 3 && p[6] == 1 && p[3] == 0;
-            if (boot_hid && (p[7] == 1 || p[7] == 2) && found < 2) {
+            /* Eingabegerät (HID): Was genau, klärt später hid_classify(). */
+            if (p[5] == 3 && p[3] == 0 && found < MAX_HID) {
                 current = &dev->hid[found];
-                current->kind = p[7] == 1 ? HID_KEYBOARD : HID_MOUSE;
+                current->kind = HID_DESCRIBED;
                 current->interface = p[2];
+                current->subclass = p[6];
+                current->protocol = p[7];
+                current->report_length = 0;
                 current->dci = 0;
             }
+        } else if (p[1] == 0x21 && p[0] >= 9 && current && p[6] == 0x22) {
+            /* HID-Angaben: wie lang die Beschreibung der Berichte ist */
+            current->report_length = (uint16_t)(p[7] | (p[8] << 8));
         } else if (p[1] == 5 && p[0] >= 7 && in_storage && (p[3] & 0x03) == 2) {
             /* Bulk-Endpunkt eines Massenspeichers */
             uint8_t dci = (uint8_t)((p[2] & 0x0F) * 2 + ((p[2] & 0x80) ? 1 : 0));
@@ -933,8 +981,7 @@ static int parse_configuration(device_t *dev, uint16_t total, uint8_t speed)
             if (in && interrupt) {
                 current->dci = (uint8_t)((p[2] & 0x0F) * 2 + 1);
                 current->max_packet = (uint16_t)((p[4] | (p[5] << 8)) & 0x7FF);
-                if (current->max_packet > 64)
-                    current->max_packet = 64;
+                current->request_length = current->max_packet;
 
                 current->interval = interval_code(speed, p[6]);
                 found++;
@@ -951,7 +998,7 @@ static int parse_configuration(device_t *dev, uint16_t total, uint8_t speed)
     }
 
     /* Schnittstellen ohne passenden Endpunkt wieder streichen */
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < MAX_HID; i++) {
         if (!dev->hid[i].dci)
             dev->hid[i].kind = HID_NONE;
     }
@@ -1070,6 +1117,63 @@ static void hub_clear(xhci_t *x, device_t *hub, int port, uint16_t feature)
     control(x, hub, 0x23, 1, feature, (uint16_t)port, 0);
 }
 
+/* --- Eingabegeräte einordnen ----------------------------------------------------------- */
+
+/*
+ * Legt fest, wie die Berichte einer HID-Schnittstelle gelesen werden.
+ * Standardtastaturen bleiben beim festen Format - das ist das Einfachste und
+ * funktioniert überall. Für alles andere holen wir die Beschreibung des
+ * Geräts; nur wenn die nicht zu bekommen ist, gilt bei einer Standardmaus
+ * das feste Format. Schnittstellen ohne Maus und Tastatur fallen weg.
+ */
+static void hid_classify(xhci_t *x, device_t *dev, hid_t *hid)
+{
+    bool boot = hid->subclass == 1;
+    if (boot && hid->protocol == 1) {
+        hid->kind = HID_KEYBOARD;
+        return;
+    }
+    hid_kind_t fallback = (boot && hid->protocol == 2) ? HID_MOUSE : HID_NONE;
+
+    hid->kind = fallback;
+    if (hid->report_length == 0 || hid->report_length > PAGE_SIZE)
+        return;
+    if (!control(x, dev, 0x81, 6, 0x2200, hid->interface, hid->report_length))
+        return;
+    hid_layout_t *layout = kmalloc(sizeof(*layout));
+    if (!layout)
+        return;
+    if (!hid_parse(dev->buffer, hid->report_length, layout)) {
+        kfree(layout);
+        return;
+    }
+    if (!hid_has(layout, HID_REPORT_MOUSE) && !hid_has(layout, HID_REPORT_KEYBOARD)) {
+        kfree(layout);
+        hid->kind = HID_NONE;           /* nur Sondertasten oder Herstellerdaten */
+        return;
+    }
+
+    /* So viele Bytes kann der längste Bericht haben (samt Kennung) */
+    uint32_t longest = 1;
+    for (int i = 0; i < layout->count; i++) {
+        uint32_t bytes = (layout->reports[i].bits + 7u) / 8 + (layout->uses_ids ? 1 : 0);
+        if (bytes > longest)
+            longest = bytes;
+    }
+    hid->request_length = (uint16_t)(longest > PAGE_SIZE ? PAGE_SIZE : longest);
+    hid->layout = layout;
+    hid->kind = HID_DESCRIBED;
+}
+
+static bool has_input(const device_t *dev)
+{
+    for (int i = 0; i < MAX_HID; i++) {
+        if (dev->hid[i].kind != HID_NONE)
+            return true;
+    }
+    return false;
+}
+
 /* Liefert NULL bei Erfolg, sonst eine kurze Beschreibung des Problems. */
 static const char *device_setup(xhci_t *x, device_t *dev)
 {
@@ -1155,6 +1259,12 @@ static const char *device_setup(xhci_t *x, device_t *dev)
         if (problem)
             return problem;
     }
+    for (int i = 0; i < MAX_HID; i++) {
+        if (dev->hid[i].kind != HID_NONE)
+            hid_classify(x, dev, &dev->hid[i]);
+    }
+    if (!hub->present && !dev->storage.present && !has_input(dev))
+        return "Eingabegerät ohne Maus- oder Tastaturdaten";
 
     /* Endpunkte für die Berichte beim Controller anmelden */
     uint32_t add_flags = 1;
@@ -1171,7 +1281,7 @@ static const char *device_setup(xhci_t *x, device_t *dev)
         add_flags |= 1u << hub->dci;
         last_dci = hub->dci;
     }
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < MAX_HID; i++) {
         hid_t *hid = &dev->hid[i];
         if (hid->kind == HID_NONE)
             continue;
@@ -1237,24 +1347,39 @@ static const char *device_setup(xhci_t *x, device_t *dev)
             return problem;
     }
 
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < MAX_HID; i++) {
         hid_t *hid = &dev->hid[i];
         if (hid->kind == HID_NONE)
             continue;
-        /* Einfaches Boot-Protokoll wählen; Tastatur: nur Änderungen melden */
-        control(x, dev, 0x21, 0x0B, 0, hid->interface, 0);
-        if (hid->kind == HID_KEYBOARD)
-            control(x, dev, 0x21, 0x0A, 0, hid->interface, 0);
+        const char *what;
+        if (hid->kind == HID_DESCRIBED) {
+            /* Berichte so, wie das Gerät sie beschreibt */
+            bool mouse = hid_has(hid->layout, HID_REPORT_MOUSE);
+            bool keyboard = hid_has(hid->layout, HID_REPORT_KEYBOARD);
+            if (hid->subclass == 1)
+                control(x, dev, 0x21, 0x0B, 1, hid->interface, 0);
+            if (keyboard)
+                control(x, dev, 0x21, 0x0A, 0, hid->interface, 0);
+            what = mouse && keyboard ? "Maus und Tastatur" : mouse ? "Maus" : "Tastatur";
+            klog("USB %d: %s an Anschluss %s (Schnittstelle %u, %d Berichtsarten, bis %u Bytes)\n",
+                 x->number, what, dev->place, hid->interface, hid->layout->count,
+                 hid->request_length);
+        } else {
+            /* Festes Standardformat wählen; Tastatur: nur Änderungen melden */
+            control(x, dev, 0x21, 0x0B, 0, hid->interface, 0);
+            if (hid->kind == HID_KEYBOARD)
+                control(x, dev, 0x21, 0x0A, 0, hid->interface, 0);
+            what = hid->kind == HID_KEYBOARD ? "Tastatur" : "Maus";
+            klog("USB %d: %s an Anschluss %s (Schnittstelle %u, Standardformat)\n",
+                 x->number, what, dev->place, hid->interface);
+        }
         hid_request(x, dev, hid);
         hid->active = true;
         input_devices++;
-        klog("USB %d: %s an Anschluss %s\n", x->number,
-             hid->kind == HID_KEYBOARD ? "Tastatur" : "Maus", dev->place);
     }
     if (st->present && !storage_start(x, dev)) {
         st->present = false;
-        if (dev->hid[0].kind == HID_NONE && dev->hid[1].kind == HID_NONE &&
-            !hub->present)
+        if (!has_input(dev) && !hub->present)
             return "Datenträger antwortet nicht";
     }
     return NULL;

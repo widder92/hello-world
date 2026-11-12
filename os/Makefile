@@ -122,6 +122,9 @@ check: | $(BUILD)
 	$(BUILD)/web_test
 	cc -O1 -g -fsanitize=address,undefined -Wall -o $(BUILD)/block_test tests/block_test.c
 	$(BUILD)/block_test
+	cc -O1 -g -fsanitize=address,undefined -Wall -Wextra -o $(BUILD)/hid_test \
+	    tests/hid_test.c kernel/hid.c
+	$(BUILD)/hid_test
 
 clean:
 	rm -rf $(BUILD)

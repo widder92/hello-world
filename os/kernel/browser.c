@@ -1435,6 +1435,9 @@ void browser_app(void *arg)
         }
         if (ev.type == EV_KEY) {
             key_pressed(b, ev.key, ev.mods);
+        } else if (ev.type == EV_SCROLL && b->overlay == OVERLAY_NONE) {
+            b->scroll -= 3 * ev.y;      /* Mausrad: drei Zeilen je Raste */
+            clamp_scroll(b);
         } else if (ev.type == EV_MOUSE_DOWN) {
             dragging = ev.x >= SCROLL_X - 2 && b->overlay == OVERLAY_NONE;
             mouse_pressed(b, ev.x, ev.y);

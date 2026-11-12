@@ -100,8 +100,7 @@ Reagieren Tastatur und Maus nicht, öffnet HelloOS nach etwa 15 Sekunden von
 selbst ein Diagnosefenster mit dem Startprotokoll. Es zeigt für jeden
 USB-Anschluss, welches Gerät dort erkannt wurde und warum es nicht bedient
 wird – ein Foto davon ist die beste Grundlage für eine Fehlermeldung.
-Der häufigste Fall sind Funkempfänger, die sich nicht im einfachen
-„Boot-Protokoll" melden (siehe unten).
+Dasselbe Protokoll zeigt im Terminal der Befehl `log`.
 
 ### Neben Windows: zwei Wege
 
@@ -212,8 +211,13 @@ Was dabei zu beachten ist:
   ist das in QEMU mit dessen (langsamem) USB-1.1-Hub und auf einem echten PC
   mit langsamen Geräten an einem USB-2-Hub. Geräte an einem USB-3-Hub sind
   ungeprüft.
-- Unterstützt werden gewöhnliche USB-Tastaturen und -Mäuse (HID
-  „Boot-Protokoll"). Bluetooth-Geräte und Touchpads, die nur über I²C
+- Unterstützt werden USB-Tastaturen und -Mäuse, auch über Funkempfänger.
+  Tastaturen liest HelloOS im einfachen „Boot-Protokoll"; bei allem anderen
+  richtet es sich nach der Beschreibung, die das Gerät über seine Daten
+  mitliefert. So versteht es auch Empfänger, die über einen Kanal
+  Mausbewegungen, Sondertasten und anderes mischen, und übergeht, was weder
+  Maus noch Tastatur ist. Das Mausrad blättert in Browser, Editor und
+  Claude-Fenster. Bluetooth-Geräte und Touchpads, die nur über I²C
   angebunden sind, funktionieren nicht – dann hilft eine USB-Maus oder die
   Bedienung per Tastatur.
 - **Netzwerk gibt es nur per Kabel** und nur mit Netzwerkchips von Intel:
@@ -730,7 +734,7 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `kernel/task.c` | Tasks und Scheduler |
 | `kernel/console.c`, `kernel/serial.c` | Konsolen, `kprintf`, serielle Schnittstelle |
 | `kernel/keyboard.c`, `kernel/ps2.c` | Tastaturbelegungen, PS/2-Tastatur und -Maus |
-| `kernel/pci.c`, `kernel/usb.c` | PCI-Bus, xHCI-Treiber (Tastatur, Maus, Massenspeicher) |
+| `kernel/pci.c`, `kernel/usb.c`, `kernel/hid.c` | PCI-Bus, xHCI-Treiber (Hubs, Tastatur, Maus, Massenspeicher), Auswertung der HID-Berichte |
 | `kernel/nvme.c`, `kernel/ahci.c` | interne Datenträger: NVMe-SSDs und SATA-Platten |
 | `kernel/install.c` | Start-Assistent: Einrichten auf der internen Platte über die Firmware |
 | `kernel/block.c`, `kernel/fat.c` | Blockgeräte samt Schreibsperre für interne Platten, FAT32 |

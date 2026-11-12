@@ -376,6 +376,10 @@ void claude_app(void *arg)
         }
         if (ev.type == EV_KEY) {
             key_pressed(app, ev.key);
+        } else if (ev.type == EV_SCROLL) {
+            int scroll = app->scroll + 3 * ev.y;
+            app->scroll = scroll > 0 ? scroll : 0;
+            app->dirty = true;
         } else if (ev.type == EV_MOUSE_UP && app->confirm_pending) {
             if (rect_contains(allow_rect(app), ev.x, ev.y))
                 app->confirm_answer = 1;

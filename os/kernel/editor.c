@@ -356,6 +356,11 @@ void editor_app(void *arg)
             running = !key_open(e, ev.key);
         } else if (ev.type == EV_KEY) {
             key_edit(e, ev.key, ev.mods);
+        } else if (ev.type == EV_SCROLL && e->mode == MODE_EDIT) {
+            /* Mausrad: die Schreibmarke wandert, die Ansicht folgt ihr */
+            int steps = ev.y > 0 ? ev.y : -ev.y;
+            for (int i = 0; i < 3 * steps && i < 60; i++)
+                key_edit(e, ev.y > 0 ? KEY_UP : KEY_DOWN, 0);
         } else if (ev.type == EV_MOUSE_DOWN && e->mode == MODE_EDIT) {
             if (ev.y < TEXT_H)
                 textedit_click(&e->edit, ev.x - (WIDTH - textedit_width(&e->edit, false)),

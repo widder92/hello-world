@@ -21,6 +21,7 @@ typedef enum {
     EV_MOUSE_MOVE,                      /* nur bei gedrückter Maustaste */
     EV_CLOSE,                           /* Schließen-Knopf angeklickt */
     EV_RESIZE,                          /* neue Größe gewünscht: x = Breite, y = Höhe */
+    EV_SCROLL,                          /* Mausrad: y = Schritte, positiv = nach oben */
 } event_type_t;
 
 typedef struct {
@@ -52,6 +53,10 @@ void gui_panic_screen(const char *text);
 
 void gui_post_key(int key, int mods);
 void gui_post_mouse(int dx, int dy, int buttons);
+/* Zeigegerät mit festen Positionen: x und y jeweils 0..65535 über den ganzen Bildschirm */
+void gui_post_pointer(int x, int y, int buttons);
+/* Mausrad: positive Werte = vom Benutzer weg (Inhalt nach oben blättern) */
+void gui_post_wheel(int steps);
 
 /* --- Für Anwendungen ----------------------------------------------------------- */
 

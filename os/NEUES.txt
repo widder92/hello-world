@@ -1,6 +1,3 @@
-HelloOS 0.12
-- Dies ist das erste Update, das über das Netzwerk auf einen echten PC kommt - ein Test, ob der ganze Weg funktioniert.
-- USB-Hubs werden unterstützt: Tastatur, Maus und Stick funktionieren auch an Buchsen, die im PC über einen Hub laufen.
-- Netzwerk mit Intels 2,5-Gigabit-Anschlüssen I225 und I226; HelloOS schaltet dafür auch die PCI-Brücke davor ein.
-- Neuer Befehl log: das Startprotokoll mit den Meldungen der Treiber. Findet HelloOS weder Tastatur noch Maus, erscheint es von selbst als Fenster.
-- net zeigt die Zähler der Netzwerkkarte.
+HelloOS 0.13
+- Behoben: Der Mauszeiger sprang manchmal von selbst, und Fenster wie "Ausschalten" gingen ungewollt auf. HelloOS liest Mäuse und Funkempfänger jetzt so, wie sie ihre Daten selbst beschreiben, und übergeht alles, was keine Maus- oder Tastaturdaten sind.
+- Das Mausrad blättert im Browser, im Editor und im Claude-Fenster.
