@@ -95,6 +95,12 @@ typedef struct {
     const char *name;                   /* Name des Elements, das gerade beginnt */
     size_t name_len;
 
+    /* Tabellen (nur in echter Schrift): Zellen werden einzeln gesetzt */
+    int table_depth;                    /* so tief stecken wir in Tabellen */
+    int floor;                          /* Elemente unterhalb dieser Tiefe schließt eine Zelle nicht */
+    int widest_line, widest_piece;      /* beim Ausmessen: breiteste Zeile, breitestes Stück */
+    int cell_line;                      /* erste Zeile der laufenden Zelle; davor ist nichts */
+
     element_t stack[STACK_MAX];
     int depth;
     int hidden, bold, pre, heading, quote, italic, mono;
@@ -541,6 +547,9 @@ static void paragraph(parser_t *ps)
         return;
     }
     new_line(ps, false);
+    /* Am Anfang einer Tabellenzelle steht nichts darüber, wovon Abstand zu halten wäre. */
+    if (ps->table_depth > 0 && page->line_count - 1 <= ps->cell_line)
+        return;
     if (page->line_count >= 2 && page->lines[page->line_count - 2].count > 0)
         push_line(ps);
 }
@@ -562,11 +571,15 @@ static uint8_t current_size(const parser_t *ps)
 {
     if (!ps->text)
         return 0;
+    int size = ps->text->base_size;
     if (ps->cur.size)
-        return ps->cur.size;
-    if (ps->heading > 0 && ps->heading_level >= 1 && ps->heading_level <= 3)
-        return ps->text->heading_size[ps->heading_level - 1];
-    return ps->text->base_size;
+        size = ps->cur.size;
+    else if (ps->heading > 0 && ps->heading_level >= 1 && ps->heading_level <= 3)
+        size = ps->text->heading_size[ps->heading_level - 1];
+    /* In Tabellenzellen stehen Zeilen verschiedener Zellen nebeneinander: nur einfache Höhe */
+    if (ps->table_depth > 0 && size > 18)
+        size = 18;
+    return (uint8_t)size;
 }
 
 static int brightness(uint32_t rgb)
@@ -674,6 +687,8 @@ static void place(parser_t *ps, const char *bytes, size_t n, int width, int widg
         span->background = ps->cur.highlight;
         span->link = (int16_t)ps->link;
         span->widget = (int16_t)widget;
+        span->image = -1;
+        span->image_row = 0;
         memcpy(page->pool + page->pool_len, bytes, n);
         page->pool_len += n;
         line->count++;
@@ -682,6 +697,10 @@ static void place(parser_t *ps, const char *bytes, size_t n, int width, int widg
     if (ps->text && widget < 0 && size >= 19 && !(style & STYLE_MONO))
         line->tall = 1;
     ps->column += space + width;
+    if (width > ps->widest_piece)
+        ps->widest_piece = width;
+    if (ps->column - indent(ps) > ps->widest_line)
+        ps->widest_line = ps->column - indent(ps);
     ps->has_content = true;
     ps->space_pending = false;
     ps->only_bullet = false;
@@ -844,6 +863,8 @@ static void show_widget(parser_t *ps, int index, int width)
     int room = (ps->columns - indent(ps)) / ps->unit;   /* Felder zählen in Rasterzeichen */
     flush_word(ps);
     w->width = width > room ? room : width;
+    if (w->width < 3)
+        w->width = 3;                   /* schmaler ist kein Feld mehr zu bedienen */
     ps->space_pending = ps->has_content;
     int link = ps->link;
     ps->link = -1;
@@ -1030,7 +1051,7 @@ static void pop(parser_t *ps)
 /* Schließt das innerste offene Element dieser Art - aber nicht über eine Grenze hinweg. */
 static void close_open(parser_t *ps, tag_t tag, tag_t tag2, tag_t stop, tag_t stop2)
 {
-    for (int i = ps->depth - 1; i >= 0; i--) {
+    for (int i = ps->depth - 1; i >= ps->floor; i--) {
         tag_t t = ps->stack[i].tag;
         if (t == tag || t == tag2) {
             while (ps->depth > i)
@@ -1167,6 +1188,10 @@ static bool place_picture(parser_t *ps, const attr_t *attrs, int count)
         kfree(url);
         return true;
     }
+    if (width > ps->widest_piece)
+        ps->widest_piece = width;
+    if (width > ps->widest_line)
+        ps->widest_line = width;
     int index = page->image_count++;
     page_image_t *image = &page->images[index];
     memset(image, 0, sizeof(*image));
@@ -1263,6 +1288,8 @@ static void apply_style(parser_t *ps, tag_t tag, const css_style_t *cs)
 
     if (tag == T_BOLD || tag == T_HEADING || tag == T_TH)
         cur->bold = -1;
+    if (ps->table_depth > 0 && (tag == T_TD || tag == T_TH))
+        cur->align = tag == T_TH ? CSS_CENTER : CSS_LEFT;   /* Kopfzellen stehen mittig */
     if (tag == T_ITALIC)
         cur->italic = -1;
     if (tag == T_A) {
@@ -1498,11 +1525,12 @@ static void element_start(parser_t *ps, tag_t tag, const attr_t *attrs, int coun
         break;
     }
     case T_TR:
-        new_line(ps, false);
+        if (ps->table_depth == 0)
+            new_line(ps, false);
         ps->row_cells = 0;
         break;
     case T_TD: case T_TH:
-        if (ps->row_cells++ > 0) {
+        if (ps->table_depth == 0 && ps->row_cells++ > 0) {
             ps->space_pending = true;
             place_note(ps, "|");
             ps->space_pending = true;
@@ -1622,7 +1650,7 @@ static void end_tag(parser_t *ps, tag_t tag)
             new_line(ps, true);
         return;
     }
-    for (int i = ps->depth - 1; i >= 0; i--) {
+    for (int i = ps->depth - 1; i >= ps->floor; i--) {
         if (ps->stack[i].tag == tag) {
             while (ps->depth > i)
                 pop(ps);
@@ -1749,7 +1777,10 @@ void html_find_styles(const char *html, size_t len, const char *base_url,
     kfree(full);
 }
 
-static void parse(parser_t *ps, const char *html, size_t len)
+static const char *layout_table(parser_t *ps, const char *p, const char *end);
+
+/* Arbeitet ein Stück der Seite ab (die ganze Seite oder den Inhalt einer Tabellenzelle). */
+static void parse_range(parser_t *ps, const char *html, size_t len)
 {
     const char *p = html, *end = html + len;
 
@@ -1850,8 +1881,626 @@ static void parse(parser_t *ps, const char *html, size_t len)
             continue;
         }
         start_tag(ps, tag, attrs, count);
+
+        /* In echter Schrift werden Tabellen als Ganzes gesetzt: Zellen in Spalten. */
+        if (tag == T_TABLE && ps->text && ps->hidden == 0 && ps->table_depth < 3 &&
+            ps->depth > 0 && ps->stack[ps->depth - 1].tag == T_TABLE) {
+            const char *after = layout_table(ps, p, end);
+            if (after) {
+                p = after;
+                end_tag(ps, T_TABLE);
+            }
+        }
+    }
+}
+
+/* --- Tabellen --------------------------------------------------------------------------------- */
+
+#define TABLE_CELLS_MAX   6000
+#define TABLE_COLUMNS_MAX 40
+#define TABLE_GAP         14            /* Abstand zwischen zwei Spalten in Pixeln */
+#define TABLE_MEASURE_W   4000          /* "unendlich breit" beim Ausmessen */
+
+typedef struct {
+    const char *tag;                    /* das "<" des Zellen-Elements */
+    const char *content, *content_end;
+    int row;
+    bool caption, hidden;
+    int column, colspan, rowspan;
+    int min, max;                       /* schmalste und breiteste sinnvolle Breite */
+    int first_line, lines;              /* vorläufige Zeilen der Zelle */
+    uint32_t background;
+} cell_t;
+
+typedef struct {
+    const char *tag;                    /* das "<" von <tr>, oder NULL (Zeile ohne eigenes Element) */
+    int first_cell, cell_count;
+    uint32_t background;
+} table_row_t;
+
+typedef struct {
+    cell_t *cells;
+    table_row_t *rows;
+    int cell_count, row_count, column_count;
+    int widths[TABLE_COLUMNS_MAX];
+    const char *end;                    /* Ende des Tabellen-Quelltexts */
+} table_t;
+
+/* Liest ein Element ab seinem "<" und öffnet es wie beim normalen Durchgang. */
+static void open_element(parser_t *ps, const char *tag_start, const char *end, tag_t fallback)
+{
+    attr_t attrs[ATTRS_MAX];
+    int count = 0;
+    if (tag_start) {
+        const char *name = tag_start + 1;
+        size_t name_len = 0;
+        while (name + name_len < end && is_alpha(name[name_len]))
+            name_len++;
+        const char *p = name + name_len;
+        count = read_attributes(&p, end, attrs, false);
+        ps->name = name;
+        ps->name_len = name_len;
+        fallback = lookup_tag(name, name_len);
+        if (fallback == T_UNKNOWN)
+            fallback = T_BLOCK;         /* <caption> und Ähnliches */
+    } else {
+        ps->name = "tr";
+        ps->name_len = 2;
+    }
+    start_tag(ps, fallback, attrs, count);
+}
+
+/* Zerlegt den Quelltext einer Tabelle in Zeilen und Zellen (ohne sie zu setzen). */
+static bool table_scan(table_t *t, const char *p, const char *end)
+{
+    int depth = 0, cell_capacity = 0, row_capacity = 0;
+    cell_t *cell = NULL;                /* offene Zelle */
+    bool row_open = false;
+
+    t->end = end;
+    while (p < end) {
+        if (*p != '<') {
+            p++;
+            continue;
+        }
+        if (end - p >= 4 && memcmp(p, "<!--", 4) == 0) {
+            p += 4;
+            while (p + 3 <= end && memcmp(p, "-->", 3) != 0)
+                p++;
+            continue;
+        }
+        const char *tag_start = p;
+        bool closing = p + 1 < end && p[1] == '/';
+        const char *name = p + (closing ? 2 : 1);
+        size_t name_len = 0;
+        while (name + name_len < end && is_alpha(name[name_len]))
+            name_len++;
+        if (name_len == 0) {
+            p++;
+            continue;
+        }
+        bool is_table = same_word(name, name_len, "table");
+        bool is_row = same_word(name, name_len, "tr");
+        bool is_cell = same_word(name, name_len, "td") || same_word(name, name_len, "th");
+        bool is_caption = same_word(name, name_len, "caption");
+        if (!is_table && (depth > 0 || (!is_row && !is_cell && !is_caption))) {
+            p = name + name_len;        /* Inhalt: hier nicht von Belang */
+            continue;
+        }
+        attr_t attrs[ATTRS_MAX];
+        p = name + name_len;
+        int count = read_attributes(&p, end, attrs, closing);
+
+        if (is_table) {
+            if (!closing) {
+                depth++;
+            } else if (depth > 0) {
+                depth--;
+            } else {
+                if (cell)
+                    cell->content_end = tag_start;
+                t->end = p;
+                return true;
+            }
+            continue;
+        }
+        if (cell) {                     /* jede Zeile oder Zelle beendet die offene Zelle */
+            cell->content_end = tag_start;
+            cell = NULL;
+        }
+        if (is_row || (is_caption && !closing)) {
+            row_open = false;
+            if (closing)
+                continue;
+        }
+        if (closing) {
+            if (is_caption)
+                row_open = false;
+            continue;
+        }
+        if (!row_open) {
+            if (t->row_count == row_capacity) {
+                int capacity = row_capacity ? row_capacity * 2 : 32;
+                table_row_t *grown = kmalloc((size_t)capacity * sizeof(table_row_t));
+                if (!grown)
+                    return false;
+                if (t->rows)
+                    memcpy(grown, t->rows, (size_t)t->row_count * sizeof(table_row_t));
+                kfree(t->rows);
+                t->rows = grown;
+                row_capacity = capacity;
+            }
+            table_row_t *row = &t->rows[t->row_count++];
+            memset(row, 0, sizeof(*row));
+            row->tag = is_row ? tag_start : NULL;
+            row->first_cell = t->cell_count;
+            row_open = true;
+            if (is_row)
+                continue;
+        }
+        /* eine Zelle (oder die Überschrift der Tabelle als Zeile mit einer Zelle) */
+        if (t->cell_count >= TABLE_CELLS_MAX)
+            return false;
+        if (t->cell_count == cell_capacity) {
+            int capacity = cell_capacity ? cell_capacity * 2 : 64;
+            cell_t *grown = kmalloc((size_t)capacity * sizeof(cell_t));
+            if (!grown)
+                return false;
+            if (t->cells)
+                memcpy(grown, t->cells, (size_t)t->cell_count * sizeof(cell_t));
+            kfree(t->cells);
+            t->cells = grown;
+            cell_capacity = capacity;
+        }
+        cell = &t->cells[t->cell_count++];
+        memset(cell, 0, sizeof(*cell));
+        cell->tag = tag_start;
+        cell->content = p;
+        cell->content_end = end;
+        cell->row = t->row_count - 1;
+        cell->caption = is_caption;
+        cell->colspan = attr_number(attrs, count, "colspan", 1);
+        cell->rowspan = attr_number(attrs, count, "rowspan", 1);
+        if (cell->colspan < 1 || cell->colspan > TABLE_COLUMNS_MAX)
+            cell->colspan = 1;
+        if (cell->rowspan < 1)
+            cell->rowspan = 1;
+        t->rows[t->row_count - 1].cell_count++;
+    }
+    return true;                        /* ohne Ende-Marke: bis zum Schluss */
+}
+
+/* Bereitet die Zeile für den Inhalt einer Zelle vor: eigene Breite, kein Einzug. */
+static void cell_begin(parser_t *ps, int width)
+{
+    flush_word(ps);
+    ps->columns = width;
+    ps->list_depth = 0;
+    ps->quote = 0;
+    raw_line(ps);
+    ps->column = 0;
+    ps->has_content = false;
+    ps->space_pending = false;
+    ps->only_bullet = false;
+    ps->widest_line = ps->widest_piece = 0;
+    sync_line(ps);
+}
+
+/*
+ * Setzt alle Zellen der Reihe nach in die Seite von ps. measure: nur
+ * ausmessen (Zellen sehr breit); sonst mit den festgelegten Spaltenbreiten.
+ */
+static void table_pass(parser_t *ps, table_t *t, bool measure)
+{
+    const char *end = t->end;
+    int table_floor = ps->floor, outer_columns = ps->columns;
+    int outer_lists = ps->list_depth, outer_quote = ps->quote;
+
+    for (int r = 0; r < t->row_count && !ps->page->failed; r++) {
+        table_row_t *row = &t->rows[r];
+        int row_depth = ps->depth;
+        open_element(ps, row->tag, end, T_TR);
+        row->background = ps->cur.background;
+        bool row_hidden = ps->hidden > 0;
+
+        for (int c = 0; c < row->cell_count; c++) {
+            cell_t *cell = &t->cells[row->first_cell + c];
+            int cell_depth = ps->depth;
+            open_element(ps, cell->tag, end, T_TD);
+            if (measure)
+                cell->hidden = row_hidden || ps->hidden > 0;
+
+            int width = TABLE_MEASURE_W;
+            if (!measure) {
+                width = -TABLE_GAP;
+                for (int k = 0; k < cell->colspan && cell->column + k < t->column_count; k++)
+                    width += t->widths[cell->column + k] + TABLE_GAP;
+                if (cell->caption) {
+                    width = -TABLE_GAP;
+                    for (int k = 0; k < t->column_count; k++)
+                        width += t->widths[k] + TABLE_GAP;
+                    ps->cur.align = CSS_CENTER;
+                }
+                if (width < 8)
+                    width = 8;
+            }
+            cell->background = ps->cur.highlight;
+            cell_begin(ps, width);
+            cell->first_line = ps->page->line_count - 1;
+            int outer_cell_line = ps->cell_line;
+            ps->cell_line = cell->first_line;
+            ps->floor = ps->depth;
+            if (!cell->hidden)
+                parse_range(ps, cell->content, (size_t)(cell->content_end - cell->content));
+            while (ps->depth > ps->floor)
+                pop(ps);
+            flush_word(ps);
+            finish_line(ps);
+            ps->floor = table_floor;
+            ps->cell_line = outer_cell_line;
+
+            if (measure) {
+                cell->max = ps->widest_line;
+                cell->min = ps->widest_piece;
+            } else {
+                /* die Zeilen der Zelle, ohne leere am Ende */
+                int last = ps->page->line_count - 1;
+                while (last >= cell->first_line && ps->page->lines[last].count == 0 &&
+                       ps->page->lines[last].image < 0 && !ps->page->lines[last].filler)
+                    last--;
+                cell->lines = last - cell->first_line + 1;
+            }
+            while (ps->depth > cell_depth)
+                pop(ps);
+        }
+        while (ps->depth > row_depth)
+            pop(ps);
+    }
+    flush_word(ps);
+    ps->columns = outer_columns;
+    ps->list_depth = outer_lists;
+    ps->quote = outer_quote;
+}
+
+/* Ordnet die Zellen Spalten zu (mit colspan und rowspan) und verteilt die Breite. */
+static bool table_columns(table_t *t, int available)
+{
+    int busy[TABLE_COLUMNS_MAX] = { 0 };            /* von oben hereinragende Zellen */
+    int min[TABLE_COLUMNS_MAX] = { 0 }, max[TABLE_COLUMNS_MAX] = { 0 };
+
+    t->column_count = 0;
+    for (int r = 0; r < t->row_count; r++) {
+        table_row_t *row = &t->rows[r];
+        int column = 0;
+        for (int c = 0; c < row->cell_count; c++) {
+            cell_t *cell = &t->cells[row->first_cell + c];
+            if (cell->hidden || cell->caption) {
+                cell->column = 0;
+                continue;
+            }
+            while (column < TABLE_COLUMNS_MAX && busy[column] > 0)
+                column++;
+            if (column + cell->colspan > TABLE_COLUMNS_MAX)
+                return false;           /* zu viele Spalten: lieber zeilenweise */
+            cell->column = column;
+            for (int k = 0; k < cell->colspan; k++)
+                busy[column + k] = cell->rowspan;
+            if (cell->colspan == 1) {
+                if (cell->min > min[column]) min[column] = cell->min;
+                if (cell->max > max[column]) max[column] = cell->max;
+            }
+            column += cell->colspan;
+            if (column > t->column_count)
+                t->column_count = column;
+        }
+        for (int k = 0; k < TABLE_COLUMNS_MAX; k++) {
+            if (busy[k] > 0)
+                busy[k]--;
+        }
+    }
+    if (t->column_count == 0)
+        return false;
+
+    /* Zellen über mehrere Spalten: reicht deren Summe nicht, die letzte verbreitern */
+    for (int i = 0; i < t->cell_count; i++) {
+        const cell_t *cell = &t->cells[i];
+        if (cell->hidden || cell->caption || cell->colspan == 1)
+            continue;
+        int have_min = (cell->colspan - 1) * TABLE_GAP, have_max = have_min;
+        for (int k = 0; k < cell->colspan; k++) {
+            have_min += min[cell->column + k];
+            have_max += max[cell->column + k];
+        }
+        int last = cell->column + cell->colspan - 1;
+        if (cell->min > have_min) min[last] += cell->min - have_min;
+        if (cell->max > have_max) max[last] += cell->max - have_max;
     }
 
+    int total_min = 0, total_max = 0;
+    for (int k = 0; k < t->column_count; k++) {
+        if (min[k] < 8) min[k] = 8;
+        if (max[k] < min[k]) max[k] = min[k];
+        total_min += min[k];
+        total_max += max[k];
+    }
+    available -= (t->column_count - 1) * TABLE_GAP;
+    if (available < t->column_count * 16)
+        return false;                   /* kein Platz für Spalten */
+
+    if (total_max <= available) {       /* alles passt ohne Umbruch */
+        for (int k = 0; k < t->column_count; k++)
+            t->widths[k] = max[k];
+        return true;
+    }
+    if (total_min >= available) {
+        /* selbst die längsten Wörter passen nicht: anteilig stauchen */
+        for (int k = 0; k < t->column_count; k++) {
+            t->widths[k] = (int)((int64_t)min[k] * available / total_min);
+            if (t->widths[k] < 12)
+                t->widths[k] = 12;
+        }
+        return true;
+    }
+
+    /*
+     * Dazwischen: Erst bekommen schmale Spalten (Nummern, Preise, Datum) ihre
+     * volle Breite, solange sie nicht mehr als ihren gleichmäßigen Anteil
+     * verlangen - sie sollen nicht umbrechen. Den Rest teilen sich die
+     * breiten Spalten nach Bedarf.
+     */
+    bool settled[TABLE_COLUMNS_MAX] = { false };
+    int remaining = available, open = t->column_count;
+    for (bool changed = true; changed && open > 0;) {
+        changed = false;
+        int open_min = 0;
+        for (int k = 0; k < t->column_count; k++) {
+            if (!settled[k])
+                open_min += min[k];
+        }
+        for (int k = 0; k < t->column_count; k++) {
+            /* nur, wenn danach den übrigen noch ihr Minimum bleibt */
+            if (!settled[k] && (int64_t)max[k] * open <= remaining &&
+                remaining - max[k] >= open_min - min[k]) {
+                t->widths[k] = max[k];
+                settled[k] = true;
+                remaining -= max[k];
+                open_min -= min[k];
+                open--;
+                changed = true;
+            }
+        }
+    }
+    int open_min = 0, open_max = 0;
+    for (int k = 0; k < t->column_count; k++) {
+        if (!settled[k]) {
+            open_min += min[k];
+            open_max += max[k];
+        }
+    }
+    for (int k = 0; k < t->column_count; k++) {
+        if (settled[k])
+            continue;
+        if (remaining <= open_min || open_max <= open_min) {
+            t->widths[k] = open_min > 0 ? (int)((int64_t)min[k] * remaining / open_min) : 12;
+            if (t->widths[k] < 12)
+                t->widths[k] = 12;
+        } else {
+            int64_t spare = remaining - open_min;
+            t->widths[k] = min[k] + (int)(spare * (max[k] - min[k]) / (open_max - open_min));
+        }
+    }
+    return true;
+}
+
+/*
+ * Setzt eine Tabelle: p steht hinter ihrem Start-Element. Liefert die Stelle
+ * hinter der Tabelle - oder NULL, wenn sie zeilenweise gesetzt werden soll
+ * (zu groß, zu viele Spalten, Speichermangel).
+ */
+static const char *layout_table(parser_t *ps, const char *p, const char *end)
+{
+    page_t *page = ps->page;
+    table_t table;
+    const char *result = NULL;
+    parser_t *snapshot = NULL;
+    page_t *scratch = NULL;
+    line_t *old_lines = NULL;
+    span_t *old_spans = NULL;
+    int *line_map = NULL;
+
+    memset(&table, 0, sizeof(table));
+    if (!table_scan(&table, p, end) || table.cell_count == 0)
+        goto done;
+
+    /* 1. Ausmessen - auf einer Wegwerf-Seite, danach ist alles wie vorher */
+    snapshot = kmalloc(sizeof(*snapshot));
+    scratch = kzalloc(sizeof(*scratch));
+    if (!snapshot || !scratch)
+        goto done;
+    flush_word(ps);
+    memcpy(snapshot, ps, sizeof(*ps));
+    scratch->heading_line = -1;
+    scratch->pixels = true;
+    ps->page = scratch;
+    ps->table_depth++;
+    raw_line(ps);
+    table_pass(ps, &table, true);
+    bool measured = !scratch->failed;
+    if (ps->option_value != snapshot->option_value)
+        kfree(ps->option_value);
+    memcpy(ps, snapshot, sizeof(*ps));
+    page_free(scratch);
+    scratch = NULL;
+    if (!measured)
+        goto done;
+
+    int left = indent(ps);
+    if (!table_columns(&table, ps->columns - left))
+        goto done;
+
+    /* 2. Setzen: jede Zelle für sich, vorläufig hinter die bisherigen Zeilen */
+    /*
+     * Die laufende Zeile ist leer. Steht direkt darüber Inhalt, bleibt sie
+     * als Abstand stehen; sonst wird sie zur ersten Zeile der Tabelle.
+     */
+    int line0 = page->line_count - 1;
+    bool cell_start = ps->table_depth > 0 && line0 <= ps->cell_line;
+    if (line0 > 0 && !cell_start &&
+        (page->lines[line0 - 1].count > 0 || page->lines[line0 - 1].image >= 0))
+        line0++;
+    int span0 = page->span_count;
+    int anchor0 = page->anchor_count;
+    int outer_widest_line = ps->widest_line, outer_widest_piece = ps->widest_piece;
+    ps->table_depth++;
+    table_pass(ps, &table, false);
+    ps->table_depth--;
+    if (page->failed)
+        goto done;
+
+    /* 3. Zusammensetzen: die Zeilen der Zellen einer Tabellenzeile nebeneinander */
+    int temp_lines = page->line_count - line0, temp_spans = page->span_count - span0;
+    old_lines = kmalloc((size_t)(temp_lines > 0 ? temp_lines : 1) * sizeof(line_t));
+    old_spans = kmalloc((size_t)(temp_spans > 0 ? temp_spans : 1) * sizeof(span_t));
+    line_map = kmalloc((size_t)(temp_lines > 0 ? temp_lines : 1) * sizeof(int));
+    if (!old_lines || !old_spans || !line_map) {
+        page->failed = true;
+        goto done;
+    }
+    memcpy(old_lines, page->lines + line0, (size_t)temp_lines * sizeof(line_t));
+    memcpy(old_spans, page->spans + span0, (size_t)temp_spans * sizeof(span_t));
+    for (int i = 0; i < temp_lines; i++)
+        line_map[i] = -1;
+    page->line_count = line0;
+    page->span_count = span0;
+
+    int starts[TABLE_COLUMNS_MAX], total_width = 0;
+    for (int k = 0; k < table.column_count; k++) {
+        starts[k] = left + total_width;
+        total_width += table.widths[k] + TABLE_GAP;
+    }
+    total_width -= TABLE_GAP;
+
+    for (int r = 0; r < table.row_count && !page->failed; r++) {
+        const table_row_t *row = &table.rows[r];
+        int height = 0;
+        for (int c = 0; c < row->cell_count; c++) {
+            if (table.cells[row->first_cell + c].lines > height)
+                height = table.cells[row->first_cell + c].lines;
+        }
+        for (int j = 0; j < height && !page->failed; j++) {
+            if (page->line_count >= LINES_MAX ||
+                !ENSURE(page, page->lines, page->line_count, page->line_cap)) {
+                page->failed = true;
+                break;
+            }
+            int target = page->line_count++;
+            line_t *line = &page->lines[target];
+            memset(line, 0, sizeof(*line));
+            line->first = (uint32_t)page->span_count;
+            line->image = -1;
+            line->background = row->background;
+
+            for (int c = 0; c < row->cell_count && !page->failed; c++) {
+                const cell_t *cell = &table.cells[row->first_cell + c];
+                if (cell->hidden)
+                    continue;
+                int x = cell->caption ? left : starts[cell->column];
+                int width = cell->caption ? total_width : -TABLE_GAP;
+                for (int k = 0; !cell->caption && k < cell->colspan &&
+                                cell->column + k < table.column_count; k++)
+                    width += table.widths[cell->column + k] + TABLE_GAP;
+
+                /* farbige Zellen: ein Kasten über die ganze Zellbreite, davor der Inhalt */
+                if (cell->background) {
+                    if (!ENSURE(page, page->spans, page->span_count, page->span_cap))
+                        break;
+                    span_t *box = &page->spans[page->span_count++];
+                    memset(box, 0, sizeof(*box));
+                    box->column = (uint16_t)(x > TABLE_GAP / 2 ? x - TABLE_GAP / 2 : 0);
+                    box->width = (uint16_t)(width + TABLE_GAP);
+                    box->background = cell->background;
+                    box->link = box->widget = box->image = -1;
+                    line->count++;
+                }
+                if (j >= cell->lines)
+                    continue;
+                int source_index = cell->first_line - line0 + j;
+                const line_t *source = &old_lines[source_index];
+                line_map[source_index] = target;
+                if (source->image >= 0 && source->image < page->image_count) {
+                    /* Bild in der Zelle: als Stück an seiner Stelle in der Zeile */
+                    page_image_t *image = &page->images[source->image];
+                    if (!ENSURE(page, page->spans, page->span_count, page->span_cap))
+                        break;
+                    span_t *piece = &page->spans[page->span_count++];
+                    memset(piece, 0, sizeof(*piece));
+                    if (source->image_row == 0) {
+                        image->column += x;
+                        image->line = target;
+                    }
+                    piece->column = (uint16_t)image->column;
+                    piece->width = (uint16_t)(image->width > 0 ? image->width : 60);
+                    piece->link = (int16_t)image->link;
+                    piece->widget = -1;
+                    piece->image = source->image;
+                    piece->image_row = source->image_row;
+                    line->count++;
+                    continue;
+                }
+                for (uint32_t k = 0; k < source->count; k++) {
+                    if (!ENSURE(page, page->spans, page->span_count, page->span_cap))
+                        break;
+                    span_t *piece = &page->spans[page->span_count++];
+                    *piece = old_spans[source->first - (uint32_t)span0 + k];
+                    piece->column = (uint16_t)(piece->column + x);
+                    if (piece->widget >= 0 && piece->widget < page->widget_count) {
+                        page->widgets[piece->widget].line = target;
+                        page->widgets[piece->widget].column += x;
+                    }
+                    line->count++;
+                }
+            }
+        }
+    }
+
+    /* Sprungmarken und die Hauptüberschrift zeigen jetzt auf die endgültigen Zeilen */
+    for (int i = anchor0; i < page->anchor_count; i++) {
+        int at = page->anchors[i].line - line0;
+        page->anchors[i].line = at >= 0 && at < temp_lines && line_map[at] >= 0
+                                    ? line_map[at] : page->line_count - 1;
+    }
+    if (page->heading_line >= line0) {
+        int at = page->heading_line - line0;
+        page->heading_line = at < temp_lines && line_map[at] >= 0 ? line_map[at] : line0;
+    }
+
+    /* Danach geht es in einer frischen Zeile weiter */
+    raw_line(ps);
+    ps->column = 0;
+    ps->has_content = false;
+    ps->space_pending = false;
+    ps->only_bullet = false;
+    ps->widest_line = outer_widest_line > total_width ? outer_widest_line : total_width;
+    int narrowest = (table.column_count - 1) * TABLE_GAP;
+    for (int i = 0; i < table.column_count; i++)
+        narrowest += table.widths[i] < 60 ? table.widths[i] : 60;
+    ps->widest_piece = outer_widest_piece > narrowest ? outer_widest_piece : narrowest;
+    result = table.end;
+
+done:
+    kfree(snapshot);
+    page_free(scratch);
+    kfree(old_lines);
+    kfree(old_spans);
+    kfree(line_map);
+    kfree(table.cells);
+    kfree(table.rows);
+    return result;
+}
+
+static void parse(parser_t *ps, const char *html, size_t len)
+{
+    parse_range(ps, html, len);
     while (ps->depth > 0)
         pop(ps);
     new_line(ps, false);

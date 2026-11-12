@@ -340,7 +340,7 @@ Was dabei zu wissen ist:
 Startmenü → „Browser", F8 oder `browse adresse` im Terminal. Es ist ein
 **einfacher Browser**: Er holt eine Seite samt ihren Stylesheets, lässt ihre
 Skripte weg und setzt sie selbst – in einer Spalte, in echter Schrift:
-Überschriften, fett, kursiv, Listen, Tabellen (zeilenweise), Links, Formulare
+Überschriften, fett, kursiv, Listen, Tabellen mit Spalten, Links, Formulare
 und Bilder, mit den Farben, Hintergründen und Schriftgrößen der Seite.
 
 ![Eine gestaltete Seite: dunkler Kopf mit Menü, Seitenhintergrund, farbige Überschriften, hinterlegter Kasten](docs/screenshot-gestaltung.png)
@@ -367,6 +367,16 @@ Was er kann:
   verlinktes Bild folgt dem Link. Was nicht geladen werden kann, erscheint
   als Ersatztext („[Bild: …]").
 - Das Mausrad blättert.
+- **Tabellen** stehen in Spalten: Der Browser misst jede Zelle aus, verteilt
+  die Breite (schmale Spalten wie Nummern und Preise zuerst, damit sie nicht
+  umbrechen) und setzt die Zellen einer Zeile nebeneinander; langer Text
+  bricht in seiner Zelle um. Er kennt Zellen über mehrere Spalten oder
+  Zeilen, Tabellenüberschriften, farbige Zellen und Zeilen sowie Tabellen in
+  Tabellen (bis drei Stufen); Links, Bilder und Formularfelder in Zellen
+  funktionieren. Rahmen und Linien zeichnet er nicht. Tabellen mit mehr als
+  40 Spalten oder 6000 Zellen erscheinen zeilenweise.
+
+  ![Eine Tabelle mit Kopfzeile, rechtsbündigen Zahlen und Summenzeile](docs/screenshot-tabelle.png)
 - **Gestaltung der Seite (CSS), in Auszügen:** Der Browser lädt die
   Stylesheets der Seite (höchstens zwölf Dateien) und wendet an, was er
   kann: Textfarbe, Hintergrundfarbe von Seite, Abschnitten und Textstücken,
@@ -822,7 +832,7 @@ gehalten. Naheliegende nächste Schritte:
 - User-Modus (Ring 3) mit Systemaufrufen und getrennten Adressräumen
 - Programme aus Dateien laden (ELF), mehrere Prozessorkerne
 - Symbole auf dem Desktop, ein Dateimanager, Fenster an den Kanten ziehen und minimieren
-- im Browser: Tabellen als Tabellen, Bilder neben dem Text, Abstände und Rahmen, WebP-Bilder, Lesezeichen (JavaScript bleibt außer Reichweite)
+- im Browser: Bilder neben dem Text, Abstände und Rahmen (auch Tabellenlinien), WebP-Bilder, Lesezeichen (JavaScript bleibt außer Reichweite)
 - echte Schrift auch in Terminal, Editor und Eingabefeldern; Hinting für schärfere kleine Schrift
 
 ## Die ältere 32-Bit-Version

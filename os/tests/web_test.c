@@ -411,6 +411,75 @@ int main(void)
     page_free(p);
     text.css = NULL;
 
+    /* Tabellen: Zellen nebeneinander in Spalten */
+    static const char table_page[] =
+        "<p>Davor</p><table><caption>Titel der Tabelle</caption>"
+        "<tr><th>Nr</th><th>Name</th><th>Text</th></tr>"
+        "<tr><td>1</td><td>Anna</td><td>Ein langer Text, der in seiner Zelle mehrfach umbrechen muss, "
+        "weil die Seite schmal ist und die anderen Spalten Platz brauchen</td></tr>"
+        "<tr><td>22</td><td style=\"background:#ff0\">Bernd <a href=z id=marke>Link</a></td><td><input name=q size=6></td></tr>"
+        "<tr><td colspan=2>Zusammen</td><td><table><tr><td>in A</td><td>in B</td></tr></table></td></tr>"
+        "</table><p>Danach</p>";
+    p = html_layout_rich(table_page, sizeof(table_page) - 1, "https://a.de/", 420, NULL, &text);
+    check(p && !p->failed, "Seite mit Tabelle gesetzt");
+    if (p) {
+        int x_nr = -1, x_name = -1, x_text = -1, x_1 = -1, x_anna = -1, x_bernd = -1, x_zus = -1;
+        int line_1 = -1, line_anna = -1, line_long = -1, line_in_a = -1, line_in_b = -1;
+        int x_in_a = -1, x_in_b = -1, long_lines = 0, line_title = -1, line_before = -1;
+        int x_long = -1;                /* Anfang der dritten Spalte (Kopfzellen stehen mittig) */
+        bool box = false, right_edge = true;
+        for (int i = 0; i < p->line_count; i++) {
+            const line_t *l = &p->lines[i];
+            for (uint32_t k = 0; k < l->count; k++) {
+                const span_t *sp = &p->spans[l->first + k];
+                const char *t = p->pool + sp->text;
+                right_edge = right_edge && sp->column + sp->width <= 420 + 8;
+                if (sp->bytes == 0 && sp->widget < 0 && sp->background == (HTML_COLOR_SET | 0xFFFF00))
+                    box = true;
+                #define IS(word) (sp->bytes >= sizeof(word) - 1 && memcmp(t, word, sizeof(word) - 1) == 0)
+                if (IS("Nr")) x_nr = sp->column;
+                if (IS("Name")) x_name = sp->column;
+                if (IS("Text")) x_text = sp->column;
+                if (IS("1") && sp->bytes == 1) { x_1 = sp->column; line_1 = i; }
+                if (IS("Anna")) { x_anna = sp->column; line_anna = i; }
+                if (IS("Bernd")) x_bernd = sp->column;
+                if (IS("Zusammen")) x_zus = sp->column;
+                if (IS("Ein langer")) { line_long = i; x_long = sp->column; }
+                if (IS("in A")) { x_in_a = sp->column; line_in_a = i; }
+                if (IS("in B")) { x_in_b = sp->column; line_in_b = i; }
+                if (IS("Titel der")) line_title = i;
+                if (IS("Davor")) line_before = i;
+                if (line_long >= 0 && sp->column == x_long && i > line_long && l->count == 1 &&
+                    sp->bytes > 0 && sp->widget < 0 && !IS("in A"))
+                    long_lines = i - line_long + 1;
+            }
+        }
+        check(x_1 >= 0 && x_1 < x_anna && line_1 == line_anna && line_anna == line_long,
+              "Zellen einer Zeile stehen nebeneinander");
+        check(x_name > x_nr && x_text > x_name && x_bernd == x_anna && x_zus == x_1,
+              "Spalten stehen untereinander; colspan beginnt in der ersten Spalte");
+        check(long_lines >= 2 && right_edge, "langer Text bricht in seiner Zelle um, nichts ragt hinaus");
+        check(box, "farbige Zelle bekommt einen Kasten");
+        check(line_in_a >= 0 && line_in_a == line_in_b && x_in_b > x_in_a && x_in_a == x_long,
+              "verschachtelte Tabelle steht in ihrer Zelle");
+        check(line_title > line_before && line_title < line_1, "Überschrift der Tabelle steht darüber");
+        check(p->widget_count == 1 && p->widgets[0].line > line_anna &&
+              p->widgets[0].column == x_long, "Formularfeld in der Zelle an der richtigen Stelle");
+        check(p->anchor_count == 1 && p->anchors[0].line == p->widgets[0].line,
+              "Sprungmarke zeigt auf die endgültige Zeile");
+    }
+    page_free(p);
+
+    /* Tabellen im Zeichenraster bleiben zeilenweise */
+    p = html_layout(table_page, sizeof(table_page) - 1, "https://a.de/", 60);
+    bool linear = false;
+    for (int i = 0; p && i < p->line_count; i++) {
+        if (strstr(line_text(p, i), "Nr | Name | Text"))
+            linear = true;
+    }
+    check(linear, "ohne echte Schrift: Tabelle zeilenweise mit Trennstrichen");
+    page_free(p);
+
     /* Stylesheets einer Seite finden */
     static const char head[] =
         "<html><head><style>a{color:red}</style><!-- <style>x</style> -->"
@@ -432,10 +501,11 @@ int main(void)
 
     /* Beschädigte Seiten: abschneiden, Bytes kippen, Stücke verdoppeln */
     unsigned seed = 12345;
-    char *broken = malloc(3 * sizeof(sample));
+    char *broken = malloc(3 * (sizeof(sample) + sizeof(table_page)));
     for (int round = 0; round < 3000; round++) {
-        size_t len = sizeof(sample) - 1;
-        memcpy(broken, sample, len);
+        const char *source = round % 4 == 3 ? table_page : sample;
+        size_t len = round % 4 == 3 ? sizeof(table_page) - 1 : sizeof(sample) - 1;
+        memcpy(broken, source, len);
         seed = seed * 1103515245u + 12345u;
         unsigned r = seed >> 8;
         if (round % 3 == 0) {
@@ -447,8 +517,8 @@ int main(void)
             }
         } else {
             size_t from = r % len, n = (r >> 7) % (len - from);
-            memcpy(broken + len, sample + from, n);
-            memcpy(broken + len + n, sample + from, n);
+            memcpy(broken + len, source + from, n);
+            memcpy(broken + len + n, source + from, n);
             len += 2 * n;
         }
         if (round % 3 == 0)

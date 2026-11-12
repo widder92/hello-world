@@ -1439,6 +1439,11 @@ static void draw_page(browser_t *b, surface_t *s)
                 draw_widget(b, s, span->widget, x, y);
                 continue;
             }
+            if (span->image >= 0 && span->image < page->image_count) {
+                /* Bild in einer Tabellenzelle */
+                draw_picture_row(b, s, &page->images[span->image], span->image_row, y);
+                continue;
+            }
             if (span->background)
                 gfx_fill(s, x, y, span->width * unit, line->tall ? 2 * ROW_H : ROW_H,
                          span->background & 0xFFFFFF);
@@ -1905,6 +1910,8 @@ static void mouse_pressed(browser_t *b, int x, int y)
             const span_t *span = &page->spans[l->first + i];
             if (column < span->column || column >= span->column + span->width)
                 continue;
+            if (span->bytes == 0 && span->widget < 0 && span->image < 0)
+                continue;               /* nur der farbige Kasten einer Tabellenzelle */
             if (span->widget >= 0)
                 activate_widget(b, span->widget);
             else if (span->link >= 0)

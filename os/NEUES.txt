@@ -1,5 +1,4 @@
-HelloOS 0.16
-- Browser: Seiten erscheinen mit ihrer Gestaltung - Textfarben, Hintergründe, Schriftgrößen, mittig oder rechts ausgerichteter Text, Menüs nebeneinander. Was eine Seite ausblendet, bleibt ausgeblendet.
-- Der Browser lädt dafür die Stylesheets der Seite mit; das Laden dauert dadurch etwas länger.
-- Wäre Text auf seinem Hintergrund kaum zu lesen, nimmt der Browser die übliche Farbe.
-- Weiterhin nicht möglich: Spalten und Raster der Seite, Hintergrundbilder, JavaScript.
+HelloOS 0.17
+- Browser: Tabellen stehen jetzt in Spalten - mit umbrechendem Text in den Zellen, farbigen Kopfzeilen und rechtsbündigen Zahlen. Listen wie die Beiträge in der WordPress-Verwaltung oder der Infokasten bei Wikipedia sind damit so angeordnet, wie man sie kennt.
+- Aus 0.16: Seiten erscheinen mit ihren Farben, Hintergründen und Schriftgrößen.
+- Weiterhin nicht möglich: Spalten und Raster der Seite, Bilder neben dem Text, JavaScript.

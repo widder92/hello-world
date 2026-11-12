@@ -26,6 +26,8 @@ typedef struct {
     uint32_t background;                /* Hintergrund nur dieses Stücks, oder 0 */
     int16_t link;                       /* Nummer des Links oder -1 */
     int16_t widget;                     /* Nummer des Formularfelds oder -1 */
+    int16_t image;                      /* Bild an dieser Stelle (in Tabellen), oder -1 */
+    uint16_t image_row;                 /* ... und welche seiner Zeilen */
 } span_t;
 
 typedef struct {
