@@ -375,7 +375,14 @@ static bool wants_hidden(const attr_t *attrs, int count)
 {
     static const char *const classes[] = {
         "hidden", "screen-reader-text", "hide-if-no-js", "sr-only", "visually-hidden",
-        "d-none", NULL,
+        "d-none",
+        /*
+         * Aufklappmenüs: Ihr Inhalt ist in einem normalen Browser verborgen,
+         * bis man sie anklickt. Ohne Stylesheets stünden sie in voller Länge
+         * mitten im Text (bei Wikipedia über 300 Sprachen vor dem Artikel).
+         */
+        "dropdown-menu", "dropdown-content", "vector-dropdown-content",
+        "vector-sticky-header", "vector-pinnable-header", NULL,
     };
     if (find_attr(attrs, count, "hidden") || attr_is(attrs, count, "aria-hidden", "true"))
         return true;
@@ -701,6 +708,9 @@ static void start_input(parser_t *ps, const attr_t *attrs, int count)
 
     if (same_word(t, n, "hidden")) {
         add_widget(ps, W_HIDDEN, attrs, count);
+    } else if ((same_word(t, n, "checkbox") || same_word(t, n, "radio")) && ps->form < 0 &&
+               !find_attr(attrs, count, "name")) {
+        /* Ohne Namen und Formular: ein Schalter für die Gestaltung, kein Eingabefeld */
     } else if (same_word(t, n, "checkbox") || same_word(t, n, "radio")) {
         index = add_widget(ps, lower(t[0]) == 'c' ? W_CHECKBOX : W_RADIO, attrs, count);
         if (index >= 0 && !ps->page->widgets[index].value)
@@ -1253,9 +1263,13 @@ static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
     case T_BUTTON:
         flush_word(ps);
         finish_button(ps);
-        /* Knöpfe ohne type senden das Formular ab; type="button" braucht Skripte. */
+        /*
+         * Knöpfe ohne type senden das Formular ab; type="button" braucht
+         * Skripte - ebenso jeder Knopf, der zu keinem Formular gehört.
+         */
         if (!attr_is(attrs, count, "type", "button") &&
-            !attr_is(attrs, count, "type", "reset")) {
+            !attr_is(attrs, count, "type", "reset") &&
+            (ps->form >= 0 || find_attr(attrs, count, "form"))) {
             ps->button = add_widget(ps, W_SUBMIT, attrs, count);
             if (ps->button >= 0) {
                 ps->capturing = true;

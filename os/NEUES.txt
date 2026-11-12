@@ -1,5 +1,4 @@
-HelloOS 0.14
-- Der Browser zeigt Bilder: PNG, JPEG und GIF. Die Seite ist sofort lesbar, die Bilder erscheinen nach und nach; ein Klick auf ein verlinktes Bild folgt dem Link.
-- Das Mausrad blättert im Browser, im Editor und im Claude-Fenster.
-- Aus 0.13: Der Mauszeiger springt nicht mehr von selbst, und Fenster gehen nicht mehr ungewollt auf.
-- Weiterhin nicht möglich: JavaScript und die Gestaltung von Seiten (Farben, Spalten, Schriften).
+HelloOS 0.14.1
+- Browser: Seiten wie Wikipedia beginnen jetzt beim Artikel. Aufklappmenüs (dort über 300 Sprachen) bleiben eingeklappt, Schalter und Knöpfe, die nur mit Skripten etwas tun, entfallen.
+- Aus 0.14: Der Browser zeigt Bilder (PNG, JPEG, GIF); das Mausrad blättert.
+- Weiterhin nicht möglich: JavaScript und die Gestaltung von Seiten (Farben, Spalten, Schriften) - Seiten sehen deshalb anders aus als in Chrome oder Edge.
