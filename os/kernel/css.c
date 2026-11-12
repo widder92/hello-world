@@ -13,7 +13,7 @@
 
 /* Eigenschaften, die wir auswerten */
 enum { P_COLOR, P_BACKGROUND, P_BACKGROUND_COLOR, P_WEIGHT, P_STYLE, P_SIZE, P_ALIGN,
-       P_DECORATION, P_DISPLAY, P_VISIBILITY, P_LIST, P_COUNT };
+       P_DECORATION, P_DISPLAY, P_VISIBILITY, P_LIST, P_FLOAT, P_CLEAR, P_COUNT };
 
 static const struct {
     const char *name;
@@ -24,7 +24,7 @@ static const struct {
     { "font-style", P_STYLE }, { "font-size", P_SIZE }, { "text-align", P_ALIGN },
     { "text-decoration", P_DECORATION }, { "text-decoration-line", P_DECORATION },
     { "display", P_DISPLAY }, { "visibility", P_VISIBILITY }, { "list-style", P_LIST },
-    { "list-style-type", P_LIST },
+    { "list-style-type", P_LIST }, { "float", P_FLOAT }, { "clear", P_CLEAR },
 };
 
 enum { S_TAG, S_CLASS, S_ID, S_ROOT };
@@ -592,6 +592,19 @@ static void apply(const css_sheet_t *sheet, cascade_t *c, uint8_t property, cons
     case P_LIST:
         s->list_plain = contains_word(text, length, "none");
         s->has |= CSS_LIST;
+        break;
+    case P_FLOAT:
+        s->float_side = word_is(text, length, "left") || word_is(text, length, "inline-start")
+                            ? CSS_SIDE_LEFT
+                      : word_is(text, length, "right") || word_is(text, length, "inline-end")
+                            ? CSS_SIDE_RIGHT : CSS_SIDE_NONE;
+        s->has |= CSS_FLOAT;
+        break;
+    case P_CLEAR:
+        s->clear = word_is(text, length, "left") ? CSS_SIDE_LEFT
+                 : word_is(text, length, "right") ? CSS_SIDE_RIGHT
+                 : word_is(text, length, "none") ? CSS_SIDE_NONE : CSS_SIDE_BOTH;
+        s->has |= CSS_CLEAR;
         break;
     default:
         return;

@@ -174,6 +174,17 @@ static void test_cascade_and_values(void)
     CHECK(!(s.has & CSS_BACKGROUND) && s.background_clear);
     s = match(sheet, &u, NULL);
     CHECK(!(s.has & CSS_BACKGROUND) && s.background_clear);     /* Verlauf: kein einfarbiger Grund */
+    static const char third[] = ".rechts { float: right; clear: right } .links { float: left } "
+                                ".doch-nicht { float: none } hr { clear: both }";
+    CHECK(css_add(sheet, third, sizeof(third) - 1));
+    css_node_t fr = node("figure", NULL, "rechts", &body), fl = node("img", NULL, "links", &body);
+    css_node_t fn = node("div", NULL, "links doch-nicht", &body), hr = node("hr", NULL, NULL, &body);
+    s = match(sheet, &fr, NULL);
+    CHECK((s.has & CSS_FLOAT) && s.float_side == CSS_SIDE_RIGHT && s.clear == CSS_SIDE_RIGHT);
+    CHECK(match(sheet, &fl, NULL).float_side == CSS_SIDE_LEFT);
+    CHECK(match(sheet, &fn, NULL).float_side == CSS_SIDE_NONE);
+    CHECK(match(sheet, &hr, NULL).clear == CSS_SIDE_BOTH);
+
     css_node_t td = node("td", NULL, NULL, &body);
     s = match(sheet, &td, "background:none");
     CHECK(!(s.has & CSS_BACKGROUND) && s.align == CSS_RIGHT);

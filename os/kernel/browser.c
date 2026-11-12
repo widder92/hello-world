@@ -1342,9 +1342,8 @@ static void draw_widget(const browser_t *b, surface_t *s, int index, int x, int 
  * Bildes - oder, solange es fehlt, den freigehaltenen Platz mit Ersatztext.
  */
 static void draw_picture_row(browser_t *b, surface_t *s, const page_image_t *image,
-                             int row, int y)
+                             int row, int x, int y)
 {
-    int x = CONTENT_X + image->column * (b->page->pixels ? 1 : FONT_W);
     int right = SCROLL_X - 2;
 
     /* Den Zeiger auf das Bild holen; freigegeben wird es nur von diesem Task. */
@@ -1411,14 +1410,15 @@ static void draw_page(browser_t *b, surface_t *s)
     for (int row = first_row; row < ROWS && b->scroll + row < page->line_count; row++) {
         const line_t *line = &page->lines[b->scroll + row];
         int y = CONTENT_Y + row * ROW_H;
-        if (line->filler)
-            continue;                   /* gehört zur Zeile darüber */
-        if (line->image >= 0 && line->image < page->image_count) {
-            draw_picture_row(b, s, &page->images[line->image], line->image_row, y);
-            continue;
-        }
+        /*
+         * Die untere Hälfte einer hohen Zeile und Zeilen eines Bildes tragen
+         * selbst keinen Text - wohl aber Stücke von Kästen neben dem Text.
+         */
         int unit = page->pixels ? 1 : FONT_W;
-        if (line->background)           /* farbig hinterlegter Abschnitt der Seite */
+        if (line->image >= 0 && line->image < page->image_count)
+            draw_picture_row(b, s, &page->images[line->image], line->image_row,
+                             CONTENT_X + page->images[line->image].column * unit, y);
+        if (line->background && !line->filler && line->image < 0)   /* hinterlegter Abschnitt */
             gfx_fill(s, 0, y, SCROLL_X - 2, line->tall ? 2 * ROW_H : ROW_H,
                      line->background & 0xFFFFFF);
 
@@ -1426,11 +1426,12 @@ static void draw_page(browser_t *b, surface_t *s)
         int largest = TEXT_SIZE;
         for (uint32_t i = 0; i < line->count; i++) {
             const span_t *span = &page->spans[line->first + i];
-            if (span->widget < 0 && !(span->style & STYLE_MONO) && span->size > largest)
+            if (span->widget < 0 && !(span->style & (STYLE_MONO | STYLE_ASIDE)) &&
+                span->size > largest)
                 largest = span->size;
         }
-        int baseline = line->tall ? y + 4 + (largest * 9 + 5) / 10
-                                  : y + (largest >= 17 ? 16 : 15);
+        int line_baseline = line->tall ? y + 4 + (largest * 9 + 5) / 10
+                                       : y + (largest >= 17 ? 16 : 15);
 
         for (uint32_t i = 0; i < line->count; i++) {
             const span_t *span = &page->spans[line->first + i];
@@ -1440,12 +1441,15 @@ static void draw_page(browser_t *b, surface_t *s)
                 continue;
             }
             if (span->image >= 0 && span->image < page->image_count) {
-                /* Bild in einer Tabellenzelle */
-                draw_picture_row(b, s, &page->images[span->image], span->image_row, y);
+                /* Bild in einer Tabellenzelle oder einem Kasten neben dem Text */
+                draw_picture_row(b, s, &page->images[span->image], span->image_row, x, y);
                 continue;
             }
+            /* Stücke eines Kastens neben dem Text stehen immer in einfacher Zeilenhöhe */
+            bool aside = span->style & STYLE_ASIDE;
+            int baseline = aside ? y + (span->size >= 17 ? 16 : 15) : line_baseline;
             if (span->background)
-                gfx_fill(s, x, y, span->width * unit, line->tall ? 2 * ROW_H : ROW_H,
+                gfx_fill(s, x, y, span->width * unit, line->tall && !aside ? 2 * ROW_H : ROW_H,
                          span->background & 0xFFFFFF);
             color_t color = span->color ? (span->color & 0xFFFFFF)
                           : span->style & STYLE_LINK ? C_LINK

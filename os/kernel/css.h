@@ -36,10 +36,11 @@ typedef struct css_node {
 
 enum { CSS_COLOR = 1, CSS_BACKGROUND = 2, CSS_WEIGHT = 4, CSS_SLANT = 8, CSS_SIZE = 16,
        CSS_ALIGN = 32, CSS_UNDERLINE = 64, CSS_DISPLAY = 128, CSS_VISIBILITY = 256,
-       CSS_LIST = 512 };
+       CSS_LIST = 512, CSS_FLOAT = 1024, CSS_CLEAR = 2048 };
 
 enum { CSS_BLOCK = 1, CSS_INLINE, CSS_NONE };
 enum { CSS_LEFT = 1, CSS_CENTER, CSS_RIGHT };
+enum { CSS_SIDE_NONE = 0, CSS_SIDE_LEFT = 1, CSS_SIDE_RIGHT = 2, CSS_SIDE_BOTH = 3 };
 
 /* Was die Regeln für ein Element festlegen; "has" sagt, welche Angaben gemacht wurden */
 typedef struct {
@@ -49,6 +50,8 @@ typedef struct {
     bool background_clear;              /* ausdrücklich kein Hintergrund */
     bool bold, italic, underline, hidden, list_plain;
     uint8_t display, align;
+    uint8_t float_side;                 /* neben dem Text: CSS_SIDE_LEFT/RIGHT, oder NONE */
+    uint8_t clear;                      /* erst unterhalb solcher Kästen beginnen */
     int size_px;                        /* Schriftgröße in Pixeln, oder 0 ... */
     int size_percent;                   /* ... dann relativ zur Umgebung in Prozent */
 } css_style_t;

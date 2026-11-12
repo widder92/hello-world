@@ -10,7 +10,8 @@
 #include <stdint.h>
 
 enum { STYLE_BOLD = 1, STYLE_LINK = 2, STYLE_HEADING = 4, STYLE_MUTED = 8,
-       STYLE_ITALIC = 16, STYLE_MONO = 32, STYLE_UNDERLINE = 64 };
+       STYLE_ITALIC = 16, STYLE_MONO = 32, STYLE_UNDERLINE = 64,
+       STYLE_ASIDE = 128 };             /* gehört zu einem Kasten neben dem Text */
 
 /* Farbangaben in Stücken und Zeilen: 0 heißt "keine"; sonst dieses Bit plus 0xRRGGBB */
 #define HTML_COLOR_SET 0x01000000u

@@ -470,6 +470,68 @@ int main(void)
     }
     page_free(p);
 
+    /* Kästen neben dem Text: der Text fließt daran vorbei */
+    static const char float_sheet[] = ".r { float: right } .l { float: left } .unten { clear: both }";
+    static const char float_page[] =
+        "<div class=r>Kasten rechts mit etwas Text darin, der im Kasten umbricht und so drei oder vier Zeilen ergibt</div>"
+        "<p>Erster Absatz neben dem Kasten. Er ist lang genug, um mehrere Zeilen zu ergeben, damit man "
+        "sieht, dass die Zeilen neben dem Kasten kürzer sind als die darunter. Noch ein Satz mehr, und "
+        "noch einer, bis der Text sicher unter den Kasten reicht und wieder breit wird. Und noch "
+        "ein wenig mehr Text, damit es wirklich reicht, ganz sicher, wirklich.</p>"
+        "<h1>Titel</h1>"
+        "<p><span class=l>LINKS</span>Text neben dem linken Kasten.</p>"
+        "<p class=unten>Darunter</p>";
+    css_sheet_t *float_css = css_create(600);
+    css_add(float_css, float_sheet, sizeof(float_sheet) - 1);
+    text.css = float_css;
+    p = html_layout_rich(float_page, sizeof(float_page) - 1, "https://a.de/", 600, NULL, &text);
+    check(p && !p->failed, "Seite mit Kästen neben dem Text gesetzt");
+    if (p) {
+        int box_x = -1, box_first = -1, box_last = -1, narrow = 0, wide = 0, line_left_box = -1;
+        int x_beside = -1, line_below = -1, x_below = -1;
+        bool overlap = false, aside_on_filler = true;
+        for (int i = 0; i < p->line_count; i++) {
+            const line_t *l = &p->lines[i];
+            int text_end = 0, aside_start = 100000;
+            for (uint32_t k = 0; k < l->count; k++) {
+                const span_t *sp = &p->spans[l->first + k];
+                const char *t = p->pool + sp->text;
+                if (sp->style & STYLE_ASIDE) {
+                    if (sp->column > 300) {                 /* der rechte Kasten */
+                        if (box_first < 0) box_first = i;
+                        box_last = i;
+                        if (box_x < 0 || sp->column < box_x) box_x = sp->column;
+                        if (sp->column < aside_start) aside_start = sp->column;
+                    }
+                    if (IS("LINKS")) line_left_box = i;
+                } else {
+                    if (sp->column + sp->width > text_end) text_end = sp->column + sp->width;
+                    if (IS("Text neben")) x_beside = sp->column;
+                    if (IS("Darunter")) { line_below = i; x_below = sp->column; }
+                }
+            }
+            if (aside_start < 100000 && text_end > aside_start)
+                overlap = true;
+            if (text_end > 0 && i <= box_last && box_first >= 0 && text_end <= box_x)
+                narrow++;
+            if (text_end > 420)
+                wide++;
+            if (l->filler && l->tall)
+                aside_on_filler = false;
+        }
+        check(box_first == 0 && box_last >= 2 && box_x >= 600 * 55 / 100,
+              "der Kasten steht rechts und ist höchstens 45 % breit");
+        check(narrow >= 2 && !overlap, "Text neben dem Kasten bleibt links davon");
+        check(wide >= 1, "unter dem Kasten wird der Text wieder breit");
+        check(line_left_box >= 0 && x_beside > 5 * 7,
+              "linker Kasten: der Text beginnt rechts daneben");
+        check(line_below > line_left_box && x_below == 0, "clear: beginnt unterhalb, wieder am Rand");
+        check(aside_on_filler, "Zeilenaufbau bleibt stimmig");
+    }
+    page_free(p);
+    text.css = NULL;
+    css_free(float_css);
+
     /* Tabellen im Zeichenraster bleiben zeilenweise */
     p = html_layout(table_page, sizeof(table_page) - 1, "https://a.de/", 60);
     bool linear = false;
@@ -500,11 +562,15 @@ int main(void)
     page_free(p);
 
     /* Beschädigte Seiten: abschneiden, Bytes kippen, Stücke verdoppeln */
+    static const char fuzz_sheet[] = ".r, div, table { float: right } .l, span, img { float: left } p { clear: left }";
+    css_add(sheet, fuzz_sheet, sizeof(fuzz_sheet) - 1);
+    text.css = sheet;
     unsigned seed = 12345;
-    char *broken = malloc(3 * (sizeof(sample) + sizeof(table_page)));
+    char *broken = malloc(3 * (sizeof(sample) + sizeof(table_page) + sizeof(float_page)));
     for (int round = 0; round < 3000; round++) {
-        const char *source = round % 4 == 3 ? table_page : sample;
-        size_t len = round % 4 == 3 ? sizeof(table_page) - 1 : sizeof(sample) - 1;
+        const char *source = round % 5 == 3 ? table_page : round % 5 == 4 ? float_page : sample;
+        size_t len = round % 5 == 3 ? sizeof(table_page) - 1
+                   : round % 5 == 4 ? sizeof(float_page) - 1 : sizeof(sample) - 1;
         memcpy(broken, source, len);
         seed = seed * 1103515245u + 12345u;
         unsigned r = seed >> 8;

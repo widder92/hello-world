@@ -12,6 +12,8 @@
 #define CAPTURE_MAX  512
 #define LINES_MAX    120000
 #define LISTS_MAX    8
+#define FLOATS_MAX   6
+#define FLOAT_GAP    14              /* Abstand zwischen Text und Kasten daneben */
 
 typedef enum {
     T_UNKNOWN, T_A, T_BOLD, T_BLOCK, T_BLOCKQUOTE, T_BR, T_BUTTON, T_DD, T_DL, T_DT,
@@ -100,6 +102,20 @@ typedef struct {
     int floor;                          /* Elemente unterhalb dieser Tiefe schließt eine Zelle nicht */
     int widest_line, widest_piece;      /* beim Ausmessen: breiteste Zeile, breitestes Stück */
     int cell_line;                      /* erste Zeile der laufenden Zelle; davor ist nichts */
+
+    /* Kästen neben dem Text ("float"): fertig gesetzt, warten auf ihre Zeilen */
+    struct {
+        int side;                       /* CSS_SIDE_LEFT oder CSS_SIDE_RIGHT */
+        int start, count;               /* erste Zeile der Seite und Anzahl Zeilen */
+        int x, width;
+        line_t *lines;
+        span_t *spans;
+    } floats[FLOATS_MAX];
+    int float_count;
+    int in_float;                       /* wir setzen gerade den Inhalt eines solchen Kastens */
+    int pending_float;                  /* das eben begonnene Element gehört neben den Text */
+    bool no_float;                      /* ... passt aber nicht: wie gewöhnlich setzen */
+    int widest_image;                   /* beim Ausmessen: breitestes Bild */
 
     element_t stack[STACK_MAX];
     int depth;
@@ -452,6 +468,34 @@ static int indent(const parser_t *ps)
     return n > ps->columns / 2 ? ps->columns / 2 : n;
 }
 
+/* Platz, den Kästen neben dem Text der laufenden Zeile an einer Seite wegnehmen */
+static int float_inset(const parser_t *ps, int side)
+{
+    int line = ps->page->line_count - 1, inset = 0;
+    if (ps->in_float > 0 || ps->table_depth > 0)
+        return 0;
+    for (int i = 0; i < ps->float_count; i++) {
+        if (ps->floats[i].side == side && line >= ps->floats[i].start &&
+            line < ps->floats[i].start + ps->floats[i].count &&
+            ps->floats[i].width + FLOAT_GAP > inset)
+            inset = ps->floats[i].width + FLOAT_GAP;
+    }
+    return inset;
+}
+
+/* Wo der Text der laufenden Zeile beginnt und wo er spätestens endet */
+static int line_left(const parser_t *ps)
+{
+    return indent(ps) + float_inset(ps, CSS_SIDE_LEFT);
+}
+
+static int line_right(const parser_t *ps)
+{
+    int right = ps->columns - float_inset(ps, CSS_SIDE_RIGHT);
+    int least = line_left(ps) + 8 * ps->unit;
+    return right > least ? right : least;
+}
+
 static bool raw_line(parser_t *ps)
 {
     page_t *page = ps->page;
@@ -469,6 +513,87 @@ static bool raw_line(parser_t *ps)
     return true;
 }
 
+/*
+ * Hängt an die fertige Zeile, was Kästen neben dem Text dort stehen haben:
+ * ihre Stücke (verschoben an den Platz des Kastens), Bilder als Bildstücke.
+ */
+static void attach_floats(parser_t *ps)
+{
+    page_t *page = ps->page;
+    if (ps->in_float > 0 || ps->table_depth > 0 || ps->float_count == 0)
+        return;
+    int target = page->line_count - 1;
+    line_t *line = &page->lines[target];
+
+    for (int i = 0; i < ps->float_count; i++) {
+        int row = target - ps->floats[i].start;
+        if (row < 0 || row >= ps->floats[i].count)
+            continue;
+        const line_t *source = &ps->floats[i].lines[row];
+        int x = ps->floats[i].x;
+
+        if (source->background && ENSURE(page, page->spans, page->span_count, page->span_cap)) {
+            span_t *box = &page->spans[page->span_count++];     /* farbiger Grund des Kastens */
+            memset(box, 0, sizeof(*box));
+            box->column = (uint16_t)x;
+            box->width = (uint16_t)ps->floats[i].width;
+            box->background = source->background;
+            box->style = STYLE_ASIDE;
+            box->link = box->widget = box->image = -1;
+            line->count++;
+        }
+        if (source->image >= 0 && source->image < page->image_count) {
+            page_image_t *image = &page->images[source->image];
+            if (!ENSURE(page, page->spans, page->span_count, page->span_cap))
+                continue;
+            span_t *piece = &page->spans[page->span_count++];
+            memset(piece, 0, sizeof(*piece));
+            if (source->image_row == 0) {
+                image->column += x;
+                image->line = target;
+            }
+            piece->column = (uint16_t)image->column;
+            piece->width = (uint16_t)(image->width > 0 ? image->width : 60);
+            piece->style = STYLE_ASIDE;
+            piece->link = (int16_t)image->link;
+            piece->widget = -1;
+            piece->image = source->image;
+            piece->image_row = source->image_row;
+            line->count++;
+        }
+        for (uint32_t k = 0; k < source->count; k++) {
+            if (!ENSURE(page, page->spans, page->span_count, page->span_cap))
+                break;
+            span_t *piece = &page->spans[page->span_count++];
+            *piece = ps->floats[i].spans[source->first + k];
+            piece->column = (uint16_t)(piece->column + x);
+            piece->style |= STYLE_ASIDE;
+            if (piece->image >= 0 && piece->image < page->image_count && piece->image_row == 0) {
+                /* Bild aus einer Tabelle im Kasten: wandert mit */
+                page->images[piece->image].column += x;
+                page->images[piece->image].line = target;
+            }
+            if (piece->widget >= 0 && piece->widget < page->widget_count) {
+                page->widgets[piece->widget].line = target;
+                page->widgets[piece->widget].column += x;
+            }
+            line->count++;
+        }
+    }
+
+    /* Kästen, deren letzte Zeile jetzt steht, sind erledigt */
+    int kept = 0;
+    for (int i = 0; i < ps->float_count; i++) {
+        if (target >= ps->floats[i].start + ps->floats[i].count - 1) {
+            kfree(ps->floats[i].lines);
+            kfree(ps->floats[i].spans);
+        } else {
+            ps->floats[kept++] = ps->floats[i];
+        }
+    }
+    ps->float_count = kept;
+}
+
 /* Rückt eine fertige Zeile in die Mitte oder nach rechts, wenn die Gestaltung das will. */
 static void finish_line(parser_t *ps)
 {
@@ -476,19 +601,19 @@ static void finish_line(parser_t *ps)
     if (!ps->text || page->line_count == 0)
         return;
     line_t *line = &page->lines[page->line_count - 1];
-    if (line->count == 0 || line->align < CSS_CENTER || line->image >= 0)
-        return;
-    span_t *spans = &page->spans[line->first];
-    int room = ps->columns - (spans[line->count - 1].column + spans[line->count - 1].width);
-    if (room <= 0)
-        return;
-    int shift = line->align == CSS_CENTER ? room / 2 : room;
-    for (uint32_t i = 0; i < line->count; i++) {
-        spans[i].column = (uint16_t)(spans[i].column + shift);
-        if (spans[i].widget >= 0 && spans[i].widget < page->widget_count)
-            page->widgets[spans[i].widget].column += shift;
+    if (line->count > 0 && line->align >= CSS_CENTER && line->image < 0) {
+        span_t *spans = &page->spans[line->first];
+        int room = line_right(ps) -
+                   (spans[line->count - 1].column + spans[line->count - 1].width);
+        int shift = room <= 0 ? 0 : line->align == CSS_CENTER ? room / 2 : room;
+        for (uint32_t i = 0; shift && i < line->count; i++) {
+            spans[i].column = (uint16_t)(spans[i].column + shift);
+            if (spans[i].widget >= 0 && spans[i].widget < page->widget_count)
+                page->widgets[spans[i].widget].column += shift;
+        }
+        line->align = 0;                /* erledigt */
     }
-    line->align = 0;                    /* erledigt */
+    attach_floats(ps);
 }
 
 /* Eine noch leere Zeile übernimmt Hintergrund und Ausrichtung dessen, was jetzt gilt. */
@@ -515,6 +640,7 @@ static void push_line(parser_t *ps)
             return;
         page->lines[page->line_count - 1].filler = 1;
         page->lines[page->line_count - 1].background = background;
+        attach_floats(ps);              /* auch neben der unteren Hälfte kann ein Kasten stehen */
     }
     if (!raw_line(ps))
         return;
@@ -554,6 +680,25 @@ static void paragraph(parser_t *ps)
         push_line(ps);
 }
 
+/*
+ * Lässt Platz, bis die Kästen neben dem Text an den genannten Seiten zu Ende
+ * sind: Was jetzt kommt, soll darunter beginnen.
+ */
+static void clear_floats(parser_t *ps, int sides)
+{
+    page_t *page = ps->page;
+    if (ps->float_count == 0 || ps->in_float > 0 || ps->table_depth > 0)
+        return;
+    new_line(ps, false);
+    int until = 0;
+    for (int i = 0; i < ps->float_count; i++) {
+        if ((ps->floats[i].side & sides) && ps->floats[i].start + ps->floats[i].count > until)
+            until = ps->floats[i].start + ps->floats[i].count;
+    }
+    while (page->line_count - 1 < until && !page->failed)
+        push_line(ps);
+}
+
 static uint8_t current_style(const parser_t *ps)
 {
     bool link = ps->link >= 0;
@@ -576,8 +721,8 @@ static uint8_t current_size(const parser_t *ps)
         size = ps->cur.size;
     else if (ps->heading > 0 && ps->heading_level >= 1 && ps->heading_level <= 3)
         size = ps->text->heading_size[ps->heading_level - 1];
-    /* In Tabellenzellen stehen Zeilen verschiedener Zellen nebeneinander: nur einfache Höhe */
-    if (ps->table_depth > 0 && size > 18)
+    /* In Tabellenzellen und Kästen neben dem Text stehen Zeilen nebeneinander: einfache Höhe */
+    if ((ps->table_depth > 0 || ps->in_float > 0) && size > 18)
         size = 18;
     return (uint8_t)size;
 }
@@ -629,14 +774,14 @@ static void place(parser_t *ps, const char *bytes, size_t n, int width, int widg
 
     int space = ps->space_pending && ps->has_content ? measure(ps, " ", 1) : 0;
     bool spaced = space > 0;
-    if (ps->has_content && ps->column + space + width > ps->columns) {
+    if (ps->has_content && ps->column + space + width > line_right(ps)) {
         push_line(ps);
         space = 0;
         spaced = false;
     }
     if (!ps->has_content) {
         sync_line(ps);
-        ps->column = indent(ps);
+        ps->column = line_left(ps);
     }
 
     /* Text in den Vorrat der Seite */
@@ -728,7 +873,7 @@ static void flush_word(parser_t *ps)
 
     const char *text = ps->word;
     size_t len = strlen(text);
-    int room = ps->columns - indent(ps);
+    int room = line_right(ps) - line_left(ps);
     if (measure(ps, text, len) <= room) {
         place(ps, text, len, measure(ps, text, len), -1);
         return;
@@ -860,7 +1005,7 @@ static void show_widget(parser_t *ps, int index, int width)
     if (index < 0 || ps->hidden > 0)
         return;
     widget_t *w = &ps->page->widgets[index];
-    int room = (ps->columns - indent(ps)) / ps->unit;   /* Felder zählen in Rasterzeichen */
+    int room = (line_right(ps) - line_left(ps)) / ps->unit;     /* Felder zählen in Rasterzeichen */
     flush_word(ps);
     w->width = width > room ? room : width;
     if (w->width < 3)
@@ -1163,10 +1308,10 @@ static bool place_picture(parser_t *ps, const attr_t *attrs, int count)
     }
     new_line(ps, false);
 
-    int column = indent(ps);
+    int column = line_left(ps);
     int rows = 1;
     if (width > 0 && height > 0) {
-        int available = (ps->columns - column) * pictures->cell_width;
+        int available = (line_right(ps) - column) * pictures->cell_width;
         int tallest = pictures->max_rows * pictures->line_height;
         if (width > available) {
             height = (int)((int64_t)height * available / width);
@@ -1192,6 +1337,8 @@ static bool place_picture(parser_t *ps, const attr_t *attrs, int count)
         ps->widest_piece = width;
     if (width > ps->widest_line)
         ps->widest_line = width;
+    if (width > ps->widest_image)
+        ps->widest_image = width;
     int index = page->image_count++;
     page_image_t *image = &page->images[index];
     memset(image, 0, sizeof(*image));
@@ -1372,6 +1519,30 @@ static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
                      ((cs.has & CSS_VISIBILITY) && cs.hidden);
         if (cs.has & CSS_DISPLAY)
             display = cs.display;
+
+        /* Erst unterhalb von Kästen neben dem Text beginnen? */
+        if ((cs.has & CSS_CLEAR) && cs.clear && ps->hidden == 0 && !css_hidden)
+            clear_floats(ps, cs.clear);
+
+        /*
+         * Gehört das Element selbst neben den Text (float, oder align= bei
+         * Bildern und Tabellen)? Dann setzt es der Aufrufer als Kasten; hier
+         * geschieht nichts weiter.
+         */
+        int side = (cs.has & CSS_FLOAT) ? cs.float_side : 0;
+        if (!(cs.has & CSS_FLOAT) && (tag == T_IMG || tag == T_TABLE)) {
+            if (attr_is(attrs, count, "align", "right"))
+                side = CSS_SIDE_RIGHT;
+            else if (attr_is(attrs, count, "align", "left"))
+                side = CSS_SIDE_LEFT;
+        }
+        bool can_float = tag == T_IMG || tag == T_TABLE || tag == T_BLOCK || tag == T_UNKNOWN ||
+                         tag == T_A || tag == T_UL || tag == T_OL || tag == T_P;
+        if (side && can_float && !ps->no_float && !css_hidden && ps->hidden == 0 &&
+            ps->in_float == 0 && ps->table_depth == 0) {
+            ps->pending_float = side;
+            return;
+        }
         apply_style(ps, tag, &cs);
     }
 
@@ -1422,7 +1593,7 @@ static void element_start(parser_t *ps, tag_t tag, const attr_t *attrs, int coun
         if (ps->hidden == 0) {
             char rule[160];
             int dash = measure(ps, "-", 1);
-            int n = (ps->columns - indent(ps)) / (dash > 0 ? dash : 1);
+            int n = (line_right(ps) - line_left(ps)) / (dash > 0 ? dash : 1);
             if (n > (int)sizeof(rule) - 1)
                 n = sizeof(rule) - 1;
             memset(rule, '-', (size_t)n);
@@ -1778,6 +1949,9 @@ void html_find_styles(const char *html, size_t len, const char *base_url,
 }
 
 static const char *layout_table(parser_t *ps, const char *p, const char *end);
+static const char *layout_float(parser_t *ps, int side, tag_t tag, const char *tag_start,
+                                const char *name, size_t name_len, const char *p,
+                                const char *end);
 
 /* Arbeitet ein Stück der Seite ab (die ganze Seite oder den Inhalt einer Tabellenzelle). */
 static void parse_range(parser_t *ps, const char *html, size_t len)
@@ -1806,6 +1980,7 @@ static void parse_range(parser_t *ps, const char *html, size_t len)
             continue;
         }
         bool closing = p + 1 < end && p[1] == '/';
+        const char *tag_start = p;
         const char *name = p + (closing ? 2 : 1);
         if (name >= end || !is_alpha(*name)) {
             text_run(ps, p, 1, false);  /* ein '<', das nur Text ist */
@@ -1874,7 +2049,7 @@ static void parse_range(parser_t *ps, const char *html, size_t len)
                     }
                     w->value[k] = '\0';
                 }
-                int width = (ps->columns - indent(ps)) / ps->unit - 2;
+                int width = (line_right(ps) - line_left(ps)) / ps->unit - 2;
                 show_widget(ps, index, width > 64 ? 64 : width);
             }
             p = stop;
@@ -1882,7 +2057,23 @@ static void parse_range(parser_t *ps, const char *html, size_t len)
         }
         start_tag(ps, tag, attrs, count);
 
+        /* Ein Element, das neben dem Text stehen soll: als Kasten für sich setzen */
+        if (ps->pending_float) {
+            int side = ps->pending_float;
+            ps->pending_float = 0;
+            const char *after = layout_float(ps, side, tag, tag_start, name, name_len, p, end);
+            if (after) {
+                p = after;
+                continue;
+            }
+            ps->no_float = true;        /* passt nicht daneben: wie gewöhnlich */
+            start_tag(ps, tag, attrs, count);
+            ps->no_float = false;
+        }
+
         /* In echter Schrift werden Tabellen als Ganzes gesetzt: Zellen in Spalten. */
+        if (tag == T_TABLE && ps->text && ps->float_count > 0 && ps->in_float == 0)
+            clear_floats(ps, CSS_SIDE_BOTH);    /* Tabellen stehen nicht neben Kästen */
         if (tag == T_TABLE && ps->text && ps->hidden == 0 && ps->table_depth < 3 &&
             ps->depth > 0 && ps->stack[ps->depth - 1].tag == T_TABLE) {
             const char *after = layout_table(ps, p, end);
@@ -2366,8 +2557,10 @@ static const char *layout_table(parser_t *ps, const char *p, const char *end)
         page->failed = true;
         goto done;
     }
-    memcpy(old_lines, page->lines + line0, (size_t)temp_lines * sizeof(line_t));
-    memcpy(old_spans, page->spans + span0, (size_t)temp_spans * sizeof(span_t));
+    if (temp_lines > 0)
+        memcpy(old_lines, page->lines + line0, (size_t)temp_lines * sizeof(line_t));
+    if (temp_spans > 0)
+        memcpy(old_spans, page->spans + span0, (size_t)temp_spans * sizeof(span_t));
     for (int i = 0; i < temp_lines; i++)
         line_map[i] = -1;
     page->line_count = line0;
@@ -2498,12 +2691,207 @@ done:
     return result;
 }
 
+/* --- Kästen neben dem Text ---------------------------------------------------------------------- */
+
+/* Gleicher Name, ohne Rücksicht auf Groß- und Kleinschreibung? */
+static bool same_word_n(const char *a, const char *b, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        if (lower(a[i]) != lower(b[i]))
+            return false;
+    }
+    return true;
+}
+
+/* Sucht das Ende eines Elements: die Stelle hinter seinem "</name>". NULL, wenn es fehlt. */
+static const char *element_end(const char *name, size_t name_len, const char *p, const char *end)
+{
+    int depth = 0;
+    while (p + name_len + 2 <= end) {
+        if (*p != '<') {
+            p++;
+            continue;
+        }
+        if (end - p >= 4 && memcmp(p, "<!--", 4) == 0) {
+            p += 4;
+            while (p + 3 <= end && memcmp(p, "-->", 3) != 0)
+                p++;
+            continue;
+        }
+        bool closing = p[1] == '/';
+        const char *word = p + (closing ? 2 : 1);
+        bool same = word + name_len < end && same_word_n(word, name, name_len) &&
+                    !is_alpha(word[name_len]) && !(word[name_len] >= '0' && word[name_len] <= '9');
+        if (!same) {
+            p++;
+            continue;
+        }
+        p = word + name_len;
+        while (p < end && *p != '>')
+            p++;
+        p += p < end;
+        if (!closing) {
+            depth++;
+        } else if (depth == 0) {
+            return p;
+        } else {
+            depth--;
+        }
+    }
+    return NULL;
+}
+
+/* Setzt [start, stop) als eigenen Block der Breite width hinter die bisherigen Zeilen. */
+static void float_content(parser_t *ps, const char *start, const char *stop, int width)
+{
+    int floor = ps->floor, depth = ps->depth;
+    cell_begin(ps, width);
+    ps->floor = ps->depth;
+    parse_range(ps, start, (size_t)(stop - start));
+    while (ps->depth > depth)
+        pop(ps);
+    flush_word(ps);
+    finish_line(ps);
+    ps->floor = floor;
+}
+
+/*
+ * Setzt ein Element als Kasten neben den Text: p steht hinter seinem
+ * Start-Element. Liefert die Stelle hinter dem Element - oder NULL, wenn es
+ * wie gewöhnlich gesetzt werden soll (kein Platz, kein Ende, kein Speicher).
+ */
+static const char *layout_float(parser_t *ps, int side, tag_t tag, const char *tag_start,
+                                const char *name, size_t name_len, const char *p,
+                                const char *end)
+{
+    page_t *page = ps->page;
+    const char *stop = tag == T_IMG ? p : element_end(name, name_len, p, end);
+    if (!stop || ps->float_count >= FLOATS_MAX || page->failed)
+        return NULL;
+
+    /* Neben den Kasten muss noch Text passen: höchstens 45 % der Zeile */
+    int room = line_right(ps) - line_left(ps);
+    int widest = room * 45 / 100;
+    if (room < 280 || widest < 80)
+        return NULL;
+
+    /* 1. Ausmessen - auf einer Wegwerf-Seite, danach ist alles wie vorher */
+    parser_t *snapshot = kmalloc(sizeof(*snapshot));
+    page_t *scratch = kzalloc(sizeof(*scratch));
+    if (!snapshot || !scratch) {
+        kfree(snapshot);
+        kfree(scratch);
+        return NULL;
+    }
+    flush_word(ps);
+    memcpy(snapshot, ps, sizeof(*ps));
+    scratch->heading_line = -1;
+    scratch->pixels = true;
+    ps->page = scratch;
+    ps->in_float++;
+    ps->widest_image = 0;
+    raw_line(ps);
+    float_content(ps, tag_start, stop, widest);
+    int content = ps->widest_line, picture = ps->widest_image;
+    bool measured = !scratch->failed;
+    if (ps->option_value != snapshot->option_value)
+        kfree(ps->option_value);
+    memcpy(ps, snapshot, sizeof(*ps));
+    kfree(snapshot);
+    page_free(scratch);
+    if (!measured || content <= 0)
+        return NULL;
+
+    /* So breit wie das Bild darin; ohne Bild so breit wie der Inhalt */
+    int width = picture > 0 ? picture : content;
+    if (width > widest)
+        width = widest;
+    if (width < 40)
+        width = 40;
+
+    /* 2. Setzen, vorläufig hinter die bisherigen Zeilen, und beiseite legen */
+    int line_count = page->line_count, span_count = page->span_count;
+    int anchor_count = page->anchor_count;
+    int columns = ps->columns, column = ps->column, lists = ps->list_depth, quote = ps->quote;
+    bool has_content = ps->has_content, space_pending = ps->space_pending;
+    bool only_bullet = ps->only_bullet;
+    int widest_line = ps->widest_line, widest_piece = ps->widest_piece;
+    ps->in_float++;
+    float_content(ps, tag_start, stop, width);
+    ps->in_float--;
+    ps->columns = columns;
+    ps->list_depth = lists;
+    ps->quote = quote;
+
+    int last = page->line_count - 1;
+    while (last >= line_count && page->lines[last].count == 0 && page->lines[last].image < 0)
+        last--;
+    int rows = last - line_count + 1;
+    int pieces = page->span_count - span_count;
+    line_t *lines = rows > 0 ? kmalloc((size_t)rows * sizeof(line_t)) : NULL;
+    span_t *spans = rows > 0 ? kmalloc((size_t)(pieces > 0 ? pieces : 1) * sizeof(span_t)) : NULL;
+    if (lines && spans) {
+        memcpy(lines, page->lines + line_count, (size_t)rows * sizeof(line_t));
+        if (pieces > 0)
+            memcpy(spans, page->spans + span_count, (size_t)pieces * sizeof(span_t));
+        for (int i = 0; i < rows; i++)
+            lines[i].first -= (uint32_t)span_count;
+    }
+    page->line_count = line_count;      /* die laufende Zeile ist wieder die letzte */
+    page->span_count = span_count;
+    ps->column = column;
+    ps->has_content = has_content;
+    ps->space_pending = space_pending;
+    ps->only_bullet = only_bullet;
+    ps->widest_line = widest_line;
+    ps->widest_piece = widest_piece;
+    if (rows <= 0)
+        return stop;                    /* leer (etwa ausgeblendet): fertig */
+    if (!lines || !spans || page->failed) {
+        kfree(lines);
+        kfree(spans);
+        page->failed = true;
+        return stop;
+    }
+
+    /*
+     * 3. Anmelden: Der Kasten beginnt in der laufenden Zeile - steht dort
+     * schon Text, in der nächsten - und unter früheren Kästen derselben Seite.
+     */
+    int start = line_count - 1 + (has_content ? 1 : 0);
+    for (int i = 0; i < ps->float_count; i++) {
+        if (ps->floats[i].side == side && ps->floats[i].start + ps->floats[i].count > start)
+            start = ps->floats[i].start + ps->floats[i].count;
+    }
+    int at = ps->float_count++;
+    ps->floats[at].side = side;
+    ps->floats[at].start = start;
+    ps->floats[at].count = rows;
+    ps->floats[at].width = width;
+    ps->floats[at].x = side == CSS_SIDE_RIGHT ? ps->columns - width : indent(ps);
+    ps->floats[at].lines = lines;
+    ps->floats[at].spans = spans;
+    for (int i = anchor_count; i < page->anchor_count; i++)
+        page->anchors[i].line = start;
+
+    /* Die laufende, noch leere Zeile beginnt jetzt neben dem Kasten */
+    if (!ps->has_content)
+        ps->column = line_left(ps);
+    return stop;
+}
+
 static void parse(parser_t *ps, const char *html, size_t len)
 {
     parse_range(ps, html, len);
     while (ps->depth > 0)
         pop(ps);
     new_line(ps, false);
+    clear_floats(ps, CSS_SIDE_BOTH);    /* Kästen, die über das Ende hinausreichen */
+    for (int i = 0; i < ps->float_count; i++) {
+        kfree(ps->floats[i].lines);
+        kfree(ps->floats[i].spans);
+    }
+    ps->float_count = 0;
 }
 
 static page_t *begin(parser_t *ps, const char *base, int columns)
