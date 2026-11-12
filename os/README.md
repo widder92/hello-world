@@ -20,9 +20,12 @@ fremde Bibliothek: rund 24 000 Zeilen C und etwas Assembler.
   Grafikkarte
 - **Programme**: Browser, Terminal mit Shell (mehrere gleichzeitig), Texteditor,
   Dateiübertragung, Systemmonitor, Malprogramm, Info- und Ausschalten-Dialog
-- **Browser**: zeigt Webseiten als Text mit Links, Formularen und Bildern
-  (PNG, JPEG, GIF), meldet sich an (Cookies) und prüft bei https den Server –
-  ohne JavaScript und Gestaltung
+- **Browser**: zeigt Webseiten in echter Schrift mit Überschriften, Links,
+  Formularen und Bildern (PNG, JPEG, GIF), meldet sich an (Cookies) und prüft
+  bei https den Server – ohne JavaScript und ohne die Gestaltung der Seite
+- **Echte Schriften**: ein eigener TrueType-Renderer zeichnet Text in jeder
+  Größe aus den eingebauten Schriftdateien (DejaVu Sans) – in Fenstertiteln,
+  Menüs, Dialogen und im Browser
 - **Eigene Dateien bleiben erhalten**: Sie werden auf dem Datenträger
   gesichert, von dem HelloOS startet, und sind dort auch unter Windows zu sehen
 - **Neben Windows**: vom USB-Stick – oder fest eingerichtet in einer eigenen
@@ -333,10 +336,12 @@ Was dabei zu wissen ist:
 ![Der Browser mit der Bearbeitungsseite eines WordPress-Beitrags](docs/screenshot-browser.png)
 
 Startmenü → „Browser", F8 oder `browse adresse` im Terminal. Es ist ein
-**einfacher Browser**, in der Art eines Textbrowsers mit Bildern: Er holt eine
-Seite, lässt Gestaltung und Skripte weg und zeigt, was übrig bleibt –
-Überschriften, Text, Listen, Tabellen (zeilenweise), Links, Formulare und
-Bilder.
+**einfacher Browser**: Er holt eine Seite, lässt ihre Gestaltung und ihre
+Skripte weg und setzt, was übrig bleibt, selbst – in einer Spalte, in echter
+Schrift: Überschriften in drei Größen, fett, kursiv, Listen, Tabellen
+(zeilenweise), Links, Formulare und Bilder.
+
+![Eine Seite in echter Schrift: Überschriften, Fließtext, Listen](docs/screenshot-schrift.png)
 
 ![Eine Seite mit Bildern: Logo mit durchsichtigem Rand und ein großes Foto](docs/screenshot-bilder.png)
 
@@ -364,8 +369,9 @@ Was er **nicht** kann – und das ist bei heutigen Webseiten viel:
 - **kein JavaScript.** Seiten und Funktionen, die darauf beruhen, bleiben leer,
   reagieren nicht oder sagen selbst, dass sie JavaScript brauchen.
 - keine Gestaltung (CSS): keine Farben, Spalten oder Schriften der Seite –
-  alles steht untereinander in der einen eingebauten Schrift;
-  nicht-lateinische Schrift erscheint als „?"
+  alles steht untereinander in der eingebauten Schrift. Sie kennt lateinische,
+  griechische und kyrillische Zeichen; andere (etwa chinesische) erscheinen
+  als leeres Kästchen. Schrift von rechts nach links wird nicht gesetzt.
 - keine Bilder in den Formaten WebP, AVIF und SVG, keine Hintergrundbilder
   (die legt die Gestaltung fest), keine bewegten GIFs, keine Videos
 - kein Hochladen von Dateien, keine Lesezeichen, keine Tabs, kein Passwortspeicher
@@ -763,7 +769,8 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `kernel/json.c` | JSON lesen und schreiben |
 | `kernel/claude.c`, `kernel/claude_app.c` | Anbindung an die Claude-API, Chatfenster |
 | `kernel/update.c` | Selbstaktualisierung |
-| `kernel/gfx.c`, `kernel/font_data.c` | Zeichenfunktionen, Schrift |
+| `kernel/gfx.c`, `kernel/font_data.c` | Zeichenfunktionen, Rasterschrift (Terminal, Editor, Eingabefelder) |
+| `kernel/truetype.c`, `kernel/font.c`, `fonts/` | TrueType-Renderer, Schriftverwaltung mit Zwischenspeicher, die eingebauten Schriftdateien (DejaVu Sans, Lizenz liegt bei) |
 | `kernel/gui.c` | Compositor, Fensterverwaltung, Taskleiste, Startmenü |
 | `kernel/terminal.c`, `kernel/shell.c` | Terminalfenster und Kommandozeile |
 | `kernel/editor.c`, `kernel/textedit.c`, `kernel/transfer.c` | Texteditor und sein Textfeld, Fenster zur Dateiübertragung |
@@ -779,6 +786,7 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `tests/block_test.c` | Schreibsperre für interne Platten prüfen |
 | `tests/hid_test.c` | Auswertung der HID-Berichte prüfen (Mäuse, Tastaturen, Funkempfänger) |
 | `tests/image_test.c`, `tests/image_test.py` | Bild-Dekoder gegen eine Referenz prüfen, auch mit beschädigten Dateien |
+| `tests/font_test.c`, `tests/font_test.py` | Schriftrenderer Zeichen für Zeichen gegen FreeType prüfen, auch mit beschädigten Schriftdateien |
 
 ## Grenzen und Ideen zum Weiterbauen
 
@@ -795,7 +803,8 @@ gehalten. Naheliegende nächste Schritte:
 - User-Modus (Ring 3) mit Systemaufrufen und getrennten Adressräumen
 - Programme aus Dateien laden (ELF), mehrere Prozessorkerne
 - Symbole auf dem Desktop, ein Dateimanager, Fenster an den Kanten ziehen und minimieren
-- im Browser: WebP-Bilder, einfache Gestaltung, Lesezeichen (JavaScript bleibt außer Reichweite)
+- im Browser: Farben und einfache Gestaltung der Seite, Tabellen als Tabellen, Bilder neben dem Text, WebP-Bilder, Lesezeichen (JavaScript bleibt außer Reichweite)
+- echte Schrift auch in Terminal, Editor und Eingabefeldern; Hinting für schärfere kleine Schrift
 
 ## Die ältere 32-Bit-Version
 

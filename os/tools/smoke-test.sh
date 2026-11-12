@@ -65,7 +65,7 @@ expect "Multitasking gestartet" 30
 expect "helloos> " 30
 
 printf 'info\nmem\ndate\n' >&3
-expect "HelloOS 0.14.1 (x86-64, UEFI"
+expect "HelloOS 0.15 (x86-64, UEFI"
 expect "Speicherkarte der Firmware"
 
 printf 'write test.txt Hallo Welt\nappend test.txt Zeile zwei\ncat test.txt\nls\n' >&3

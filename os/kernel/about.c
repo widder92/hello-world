@@ -4,6 +4,7 @@
 #include "bootinfo.h"
 #include "console.h"
 #include "cpu.h"
+#include "font.h"
 #include "gui.h"
 #include "input.h"
 #include "memory.h"
@@ -56,35 +57,44 @@ void about_app(void *arg)
     memory_stats(&mem);
 
     gfx_fill(s, 0, 0, ABOUT_W, ABOUT_H, C_BACKGROUND);
-    gfx_text_scaled(s, 24, 20, OS_NAME, C_ACCENT, 3);
+    int name_w;
+    if (font_available()) {
+        name_w = font_draw(s, 24, 58, OS_NAME, strlen(OS_NAME), 40, FONT_BOLD, C_ACCENT);
+    } else {
+        gfx_text_scaled(s, 24, 20, OS_NAME, C_ACCENT, 3);
+        name_w = gfx_text_width(OS_NAME) * 3;
+    }
     ksnprintf(line, sizeof(line), "Version " OS_VERSION ", Build %u",
               update_current_build());
-    gfx_text(s, 24 + gfx_text_width(OS_NAME) * 3 + 12, 46, line, C_MUTED, false);
-    gfx_text(s, 24, 84, "Ein kleines, selbst geschriebenes Betriebssystem", C_TEXT,
+    ui_text(s, 24 + name_w + 12, 46, line, C_MUTED, false);
+    ui_text(s, 24, 84, "Ein kleines, selbst geschriebenes Betriebssystem", C_TEXT,
              false);
-    gfx_text(s, 24, 102, "für PCs mit 64-Bit-Prozessor und UEFI.", C_TEXT,
+    ui_text(s, 24, 102, "für PCs mit 64-Bit-Prozessor und UEFI.", C_TEXT,
              false);
     gfx_fill(s, 24, 130, ABOUT_W - 48, 1, RGB(206, 210, 218));
 
-    int y = 144;
-    ksnprintf(line, sizeof(line), "Prozessor   %s", cpu);
-    gfx_text(s, 24, y, line, C_TEXT, false);
-    ksnprintf(line, sizeof(line), "Speicher    %llu MiB",
-              (mem.total_bytes + 512 * 1024) / (1024 * 1024));
-    gfx_text(s, 24, y += 20, line, C_TEXT, false);
-    ksnprintf(line, sizeof(line), "Bildschirm  %d x %d", w, h);
-    gfx_text(s, 24, y += 20, line, C_TEXT, false);
-    ksnprintf(line, sizeof(line), "Firmware    %s", boot_info.firmware_vendor);
-    gfx_text(s, 24, y += 20, line, C_TEXT, false);
-
-    net_info_t net;
+    /* Bezeichnung links, Wert in einer eigenen Spalte */
     char address[16] = "nicht verbunden";
+    net_info_t net;
     net_get_info(&net);
     if (net.configured)
         ip4_format(net.ip, address);
-    ksnprintf(line, sizeof(line), "Netzwerk    %s",
-              net.present ? address : "keine unterstützte Karte");
-    gfx_text(s, 24, y += 20, line, C_TEXT, false);
+    char memory[32], display[32];
+    ksnprintf(memory, sizeof(memory), "%llu MiB",
+              (mem.total_bytes + 512 * 1024) / (1024 * 1024));
+    ksnprintf(display, sizeof(display), "%d x %d", w, h);
+    const char *const rows[][2] = {
+        { "Prozessor", cpu },
+        { "Speicher", memory },
+        { "Bildschirm", display },
+        { "Firmware", boot_info.firmware_vendor },
+        { "Netzwerk", net.present ? address : "keine unterstützte Karte" },
+    };
+    int y = 144;
+    for (unsigned i = 0; i < sizeof(rows) / sizeof(rows[0]); i++, y += 20) {
+        ui_text(s, 24, y, rows[i][0], C_MUTED, false);
+        ui_text(s, 120, y, rows[i][1], C_TEXT, false);
+    }
 
     rect_t ok = rect_make(ABOUT_W - 24 - 88, ABOUT_H - 20 - 28, 88, 28);
     ui_button(s, ok, "OK", true);
@@ -152,8 +162,8 @@ void power_app(void *arg)
     const rect_t cancel = rect_make(308, 76, 92, 32);
 
     gfx_fill(s, 0, 0, POWER_W, POWER_H, C_BACKGROUND);
-    gfx_text(s, 20, 22, "Was möchtest du tun?", C_TEXT, true);
-    gfx_text(s, 20, 44, "Nicht gespeicherte Dateien gehen verloren.", C_MUTED,
+    ui_text(s, 20, 22, "Was möchtest du tun?", C_TEXT, true);
+    ui_text(s, 20, 44, "Nicht gespeicherte Dateien gehen verloren.", C_MUTED,
              false);
     ui_button(s, shutdown, "Herunterfahren", true);
     ui_button(s, reboot, "Neu starten", false);
@@ -212,7 +222,7 @@ static int draw_wrapped(surface_t *s, int x, int y, const char *text,
             n = sizeof(line) - 1;
         memcpy(line, text, n);
         line[n] = '\0';
-        gfx_text(s, x, y, line, color, false);
+        ui_text(s, x, y, line, color, false);
         y += FONT_H + 2;
         max_lines--;
 
@@ -264,10 +274,10 @@ void update_app(void *arg)
         if (stage == ASK) {
             ksnprintf(line, sizeof(line), "Für HelloOS gibt es ein Update: Build %u",
                       info.available_build);
-            gfx_text(s, 20, 20, line, C_TEXT, true);
+            ui_text(s, 20, 20, line, C_TEXT, true);
             ksnprintf(line, sizeof(line), "Installiert ist Build %u. Das ist neu:",
                       info.build);
-            gfx_text(s, 20, 42, line, C_MUTED, false);
+            ui_text(s, 20, 42, line, C_MUTED, false);
             update_available_notes(notes, sizeof(notes));
             draw_wrapped(s, 20, 72,
                          notes[0] ? notes : "(keine Beschreibung mitgeliefert)",
@@ -276,12 +286,12 @@ void update_app(void *arg)
         } else if (stage == DONE) {
             ksnprintf(line, sizeof(line), "Build %u ist installiert.",
                       info.installed_build);
-            gfx_text(s, 20, 20, line, C_TEXT, true);
-            gfx_text(s, 20, 46, "Die neue Version wird beim nächsten Start aktiv.",
+            ui_text(s, 20, 20, line, C_TEXT, true);
+            ui_text(s, 20, 46, "Die neue Version wird beim nächsten Start aktiv.",
                      C_MUTED, false);
             primary_label = "Jetzt neu starten";
         } else {
-            gfx_text(s, 20, 20,
+            ui_text(s, 20, 20,
                      stage == FAILED ? "Die Installation hat nicht geklappt."
                                      : "Im Moment liegt kein Update bereit.",
                      C_TEXT, true);
@@ -314,8 +324,8 @@ void update_app(void *arg)
 
         if (stage == ASK && yes) {
             gfx_fill(s, 0, 0, UPDATE_W, UPDATE_H, C_BACKGROUND);
-            gfx_text(s, 20, 20, "Das Update wird installiert ...", C_TEXT, true);
-            gfx_text(s, 20, 46, "Bitte nicht ausschalten und nichts abziehen.", C_MUTED,
+            ui_text(s, 20, 20, "Das Update wird installiert ...", C_TEXT, true);
+            ui_text(s, 20, 46, "Bitte nicht ausschalten und nichts abziehen.", C_MUTED,
                      false);
             window_invalidate(win, 0, 0, UPDATE_W, UPDATE_H);
             stage = update_install(false) ? DONE : FAILED;

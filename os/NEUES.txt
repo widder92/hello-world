@@ -1,4 +1,5 @@
-HelloOS 0.14.1
-- Browser: Seiten wie Wikipedia beginnen jetzt beim Artikel. Aufklappmenüs (dort über 300 Sprachen) bleiben eingeklappt, Schalter und Knöpfe, die nur mit Skripten etwas tun, entfallen.
-- Aus 0.14: Der Browser zeigt Bilder (PNG, JPEG, GIF); das Mausrad blättert.
-- Weiterhin nicht möglich: JavaScript und die Gestaltung von Seiten (Farben, Spalten, Schriften) - Seiten sehen deshalb anders aus als in Chrome oder Edge.
+HelloOS 0.15
+- Echte Schriften: HelloOS zeichnet Text jetzt mit einem eigenen Schriftrenderer in jeder Größe - in Fenstertiteln, Menüs, Dialogen und im Browser.
+- Browser: Seiten erscheinen in echter Schrift mit großen Überschriften, fett und kursiv; auch griechische und kyrillische Zeichen sowie typografische Anführungszeichen werden gezeigt.
+- Dieses Update ist größer als sonst (etwa 2 MB), weil die Schriftdateien dazugehören.
+- Weiterhin nicht möglich: JavaScript und die Gestaltung von Seiten (Farben, Spalten).

@@ -3,6 +3,7 @@
 #include "bootinfo.h"
 #include "console.h"
 #include "cpu.h"
+#include "font.h"
 #include "input.h"
 #include "memory.h"
 #include "serial.h"
@@ -443,9 +444,9 @@ void ui_button(surface_t *s, rect_t r, const char *label, bool highlighted)
 {
     gfx_fill(s, r.x, r.y, r.w, r.h, highlighted ? C_BUTTON_ACTIVE : C_BUTTON);
     gfx_frame(s, r.x, r.y, r.w, r.h, C_BUTTON_BORDER);
-    int tx = r.x + (r.w - gfx_text_width(label)) / 2;
+    int tx = r.x + (r.w - ui_text_width(label, false)) / 2;
     int ty = r.y + (r.h - FONT_H) / 2;
-    gfx_text(s, tx, ty, label, C_TEXT_LIGHT, false);
+    ui_text(s, tx, ty, label, C_TEXT_LIGHT, false);
 }
 
 /* --- Taskleiste ---------------------------------------------------------------------- */
@@ -481,7 +482,7 @@ static rect_t taskbar_rect(void)
 static rect_t start_rect(void)
 {
     return rect_make(6, screen.height - TASKBAR_H + (TASKBAR_H - BUTTON_H) / 2,
-                     gfx_text_width("Start") + 44, BUTTON_H);
+                     ui_text_width("Start", true) + 44, BUTTON_H);
 }
 
 static rect_t power_rect(void)
@@ -519,7 +520,7 @@ static rect_t volume_rect(void)
 static rect_t update_rect(void)
 {
     rect_t volume = volume_rect();
-    int w = gfx_text_width(UPDATE_LABEL) + 20;
+    int w = ui_text_width(UPDATE_LABEL, false) + 20;
     return rect_make(volume.x - 8 - w, volume.y, w, BUTTON_H);
 }
 
@@ -628,9 +629,10 @@ static void draw_menu_row(int row, const char *label, const char *hint, color_t 
     if (row == menu_selected)
         gfx_fill(&back, r.x, r.y, r.w, r.h, C_BUTTON_ACTIVE);
     gfx_fill(&back, r.x + 8, r.y + 5, 20, 20, icon);
-    gfx_text(&back, r.x + 14, r.y + 7, text, RGB(255, 255, 255), true);
-    gfx_text(&back, r.x + 38, r.y + 7, label, C_TEXT_LIGHT, false);
-    gfx_text(&back, r.x + r.w - 8 - gfx_text_width(hint), r.y + 7, hint,
+    ui_text(&back, r.x + 8 + (20 - ui_text_width(text, true)) / 2, r.y + 7, text,
+            RGB(255, 255, 255), true);
+    ui_text(&back, r.x + 38, r.y + 7, label, C_TEXT_LIGHT, false);
+    ui_text(&back, r.x + r.w - 8 - ui_text_width(hint, false), r.y + 7, hint,
              row == menu_selected ? C_TEXT_LIGHT : C_MENU_MUTED, false);
 }
 
@@ -647,7 +649,7 @@ static void draw_start_menu(void)
     gfx_frame(&back, m.x, top, m.w, m.y + m.h - top, C_BUTTON_BORDER);
     gfx_gradient(&back, m.x + 1, top + 1, m.w - 2, MENU_HEADER - 6, C_TITLE_TOP,
                  C_TITLE_BOTTOM);
-    gfx_text(&back, m.x + 14, top + 10, OS_NAME " " OS_VERSION, RGB(255, 255, 255),
+    ui_text(&back, m.x + 14, top + 10, OS_NAME " " OS_VERSION, RGB(255, 255, 255),
              true);
 
     for (int row = 0; row < LAUNCHER_COUNT; row++) {
@@ -681,7 +683,7 @@ static void draw_taskbar(void)
     for (int i = 0; i < 4; i++)
         gfx_fill(&back, start.x + 10 + (i % 2) * 8, start.y + 6 + (i / 2) * 8, 6, 6,
                  RGB(120, 190, 255));
-    gfx_text(&back, start.x + 32, start.y + (BUTTON_H - FONT_H) / 2, "Start",
+    ui_text(&back, start.x + 32, start.y + (BUTTON_H - FONT_H) / 2, "Start",
              C_TEXT_LIGHT, true);
     gfx_fill(&back, start.x + start.w + 9, bar.y + 8, 1, bar.h - 16, C_TASKBAR_LINE);
 
@@ -710,7 +712,7 @@ static void draw_taskbar(void)
             strlcpy(label, "Ton aus", sizeof(label));
         ui_button(&back, volume_rect(), label, false);
     }
-    gfx_text(&back, clock.x + 8, clock.y + (BUTTON_H - FONT_H) / 2, clock_text,
+    ui_text(&back, clock.x + 8, clock.y + (BUTTON_H - FONT_H) / 2, clock_text,
              C_TEXT_LIGHT, false);
     ui_button(&back, power_rect(), "Aus", false);
 }
@@ -723,6 +725,16 @@ static void draw_desktop(void)
                  C_DESKTOP_TOP, C_DESKTOP_BOTTOM);
 
     const char *mark = OS_NAME;
+    if (font_available()) {
+        const int size = 64;
+        int w = font_width(mark, strlen(mark), size, FONT_BOLD);
+        rect_t r = rect_make(screen.width - w - 32, screen.height - TASKBAR_H - size - 20,
+                             w + 8, size + 16);
+        if (!rect_empty(rect_intersect(r, back.clip)))
+            font_draw(&back, r.x, r.y + size, mark, strlen(mark), size, FONT_BOLD,
+                      C_WATERMARK);
+        return;
+    }
     int scale = 4;
     int w = gfx_text_width(mark) * scale;
     rect_t r = rect_make(screen.width - w - 28,
@@ -746,8 +758,8 @@ static void draw_window(const window_t *w, bool active)
     gfx_gradient(&back, f.x + BORDER, f.y + BORDER, f.w - 2 * BORDER, TITLE_H,
                  active ? C_TITLE_TOP : C_TITLE_OFF_TOP,
                  active ? C_TITLE_BOTTOM : C_TITLE_OFF_BOT);
-    gfx_text(&back, f.x + 10, f.y + BORDER + (TITLE_H - FONT_H) / 2, w->title,
-             RGB(255, 255, 255), true);
+    ui_text(&back, f.x + 10, f.y + BORDER + (TITLE_H - FONT_H) / 2, w->title,
+            RGB(255, 255, 255), true);
 
     rect_t c = close_rect(w);
     gfx_fill(&back, c.x, c.y, c.w, c.h, active ? C_CLOSE : C_CLOSE_OFF);

@@ -90,6 +90,7 @@ $(BUILD)/extra-ca.bin: FORCE | $(BUILD)
 	@$(PYTHON) tools/mkroots.py $@ $(EXTRA_CA)
 
 $(BUILD)/tls_roots.asm.obj: kernel/tls_roots.bin $(BUILD)/extra-ca.bin
+$(BUILD)/fonts.asm.obj: fonts/DejaVuSans.ttf fonts/DejaVuSans-Bold.ttf
 
 $(EFI): $(OBJS)
 	$(LD) $(LDFLAGS) /out:$@ $(OBJS)
@@ -129,6 +130,9 @@ check: | $(BUILD)
 	    tests/image_test.c kernel/image.c kernel/image_png.c kernel/image_jpeg.c \
 	    kernel/image_gif.c kernel/inflate.c
 	$(PYTHON) tests/image_test.py $(BUILD)/image_test
+	cc -O1 -g -fsanitize=address,undefined -Wall -Wextra -o $(BUILD)/font_test \
+	    tests/font_test.c kernel/truetype.c
+	$(PYTHON) tests/font_test.py $(BUILD)/font_test fonts/DejaVuSans.ttf fonts/DejaVuSans-Bold.ttf
 
 clean:
 	rm -rf $(BUILD)

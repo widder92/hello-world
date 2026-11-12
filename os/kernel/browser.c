@@ -13,6 +13,7 @@
  */
 #include "apps.h"
 #include "console.h"
+#include "font.h"
 #include "fs.h"
 #include "gui.h"
 #include "html.h"
@@ -37,14 +38,15 @@
 #define TOOLBAR_H    42
 #define CONTENT_X    10
 #define CONTENT_Y    (TOOLBAR_H + 4)
-#define ROW_H        18
+#define ROW_H        20
 #define STATUS_H     26
 #define STATUS_Y     (HEIGHT - STATUS_H)
 #define ROWS         ((STATUS_Y - CONTENT_Y - 4) / ROW_H)
 #define CONTENT_H    (ROWS * ROW_H)
 #define SCROLL_W     10
 #define SCROLL_X     (WIDTH - SCROLL_W - 4)
-#define COLUMNS      ((SCROLL_X - CONTENT_X - 6) / FONT_W)
+#define LAYOUT_W     (SCROLL_X - CONTENT_X - 6)      /* Breite des Seiteninhalts in Pixeln */
+#define COLUMNS      (LAYOUT_W / FONT_W)             /* ... und in Zeichen der Rasterschrift */
 #define HISTORY_MAX  40
 #define PAGE_MAX     (8u * 1024 * 1024)
 #define REDIRECTS    10
@@ -452,9 +454,69 @@ static picture_state_t picture_lookup(void *ctx, const char *url, int *width, in
 static html_pictures_t picture_source(browser_t *b)
 {
     return (html_pictures_t){
-        .cell_width = FONT_W, .line_height = ROW_H, .max_rows = PICTURE_ROWS,
+        .cell_width = 1, .line_height = ROW_H, .max_rows = PICTURE_ROWS,
         .lookup = picture_lookup, .ctx = b,
     };
+}
+
+/* --- Schrift der Seite ---------------------------------------------------------------------- */
+
+#define TEXT_SIZE 15                    /* Fließtext */
+
+/* Schriftgröße je Überschriftsstufe; 4 bis 6 sind fett in Textgröße */
+static int text_size(uint8_t level)
+{
+    return level == 1 ? 26 : level == 2 ? 21 : level == 3 ? 17 : TEXT_SIZE;
+}
+
+/* Abstand der Grundlinie von der Oberkante der Zeile */
+static int text_baseline(uint8_t level)
+{
+    /* Große Überschriften stehen oben in ihren zwei Zeilen: der Abstand liegt darunter. */
+    return level == 1 ? 27 : level == 2 ? 23 : level == 3 ? 16 : 15;
+}
+
+static int text_flags(uint8_t style)
+{
+    return ((style & STYLE_BOLD) ? FONT_BOLD : 0) | ((style & STYLE_ITALIC) ? FONT_ITALIC : 0);
+}
+
+/* Wird dieses Stück in der Rasterschrift gezeichnet (Code, vorformatierter Text)? */
+static bool text_is_grid(uint8_t style)
+{
+    return (style & STYLE_MONO) || !font_available();
+}
+
+/* Auskunft für den Seitenaufbau: wie breit ein Stück Text wird */
+static int page_text_width(void *ctx, const char *text, size_t len, uint8_t style,
+                           uint8_t level)
+{
+    (void)ctx;
+    if (text_is_grid(style)) {
+        int count = 0;
+        for (size_t i = 0; i < len; i++) {
+            if (((uint8_t)text[i] & 0xC0) != 0x80)
+                count++;
+        }
+        return count * FONT_W;
+    }
+    return font_width(text, len, text_size(level), text_flags(style));
+}
+
+static html_text_t text_source(void)
+{
+    return (html_text_t){ .cell_width = FONT_W, .width = page_text_width };
+}
+
+/* Setzt eine Seite für die jetzige Fensterbreite. */
+static page_t *layout_page(browser_t *b, const char *source, size_t len, const char *url,
+                           bool html)
+{
+    if (!html)
+        return html_plain_text(source, len, COLUMNS);
+    html_pictures_t pictures = picture_source(b);
+    html_text_t text = text_source();
+    return html_layout_rich(source, len, url, LAYOUT_W, &pictures, &text);
 }
 
 static void picture_release(browser_t *b, picture_t *pic)
@@ -705,10 +767,10 @@ static void worker(void *arg)
     strlcpy(url, b->job_url, URL_SIZE);
 
     if (strcmp(url, START_PAGE) == 0) {
-        int columns = COLUMNS;
+        int columns = LAYOUT_W;
         size_t len = sizeof(start_page) - 1;
         char *copy = kmalloc(len + 1);
-        page_t *page = copy ? html_layout(start_page, len, START_PAGE, columns) : NULL;
+        page_t *page = copy ? layout_page(b, start_page, len, START_PAGE, true) : NULL;
         if (page) {
             memcpy(copy, start_page, len + 1);
             deliver(b, page, url, copy, len, true, columns);
@@ -802,10 +864,8 @@ static void worker(void *arg)
                 content = converted;
             }
         }
-        int columns = COLUMNS;
-        html_pictures_t pictures = picture_source(b);
-        page_t *page = html ? html_layout_pictures(content, length, url, columns, &pictures)
-                            : html_plain_text(content, length, columns);
+        int columns = LAYOUT_W;
+        page_t *page = layout_page(b, content, length, url, html);
         if (!page) {
             kfree(content);
             set_status(b, true, "Nicht genug Speicher für diese Seite");
@@ -880,12 +940,9 @@ static int text_lines_before(const page_t *page, int line)
 static void relayout(browser_t *b, bool force)
 {
     page_t *old = b->page;
-    if (!old || !b->source || (b->page_columns == COLUMNS && !force))
+    if (!old || !b->source || (b->page_columns == LAYOUT_W && !force))
         return;
-    html_pictures_t pictures = picture_source(b);
-    page_t *fresh = b->source_html ? html_layout_pictures(b->source, b->source_len, b->url,
-                                                          COLUMNS, &pictures)
-                                   : html_plain_text(b->source, b->source_len, COLUMNS);
+    page_t *fresh = layout_page(b, b->source, b->source_len, b->url, b->source_html);
     if (!fresh)
         return;
 
@@ -907,7 +964,7 @@ static void relayout(browser_t *b, bool force)
         b->overlay = OVERLAY_NONE;
     }
 
-    if (b->page_columns == COLUMNS && b->scroll < old->line_count) {
+    if (b->page_columns == LAYOUT_W && b->scroll < old->line_count) {
         /*
          * Gleiche Breite: Der Text ist derselbe geblieben, nur Bilder haben
          * ihre Größe geändert. Die oberste sichtbare Zeile wiederfinden.
@@ -932,7 +989,7 @@ static void relayout(browser_t *b, bool force)
         b->scroll = old->line_count > 0 ? b->scroll * fresh->line_count / old->line_count : 0;
     }
     b->page = fresh;
-    b->page_columns = COLUMNS;
+    b->page_columns = LAYOUT_W;
     page_free(old);
     clamp_scroll(b);
 }
@@ -1178,11 +1235,13 @@ static void draw_widget(const browser_t *b, surface_t *s, int index, int x, int 
     int width = w->width * FONT_W;
     bool focused = index == b->focus;
     char stars[64];
+    int box_y = y;                      /* Rahmen: ganze Zeile */
+    y += (ROW_H - 1 - FONT_H) / 2;      /* Text: mittig darin */
 
     switch (w->kind) {
     case W_TEXT: case W_PASSWORD: case W_TEXTAREA: case W_SELECT: {
-        gfx_fill(s, x, y, width, ROW_H - 1, C_FIELD);
-        gfx_frame(s, x, y, width, ROW_H - 1, focused ? C_FOCUS : C_BORDER);
+        gfx_fill(s, x, box_y, width, ROW_H - 1, C_FIELD);
+        gfx_frame(s, x, box_y, width, ROW_H - 1, focused ? C_FOCUS : C_BORDER);
         const char *text = w->value ? w->value : "";
         int columns = w->width - 2;
         if (w->kind == W_PASSWORD) {
@@ -1219,7 +1278,7 @@ static void draw_widget(const browser_t *b, surface_t *s, int index, int x, int 
             gfx_fill(s, x + 7, y + 5, 7, 7, w->kind == W_RADIO ? C_FOCUS : C_TEXT);
         break;
     case W_SUBMIT:
-        gfx_fill(s, x, y, width, ROW_H - 1, focused ? C_FOCUS : C_BUTTON);
+        gfx_fill(s, x, box_y, width, ROW_H - 1, focused ? C_FOCUS : C_BUTTON);
         draw_clipped(s, x + 2 * FONT_W, y, w->label ? w->label : "", w->width - 4,
                      C_BUTTON_TXT, false);
         break;
@@ -1235,7 +1294,7 @@ static void draw_widget(const browser_t *b, surface_t *s, int index, int x, int 
 static void draw_picture_row(browser_t *b, surface_t *s, const page_image_t *image,
                              int row, int y)
 {
-    int x = CONTENT_X + image->column * FONT_W;
+    int x = CONTENT_X + image->column * (b->page->pixels ? 1 : FONT_W);
     int right = SCROLL_X - 2;
 
     /* Den Zeiger auf das Bild holen; freigegeben wird es nur von diesem Task. */
@@ -1299,9 +1358,10 @@ static void draw_page(browser_t *b, surface_t *s)
             draw_picture_row(b, s, &page->images[line->image], line->image_row, y);
             continue;
         }
+        int unit = page->pixels ? 1 : FONT_W;
         for (uint32_t i = 0; i < line->count; i++) {
             const span_t *span = &page->spans[line->first + i];
-            int x = CONTENT_X + span->column * FONT_W;
+            int x = CONTENT_X + span->column * unit;
             if (span->widget >= 0) {
                 draw_widget(b, s, span->widget, x, y);
                 continue;
@@ -1310,15 +1370,22 @@ static void draw_page(browser_t *b, surface_t *s)
                           : span->style & STYLE_HEADING ? C_HEADING
                           : span->style & STYLE_MUTED ? C_MUTED : C_TEXT;
             const char *text = page->pool + span->text;
-            const char *end = text + span->bytes;
-            int cx = x;
-            while (text < end) {
-                uint32_t cp = utf8_next(&text);
-                gfx_glyph(s, cx, y, cp, color, span->style & STYLE_BOLD);
-                cx += FONT_W;
+            int baseline = y + text_baseline(page->pixels ? span->level : 0);
+            if (!page->pixels || text_is_grid(span->style)) {
+                /* Rasterschrift: Zeichen für Zeichen in festen Schritten */
+                const char *end = text + span->bytes;
+                int cx = x;
+                while (text < end) {
+                    uint32_t cp = utf8_next(&text);
+                    gfx_glyph(s, cx, baseline - 12, cp, color, span->style & STYLE_BOLD);
+                    cx += FONT_W;
+                }
+            } else {
+                font_draw(s, x, baseline, text, span->bytes, text_size(span->level),
+                          text_flags(span->style), color);
             }
             if (span->style & STYLE_LINK)
-                gfx_fill(s, x, y + FONT_H - 1, span->width * FONT_W, 1, C_LINK);
+                gfx_fill(s, x, baseline + 2, span->width * unit, 1, C_LINK);
         }
     }
     gfx_reset_clip(s);
@@ -1397,27 +1464,30 @@ static void draw(browser_t *b)
     gfx_fill(s, 0, STATUS_Y, WIDTH, STATUS_H, C_TOOLBAR);
     int y = STATUS_Y + (STATUS_H - FONT_H) / 2;
     if (b->ask_insecure) {
-        gfx_text(s, 10, y, "ACHTUNG: Das Passwort würde unverschlüsselt gesendet (kein https). "
-                           "Trotzdem senden?  J / N", C_ERROR, true);
+        ui_text(s, 10, y, "ACHTUNG: Das Passwort würde unverschlüsselt gesendet (kein https). "
+                          "Trotzdem senden?  J / N", C_ERROR, true);
     } else if (b->busy) {
         ksnprintf(text, sizeof(text), "%s  (%llu s)", b->status[0] ? b->status : "Lade ...",
                   (time_ms() - b->busy_since) / 1000);
-        gfx_text(s, 10, y, text, C_TEXT, false);
+        ui_text(s, 10, y, text, C_TEXT, false);
     } else if (b->page && !b->status_error && pictures_pending(b, false) > 0) {
         ksnprintf(text, sizeof(text), "Lade Bilder ... noch %d von %d",
                   pictures_pending(b, false), b->page->image_count);
-        gfx_text(s, 10, y, text, C_TEXT, false);
+        ui_text(s, 10, y, text, C_TEXT, false);
     } else if (b->status[0]) {
-        draw_clipped(s, 10, y, b->status, (WIDTH - 20) / FONT_W,
-                     b->status_error ? C_ERROR : C_GOOD, false);
+        gfx_set_clip(s, rect_make(10, STATUS_Y, WIDTH - 20, STATUS_H));
+        ui_text(s, 10, y, b->status, b->status_error ? C_ERROR : C_GOOD, false);
+        gfx_reset_clip(s);
     } else if (b->page) {
         bool secure = starts_with(b->url, "https://");
         const char *note = secure ? "verschlüsselt, Server geprüft"
                          : starts_with(b->url, "http://") ? "NICHT verschlüsselt" : "";
-        int note_x = WIDTH - 10 - gfx_text_width(note);
-        draw_clipped(s, 10, y, b->page->title ? b->page->title : "",
-                     (note_x - 30) / FONT_W, C_TEXT, false);
-        gfx_text(s, note_x, y, note, secure ? C_GOOD : C_ERROR, false);
+        int note_x = WIDTH - 10 - ui_text_width(note, false);
+        /* Der Titel der Seite; was nicht passt, wird abgeschnitten */
+        gfx_set_clip(s, rect_make(10, STATUS_Y, note_x - 30, STATUS_H));
+        ui_text(s, 10, y, b->page->title ? b->page->title : "", C_TEXT, false);
+        gfx_reset_clip(s);
+        ui_text(s, note_x, y, note, secure ? C_GOOD : C_ERROR, false);
     }
     window_invalidate(b->window, 0, 0, WIDTH, HEIGHT);
 }
@@ -1736,7 +1806,8 @@ static void mouse_pressed(browser_t *b, int x, int y)
         scroll_to_mouse(b, y);
     } else if (page && y >= CONTENT_Y && y < CONTENT_Y + CONTENT_H && !b->busy) {
         int line = b->scroll + (y - CONTENT_Y) / ROW_H;
-        int column = (x - CONTENT_X) / FONT_W;
+        int unit = page->pixels ? 1 : FONT_W;
+        int column = (x - CONTENT_X) / unit;
         b->address_focus = false;
         b->focus = -1;
         if (line >= page->line_count || x < CONTENT_X)
@@ -1745,7 +1816,7 @@ static void mouse_pressed(browser_t *b, int x, int y)
         if (l->image >= 0 && l->image < page->image_count) {
             /* Bild in einem Link: ein Klick darauf folgt dem Link */
             const page_image_t *image = &page->images[l->image];
-            int left = CONTENT_X + image->column * FONT_W;
+            int left = CONTENT_X + image->column * unit;
             int width = image->width > 120 ? image->width : 120;
             if (image->link >= 0 && x >= left && x < left + width)
                 follow_link(b, page->links[image->link]);

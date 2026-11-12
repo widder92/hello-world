@@ -56,6 +56,22 @@ static picture_state_t picture_stub(void *ctx, const char *url, int *width, int 
     return PICTURE_UNKNOWN;
 }
 
+/* Schriftauskunft für den Test: 7 Pixel je Zeichen, fett 9, Überschrift 1 doppelt, Raster 8 */
+static int width_stub(void *ctx, const char *text, size_t len, uint8_t style, uint8_t level)
+{
+    (void)ctx;
+    int chars = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (((unsigned char)text[i] & 0xC0) != 0x80)
+            chars++;
+    }
+    if (style & STYLE_MONO)
+        return chars * 8;
+    if (level == 1)
+        return chars * 14;
+    return chars * ((style & STYLE_BOLD) ? 9 : 7);
+}
+
 static int failures, checks;
 
 static void check(int ok, const char *what)
@@ -254,6 +270,54 @@ int main(void)
     }
     page_free(p);
 
+    /* Echte Schrift: Breiten in Pixeln, große Überschriften, Sonderzeichen bleiben */
+    static const char rich_page[] =
+        "<h1>Titel</h1><p>Ein \xE2\x80\x9EZitat\xE2\x80\x9C mit <b>fettem</b> und <i>schr\xC3\xA4gem</i> Text, "
+        "der lang genug ist, um umzubrechen, damit die Breite gepr\xC3\xBC" "ft werden kann.</p>"
+        "<ul><li>Punkt</li></ul><p>Feld: <input name=a size=10> <code>abc</code></p>"
+        "<h3>Klein</h3>";
+    html_text_t text = { .cell_width = 8, .width = width_stub };
+    p = html_layout_rich(rich_page, sizeof(rich_page) - 1, "https://a.de/", 300, NULL, &text);
+    check(p && !p->failed && p->pixels, "Seite in echter Schrift gesetzt");
+    if (p) {
+        bool widths_ok = true, quote_kept = false, italic = false, mono = false, bullet = false;
+        int tall_lines = 0, fillers = 0, wrapped = 0;
+        for (int i = 0; i < p->line_count; i++) {
+            const line_t *l = &p->lines[i];
+            tall_lines += l->tall;
+            fillers += l->filler;
+            if (l->tall)
+                widths_ok = widths_ok && i + 1 < p->line_count && p->lines[i + 1].filler;
+            if (l->count > 0 && i > 2 && i < 8)
+                wrapped++;
+            for (uint32_t k = 0; k < l->count; k++) {
+                const span_t *sp = &p->spans[l->first + k];
+                widths_ok = widths_ok && sp->column + sp->width <= 300;
+                const char *t = p->pool + sp->text;
+                for (int at = 0; at + 3 <= sp->bytes; at++) {
+                    if (memcmp(t + at, "\xE2\x80\x9E", 3) == 0)
+                        quote_kept = true;
+                }
+                if (sp->bytes >= 3 && memcmp(t, "\xE2\x80\xA2", 3) == 0)
+                    bullet = true;
+                if (sp->style & STYLE_ITALIC)
+                    italic = true;
+                if ((sp->style & STYLE_MONO) && sp->width == 3 * 8)
+                    mono = true;
+                if (sp->level == 1)
+                    widths_ok = widths_ok && sp->width == 5 * 14;     /* "Titel" in doppelter Breite */
+            }
+        }
+        check(widths_ok, "kein Stück ragt über den Rand; Überschrift mit eigener Breite");
+        check(tall_lines == 1 && fillers == 1, "Stufe 1 belegt zwei Zeilen, Stufe 3 eine");
+        check(wrapped >= 2, "der Absatz bricht nach Pixelbreite um");
+        check(quote_kept && bullet, "typografische Zeichen bleiben, Listenpunkt ist rund");
+        check(italic && mono, "kursiv und Rasterschrift sind gekennzeichnet");
+        check(p->widget_count == 1 && p->widgets[0].width == 12 && p->widgets[0].column % 1 == 0 &&
+              p->widgets[0].column > 30, "Formularfeld: Breite in Zeichen, Platz in Pixeln");
+    }
+    page_free(p);
+
     /* Ohne Bildquelle bleibt alles beim Alten */
     p = html_layout(pictures_page, sizeof(pictures_page) - 1, "https://a.de/x/", 40);
     check(p && p->image_count == 0, "ohne Bildanzeige keine Bildblöcke");
@@ -280,9 +344,14 @@ int main(void)
             memcpy(broken + len + n, sample + from, n);
             len += 2 * n;
         }
-        p = round % 2 ? html_layout(broken, len, "https://a.de/", 20 + (int)(r % 200))
-                      : html_layout_pictures(broken, len, "https://a.de/", 20 + (int)(r % 200),
-                                             &pictures);
+        if (round % 3 == 0)
+            p = html_layout(broken, len, "https://a.de/", 20 + (int)(r % 200));
+        else if (round % 3 == 1)
+            p = html_layout_pictures(broken, len, "https://a.de/", 20 + (int)(r % 200),
+                                     &pictures);
+        else
+            p = html_layout_rich(broken, len, "https://a.de/", 160 + (int)(r % 900), &pictures,
+                                 &text);
         if (!p)
             failures++;
         page_free(p);

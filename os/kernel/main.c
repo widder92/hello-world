@@ -10,6 +10,7 @@
 #include "cpu.h"
 #include "crypto.h"
 #include "fs.h"
+#include "font.h"
 #include "gui.h"
 #include "input.h"
 #include "interrupts.h"
@@ -41,6 +42,7 @@ void kmain(void *unused)
     time_init();
     memory_init();
     gui_init();
+    font_init();
 
     memory_stats_t mem;
     memory_stats(&mem);

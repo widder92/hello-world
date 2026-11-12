@@ -8,6 +8,7 @@
  */
 #include "apps.h"
 #include "console.h"
+#include "font.h"
 #include "gui.h"
 #include "memory.h"
 #include "shell.h"
@@ -36,18 +37,18 @@ static void draw(window_t *win, bool no_input)
 
     int y = MARGIN;
     if (no_input) {
-        gfx_text(s, MARGIN, y, "Keine Tastatur und keine Maus gefunden.",
+        ui_text(s, MARGIN, y, "Keine Tastatur und keine Maus gefunden.",
                  C_ACCENT, true);
-        gfx_text(s, MARGIN, y + FONT_H + 2,
+        ui_text(s, MARGIN, y + FONT_H + 2,
                  "Bitte fotografiere dieses Fenster - es zeigt, was HelloOS "
                  "an den USB-Anschlüssen sieht.", C_TEXT, false);
     } else {
-        gfx_text(s, MARGIN, y, "Startprotokoll", C_TEXT, true);
-        gfx_text(s, MARGIN, y + FONT_H + 2,
+        ui_text(s, MARGIN, y, "Startprotokoll", C_TEXT, true);
+        ui_text(s, MARGIN, y + FONT_H + 2,
                  "Meldungen der Treiber seit dem Start; USB-Meldungen stehen oben.",
                  C_TEXT, false);
     }
-    gfx_text(s, MARGIN, y + 2 * FONT_H + 4,
+    ui_text(s, MARGIN, y + 2 * FONT_H + 4,
              OS_NAME " " OS_VERSION " - das Fenster aktualisiert sich von selbst.",
              C_MUTED, false);
 

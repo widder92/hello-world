@@ -9,14 +9,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
-enum { STYLE_BOLD = 1, STYLE_LINK = 2, STYLE_HEADING = 4, STYLE_MUTED = 8 };
+enum { STYLE_BOLD = 1, STYLE_LINK = 2, STYLE_HEADING = 4, STYLE_MUTED = 8,
+       STYLE_ITALIC = 16, STYLE_MONO = 32 };
 
 /* Ein Stück einer Zeile: Text in einer Darstellung - oder ein Formularfeld. */
 typedef struct {
     uint32_t text;                      /* Stelle im Textvorrat der Seite */
     uint16_t bytes;
-    uint16_t column, width;             /* in Zeichen */
+    uint16_t column, width;             /* in Zeichen - mit Schriftauskunft in Pixeln */
     uint8_t style;
+    uint8_t level;                      /* Stufe der Überschrift (1 bis 6) oder 0 */
     int16_t link;                       /* Nummer des Links oder -1 */
     int16_t widget;                     /* Nummer des Formularfelds oder -1 */
 } span_t;
@@ -25,6 +27,8 @@ typedef struct {
     uint32_t first, count;              /* Stücke dieser Zeile */
     int16_t image;                      /* Zeile gehört zu diesem Bild, oder -1 */
     uint16_t image_row;                 /* die wievielte Zeile des Bildes */
+    uint8_t tall;                       /* große Überschrift: belegt auch die nächste Zeile */
+    uint8_t filler;                     /* diese Zeile ist der untere Teil einer solchen */
 } line_t;
 
 typedef enum {
@@ -108,11 +112,28 @@ typedef struct {
     page_image_t *images;
     int image_count, image_cap;
     int heading_line;                   /* Zeile der ersten Hauptüberschrift oder -1 */
+    bool pixels;                        /* Spalten und Breiten der Stücke sind Pixel, nicht Zeichen */
     bool failed;                        /* Speicher ging aus - die Seite ist unvollständig */
 } page_t;
 
 /* Baut die Seite für eine Breite von columns Zeichen; NULL bei Speichermangel. */
 page_t *html_layout(const char *html, size_t len, const char *base_url, int columns);
+/*
+ * Schriftauskunft: Wer in echter Schrift setzen will, sagt dem Seitenaufbau,
+ * wie breit ein Stück Text wird. Alle Breiten und Spalten der Seite sind dann
+ * Pixel statt Zeichen; `columns` beim Aufruf ist die Breite in Pixeln, und
+ * große Überschriften (Stufe 1 und 2) belegen zwei Zeilen.
+ */
+typedef struct {
+    int cell_width;                     /* Breite eines Zeichens der Rasterschrift (Felder, Einzüge) */
+    int (*width)(void *ctx, const char *text, size_t len, uint8_t style, uint8_t level);
+    void *ctx;
+} html_text_t;
+
+/* Wie html_layout(), aber mit Bildern als Blöcken und/oder in echter Schrift. */
+page_t *html_layout_rich(const char *html, size_t len, const char *base_url, int columns,
+                         const html_pictures_t *pictures, const html_text_t *text);
+
 /* Wie html_layout(), plant aber Bilder als Blöcke ein. */
 page_t *html_layout_pictures(const char *html, size_t len, const char *base_url,
                              int columns, const html_pictures_t *pictures);

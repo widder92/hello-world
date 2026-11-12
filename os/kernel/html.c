@@ -16,7 +16,7 @@ typedef enum {
     T_UNKNOWN, T_A, T_BOLD, T_BLOCK, T_BLOCKQUOTE, T_BR, T_BUTTON, T_DD, T_DL, T_DT,
     T_FORM, T_HEADING, T_HR, T_IMG, T_INPUT, T_LI, T_OL, T_OPTION, T_P, T_PRE,
     T_SCRIPT, T_SELECT, T_SKIP, T_STYLE, T_TABLE, T_TD, T_TEXTAREA, T_TH, T_TITLE,
-    T_TR, T_UL, T_VOID,
+    T_TR, T_UL, T_VOID, T_ITALIC, T_MONO,
 } tag_t;
 
 static const struct {
@@ -24,6 +24,9 @@ static const struct {
     tag_t tag;
 } tag_names[] = {
     { "a", T_A }, { "b", T_BOLD }, { "strong", T_BOLD },
+    { "i", T_ITALIC }, { "em", T_ITALIC }, { "cite", T_ITALIC }, { "var", T_ITALIC },
+    { "dfn", T_ITALIC }, { "code", T_MONO }, { "tt", T_MONO }, { "kbd", T_MONO },
+    { "samp", T_MONO },
     { "blockquote", T_BLOCKQUOTE }, { "br", T_BR }, { "button", T_BUTTON },
     { "dd", T_DD }, { "dl", T_DL }, { "dt", T_DT }, { "form", T_FORM },
     { "h1", T_HEADING }, { "h2", T_HEADING }, { "h3", T_HEADING },
@@ -57,11 +60,11 @@ typedef struct {
 
 /* Was ein offenes Element verändert hat und bei seinem Ende zurückzunehmen ist */
 enum { U_HIDDEN = 1, U_BOLD = 2, U_LINK = 4, U_PRE = 8, U_HEADING = 16, U_LIST = 32,
-       U_QUOTE = 64, U_CAPTURE = 128 };
+       U_QUOTE = 64, U_CAPTURE = 128, U_ITALIC = 256, U_MONO = 512 };
 
 typedef struct {
     uint8_t tag;
-    uint8_t undo;
+    uint16_t undo;
 } element_t;
 
 typedef struct {
@@ -69,10 +72,12 @@ typedef struct {
     const char *base;
     int columns;
     const html_pictures_t *pictures;    /* NULL: Bilder nur als Ersatztext */
+    const html_text_t *text;            /* NULL: festes Zeichenraster */
+    int unit;                           /* Breite eines Rasterzeichens: 1 oder Pixel */
 
     element_t stack[STACK_MAX];
     int depth;
-    int hidden, bold, pre, heading, quote;
+    int hidden, bold, pre, heading, quote, italic, mono;
     int link;                           /* laufender Link oder -1 */
     bool muted;
     int list_depth;
@@ -417,23 +422,36 @@ static bool wants_hidden(const attr_t *attrs, int count)
 
 static int indent(const parser_t *ps)
 {
-    int n = 2 * ps->list_depth + 2 * ps->quote;
+    int n = (2 * ps->list_depth + 2 * ps->quote) * ps->unit;
     return n > ps->columns / 2 ? ps->columns / 2 : n;
 }
 
-static void push_line(parser_t *ps)
+static bool raw_line(parser_t *ps)
 {
     page_t *page = ps->page;
     if (page->line_count >= LINES_MAX ||
         !ENSURE(page, page->lines, page->line_count, page->line_cap)) {
         page->failed = true;
-        return;
+        return false;
     }
-    page->lines[page->line_count].first = (uint32_t)page->span_count;
-    page->lines[page->line_count].count = 0;
-    page->lines[page->line_count].image = -1;
-    page->lines[page->line_count].image_row = 0;
-    page->line_count++;
+    line_t *line = &page->lines[page->line_count++];
+    memset(line, 0, sizeof(*line));
+    line->first = (uint32_t)page->span_count;
+    line->image = -1;
+    return true;
+}
+
+static void push_line(parser_t *ps)
+{
+    page_t *page = ps->page;
+    /* Eine große Überschrift braucht den Platz von zwei Zeilen. */
+    if (page->line_count > 0 && page->lines[page->line_count - 1].tall) {
+        if (!raw_line(ps))
+            return;
+        page->lines[page->line_count - 1].filler = 1;
+    }
+    if (!raw_line(ps))
+        return;
     ps->has_content = false;
     ps->space_pending = false;
     ps->column = 0;
@@ -471,7 +489,25 @@ static uint8_t current_style(const parser_t *ps)
 {
     return (uint8_t)((ps->bold > 0 ? STYLE_BOLD : 0) |
                      (ps->heading > 0 ? STYLE_HEADING | STYLE_BOLD : 0) |
-                     (ps->link >= 0 ? STYLE_LINK : 0) | (ps->muted ? STYLE_MUTED : 0));
+                     (ps->link >= 0 ? STYLE_LINK : 0) | (ps->muted ? STYLE_MUTED : 0) |
+                     (ps->italic > 0 ? STYLE_ITALIC : 0) |
+                     (ps->mono > 0 || ps->pre > 0 ? STYLE_MONO : 0));
+}
+
+static uint8_t current_level(const parser_t *ps)
+{
+    return (uint8_t)(ps->heading > 0 && ps->heading_level >= 1 && ps->heading_level <= 6
+                         ? ps->heading_level : 0);
+}
+
+static int count_chars(const char *text, size_t len);
+
+/* Breite eines Textstücks in der laufenden Darstellung: Zeichen oder Pixel */
+static int measure(const parser_t *ps, const char *text, size_t len)
+{
+    if (!ps->text)
+        return count_chars(text, len);
+    return ps->text->width(ps->text->ctx, text, len, current_style(ps), current_level(ps));
 }
 
 /* Setzt Text (oder ein Formularfeld) in die laufende Zeile, bricht nötigenfalls um. */
@@ -481,10 +517,12 @@ static void place(parser_t *ps, const char *bytes, size_t n, int width, int widg
     if (ps->hidden > 0 || page->failed || page->line_count == 0)
         return;
 
-    int space = ps->space_pending && ps->has_content ? 1 : 0;
+    int space = ps->space_pending && ps->has_content ? measure(ps, " ", 1) : 0;
+    bool spaced = space > 0;
     if (ps->has_content && ps->column + space + width > ps->columns) {
         push_line(ps);
         space = 0;
+        spaced = false;
     }
     if (!ps->has_content)
         ps->column = indent(ps);
@@ -507,18 +545,19 @@ static void place(parser_t *ps, const char *bytes, size_t n, int width, int widg
     }
 
     line_t *line = &page->lines[page->line_count - 1];
-    uint8_t style = current_style(ps);
+    uint8_t style = current_style(ps), level = current_level(ps);
     span_t *last = line->count ? &page->spans[page->span_count - 1] : NULL;
     bool merge = last && widget < 0 && last->widget < 0 && last->style == style &&
+                 last->level == level &&
                  last->link == ps->link && last->text + last->bytes == page->pool_len &&
                  last->column + last->width == ps->column &&
                  last->bytes + n + 1 < 60000;
     if (merge) {
-        if (space)
+        if (spaced)
             page->pool[page->pool_len++] = ' ';
         memcpy(page->pool + page->pool_len, bytes, n);
         page->pool_len += n;
-        last->bytes = (uint16_t)(last->bytes + space + n);
+        last->bytes = (uint16_t)(last->bytes + (spaced ? 1 : 0) + n);
         last->width = (uint16_t)(last->width + space + width);
     } else {
         if (!ENSURE(page, page->spans, page->span_count, page->span_cap))
@@ -529,12 +568,16 @@ static void place(parser_t *ps, const char *bytes, size_t n, int width, int widg
         span->column = (uint16_t)(ps->column + space);
         span->width = (uint16_t)width;
         span->style = style;
+        span->level = level;
         span->link = (int16_t)ps->link;
         span->widget = (int16_t)widget;
         memcpy(page->pool + page->pool_len, bytes, n);
         page->pool_len += n;
         line->count++;
     }
+    /* In echter Schrift sind die beiden obersten Überschriftsstufen zwei Zeilen hoch. */
+    if (ps->text && widget < 0 && (level == 1 || level == 2))
+        line->tall = 1;
     ps->column += space + width;
     ps->has_content = true;
     ps->space_pending = false;
@@ -558,19 +601,28 @@ static void flush_word(parser_t *ps)
         return;
     ps->word[ps->word_len] = '\0';
     ps->word_len = 0;
-    claude_plain_text(ps->word);        /* typografische Zeichen, die die Schrift nicht hat */
+    if (!ps->text)
+        claude_plain_text(ps->word);    /* typografische Zeichen, die die Rasterschrift nicht hat */
 
     const char *text = ps->word;
     size_t len = strlen(text);
     int room = ps->columns - indent(ps);
+    if (measure(ps, text, len) <= room) {
+        place(ps, text, len, measure(ps, text, len), -1);
+        return;
+    }
     while (len > 0) {                   /* überlange Wörter (Adressen) in Stücken */
         size_t n = 0;
         int width = 0;
-        while (n < len && width < room) {
-            n++;
-            while (n < len && ((uint8_t)text[n] & 0xC0) == 0x80)
-                n++;
-            width++;
+        while (n < len) {
+            size_t next = n + 1;
+            while (next < len && ((uint8_t)text[next] & 0xC0) == 0x80)
+                next++;
+            int with = measure(ps, text, next);
+            if (n > 0 && with > room)
+                break;
+            n = next;
+            width = with;
         }
         place(ps, text, n, width, -1);
         text += n;
@@ -631,10 +683,10 @@ static void text_run(parser_t *ps, const char *text, size_t len, bool entities)
                 new_line(ps, true);
             } else if (c == '\t') {
                 flush_word(ps);
-                place(ps, "    ", 4, 4, -1);
+                place(ps, "    ", 4, measure(ps, "    ", 4), -1);
             } else if (c == ' ') {
                 flush_word(ps);
-                place(ps, " ", 1, 1, -1);
+                place(ps, " ", 1, measure(ps, " ", 1), -1);
             } else if (c != '\r') {
                 add_byte(ps, c);
             }
@@ -652,7 +704,7 @@ static void place_note(parser_t *ps, const char *text)
     bool muted = ps->muted;
     flush_word(ps);
     ps->muted = true;
-    place(ps, text, strlen(text), count_chars(text, strlen(text)), -1);
+    place(ps, text, strlen(text), measure(ps, text, strlen(text)), -1);
     ps->muted = muted;
 }
 
@@ -686,16 +738,16 @@ static void show_widget(parser_t *ps, int index, int width)
     if (index < 0 || ps->hidden > 0)
         return;
     widget_t *w = &ps->page->widgets[index];
-    int room = ps->columns - indent(ps);
+    int room = (ps->columns - indent(ps)) / ps->unit;   /* Felder zählen in Rasterzeichen */
     flush_word(ps);
     w->width = width > room ? room : width;
     ps->space_pending = ps->has_content;
     int link = ps->link;
     ps->link = -1;
-    place(ps, "", 0, w->width, index);
+    place(ps, "", 0, w->width * ps->unit, index);
     ps->link = link;
     w->line = ps->page->line_count - 1;
-    w->column = ps->column - w->width;
+    w->column = ps->column - w->width * ps->unit;
     ps->space_pending = true;
 }
 
@@ -829,6 +881,10 @@ static void pop(parser_t *ps)
         ps->hidden--;
     if (e.undo & U_BOLD)
         ps->bold--;
+    if (e.undo & U_ITALIC)
+        ps->italic--;
+    if (e.undo & U_MONO)
+        ps->mono--;
     if (e.undo & U_HEADING)
         ps->heading--;
     if (e.undo & U_PRE)
@@ -1011,7 +1067,8 @@ static bool place_picture(parser_t *ps, const attr_t *attrs, int count)
             kfree(image->alt);
             image->alt = NULL;
         } else {
-            claude_plain_text(image->alt);
+            if (!ps->text)
+                claude_plain_text(image->alt);
         }
     }
     image->link = ps->link;
@@ -1026,6 +1083,7 @@ static bool place_picture(parser_t *ps, const attr_t *attrs, int count)
         line_t *line = &page->lines[page->line_count - 1];
         line->image = (int16_t)index;
         line->image_row = (uint16_t)row;
+        line->tall = 0;
         push_line(ps);
     }
     return true;
@@ -1050,7 +1108,7 @@ static void remember_anchor(parser_t *ps, const attr_t *attrs, int count)
 static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
 {
     page_t *page = ps->page;
-    uint8_t undo = 0;
+    uint16_t undo = 0;
 
     /* Was ein neues Element stillschweigend beendet */
     switch (tag) {
@@ -1095,7 +1153,8 @@ static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
         new_line(ps, false);
         if (ps->hidden == 0) {
             char rule[160];
-            int n = ps->columns - indent(ps);
+            int dash = measure(ps, "-", 1);
+            int n = (ps->columns - indent(ps)) / (dash > 0 ? dash : 1);
             if (n > (int)sizeof(rule) - 1)
                 n = sizeof(rule) - 1;
             memset(rule, '-', (size_t)n);
@@ -1172,6 +1231,8 @@ static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
     case T_LI: {
         new_line(ps, false);
         char bullet[12] = "-";
+        if (ps->text)
+            strlcpy(bullet, "\xE2\x80\xA2", sizeof(bullet));    /* runder Punkt */
         int level = ps->list_depth - 1;
         if (level >= 0 && level < LISTS_MAX && ps->counter[level] > 0)
             ksnprintf(bullet, sizeof(bullet), "%d.", ps->counter[level]++);
@@ -1203,6 +1264,16 @@ static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
     case T_BOLD:
         ps->bold++;
         undo |= U_BOLD;
+        break;
+    case T_ITALIC:
+        flush_word(ps);
+        ps->italic++;
+        undo |= U_ITALIC;
+        break;
+    case T_MONO:
+        flush_word(ps);
+        ps->mono++;
+        undo |= U_MONO;
         break;
     case T_A: {
         char *href = attr_text(attrs, count, "href");
@@ -1423,7 +1494,8 @@ static void parse(parser_t *ps, const char *html, size_t len)
                 char *title = kmalloc(n + 8);
                 if (title) {
                     decode_text(p, n > 300 ? 300 : n, title, n + 8);
-                    claude_plain_text(title);
+                    if (!ps->text)
+                        claude_plain_text(title);
                     ps->page->title = title;
                 }
             }
@@ -1452,7 +1524,7 @@ static void parse(parser_t *ps, const char *html, size_t len)
                     }
                     w->value[k] = '\0';
                 }
-                int width = ps->columns - indent(ps) - 2;
+                int width = (ps->columns - indent(ps)) / ps->unit - 2;
                 show_widget(ps, index, width > 64 ? 64 : width);
             }
             p = stop;
@@ -1475,6 +1547,7 @@ static page_t *begin(parser_t *ps, const char *base, int columns)
     ps->page = page;
     ps->base = base;
     ps->columns = columns < 20 ? 20 : columns > 250 ? 250 : columns;
+    ps->unit = 1;
     ps->link = -1;
     ps->form = -1;
     ps->select = -1;
@@ -1484,12 +1557,19 @@ static page_t *begin(parser_t *ps, const char *base, int columns)
     return page;
 }
 
-page_t *html_layout_pictures(const char *html, size_t len, const char *base_url,
-                             int columns, const html_pictures_t *pictures)
+page_t *html_layout_rich(const char *html, size_t len, const char *base_url, int columns,
+                         const html_pictures_t *pictures, const html_text_t *text)
 {
     parser_t *ps = kmalloc(sizeof(*ps));
     page_t *page = ps ? begin(ps, base_url, columns) : NULL;
     if (page) {
+        if (text && text->width && text->cell_width > 0) {
+            /* echte Schrift: alle Breiten in Pixeln */
+            ps->text = text;
+            ps->unit = text->cell_width;
+            page->pixels = true;
+            ps->columns = columns < 160 ? 160 : columns > 8000 ? 8000 : columns;
+        }
         if (pictures && pictures->lookup && pictures->cell_width > 0 &&
             pictures->line_height > 0 && pictures->max_rows > 0)
             ps->pictures = pictures;
@@ -1497,6 +1577,12 @@ page_t *html_layout_pictures(const char *html, size_t len, const char *base_url,
     }
     kfree(ps);
     return page;
+}
+
+page_t *html_layout_pictures(const char *html, size_t len, const char *base_url,
+                             int columns, const html_pictures_t *pictures)
+{
+    return html_layout_rich(html, len, base_url, columns, pictures, NULL);
 }
 
 page_t *html_layout(const char *html, size_t len, const char *base_url, int columns)
