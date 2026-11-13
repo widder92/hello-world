@@ -11,7 +11,7 @@ Windows:  Nach dem Setup über das Symbol "Marktrechnung" auf dem Desktop
 macOS:    Rechtsklick auf Marktrechnung, dann "Öffnen".
 Linux:    ./marktrechnung
 
-Das Programm öffnet sich im Browser. Es läuft nur auf diesem Rechner; die
+Das Programm öffnet ein eigenes Fenster. Es läuft nur auf diesem Rechner; die
 Rechnungen und Daten liegen im Ordner Dokumente/Marktrechnung.
 
 Entfernen (Windows): Einstellungen > Apps > Marktrechnung > Deinstallieren.
@@ -29,6 +29,5 @@ Im Programm steht unter "Hilfe", worauf es bei REWE und EDEKA ankommt.
 
 Beenden
 -------
-Unten links im Programm: "Programm beenden". Das Schließen des
-Browserfensters allein beendet das Programm nicht; ein erneuter Doppelklick
-öffnet es wieder.
+Das Fenster schließen - damit ist das Programm beendet. Ein Doppelklick auf
+das Symbol startet es wieder.

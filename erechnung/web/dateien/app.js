@@ -44,7 +44,8 @@ function App() {
 
   const beende = async () => {
     if (!confirm('Marktrechnung beenden?')) return;
-    try { await api('POST', '/api/beenden'); setBeendet(true); } catch (e) { zeigeFehler(e); }
+    // Das Programm schließt sein Fenster selbst; in einem Browser-Tab bleibt der Hinweis stehen.
+    try { await api('POST', '/api/beenden'); setBeendet(true); setTimeout(() => window.close(), 300); } catch (e) { zeigeFehler(e); }
   };
   const aktiv = ort.teile[0] === 'rechnung' ? undefined : ort.teile[0];
   const punkt = (ziel, name, schluessel) => html`<a href=${ziel} class=${aktiv === schluessel ? 'aktiv' : ''}>${name}</a>`;

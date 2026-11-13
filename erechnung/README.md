@@ -71,16 +71,26 @@ Pflichtangaben **vor** dem Versand und sagt in einfachen Worten, was fehlt.
    - **macOS:** ZIP entpacken, Rechtsklick auf `Marktrechnung` → *Öffnen*.
    - **Linux:** ZIP entpacken, `./marktrechnung` starten.
 
-   Das Programm öffnet sich im Browser.
+   Das Programm öffnet ein eigenes Fenster.
 3. **Erste Schritte** auf der Startseite abarbeiten:
    - eigene Firmendaten, Steuernummer oder USt-IdNr., GLN, Bankverbindung
    - Kunden anlegen – für REWE und EDEKA gibt es Vorlagen
    - E-Mail-Versand einrichten und mit einer Probe-E-Mail testen
 4. **Vor der ersten echten Rechnung** beim Kunden klären (siehe unten).
 
-Das Programm läuft unauffällig im Hintergrund weiter, wenn das Browserfenster
-geschlossen wird. Ein erneuter Doppelklick öffnet es wieder; *Programm
-beenden* steht unten links.
+Wird das Fenster geschlossen, ist das Programm beendet; ein Doppelklick auf
+das Symbol startet es wieder.
+
+**Zum Fenster:** Die Oberfläche ist mit Webtechnik gebaut. Als eigenes
+Programmfenster – ohne Adresszeile und Tabs, mit eigenem Symbol in der
+Taskleiste – zeigt Marktrechnung sie über den Browser, der auf dem Rechner
+ohnehin vorhanden ist (unter Windows Microsoft Edge, sonst Chrome oder ein
+verwandter Browser). Das Fenster hat ein eigenes Profil, getrennt vom Surfen
+im Internet. Eine Internetseite ist es nicht: Alles läuft auf dem eigenen
+Rechner. Fehlt ein solcher Browser, erscheint die Oberfläche als Tab im
+gewohnten Browser; dann läuft das Programm weiter, bis man unten links
+*Programm beenden* wählt. Mit dem Schalter `-browser` lässt sich dieser Weg
+auch erzwingen.
 
 ### Was vorab mit dem Kunden zu klären ist
 
@@ -207,7 +217,7 @@ Geschrieben in Go ohne fremde Bibliotheken; die Oberfläche nutzt Preact und
 htm (im Programm eingebaut, kein Build-Schritt).
 
 ```
-cmd/marktrechnung    Programmstart, Browser öffnen, Betriebssystem-Eigenheiten
+cmd/marktrechnung    Programmstart, Programmfenster, Betriebssystem-Eigenheiten
 internal/dec         Festkomma-Arithmetik für Geldbeträge
 internal/modell      Datenmodell nach EN 16931 (Feldnummern BT-… in Kommentaren)
 internal/rechnen     Summen, Steuer, Fälligkeit

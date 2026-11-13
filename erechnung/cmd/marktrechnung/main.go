@@ -1,9 +1,9 @@
 // Marktrechnung erstellt, prüft und verschickt E-Rechnungen (ZUGFeRD und
 // XRechnung) für Lieferanten des Lebensmittelhandels.
 //
-// Das Programm startet einen kleinen Server, der nur auf dem eigenen Rechner
-// erreichbar ist, und öffnet die Bedienoberfläche im Browser. Alle Daten
-// bleiben auf dem Rechner.
+// Das Programm zeigt seine Oberfläche in einem eigenen Fenster. Dahinter
+// läuft ein kleiner Server, der nur auf dem eigenen Rechner erreichbar ist.
+// Alle Daten bleiben auf dem Rechner.
 package main
 
 import (
@@ -42,10 +42,14 @@ const standardPort = 47411
 // lexwareAdresse ersetzt in Tests die Adresse von Lexware Office.
 var lexwareAdresse string
 
+// imBrowser: die Oberfläche im gewohnten Browser öffnen.
+var imBrowser bool
+
 func main() {
 	datenFlag := flag.String("daten", "", "Ordner für Rechnungen und Stammdaten (Standard: Dokumente/Marktrechnung)")
 	portFlag := flag.Int("port", 0, "Port auf dem eigenen Rechner (Standard: 47411)")
-	ohneBrowser := flag.Bool("kein-browser", false, "den Browser nicht öffnen")
+	ohneBrowser := flag.Bool("kein-browser", false, "kein Fenster öffnen, nur die Adresse nennen")
+	flag.BoolVar(&imBrowser, "browser", false, "die Oberfläche im gewohnten Browser öffnen statt in einem eigenen Fenster")
 	zeigeVersion := flag.Bool("version", false, "Version anzeigen")
 	beenden := flag.Bool("beenden", false, "ein laufendes Marktrechnung beenden (für das Setup)")
 	flag.StringVar(&lexwareAdresse, "lexware-adresse", "", "andere Adresse der Lexware-Schnittstelle (nur für Tests)")
@@ -116,9 +120,13 @@ func lauf(datenFlag string, portFlag int, ohneBrowser bool) error {
 	adresse := fmt.Sprintf("127.0.0.1:%d", p.Port)
 	start := fmt.Sprintf("http://%s/?t=%s", adresse, p.Token)
 
-	// Läuft das Programm schon, wird nur das Fenster wieder geöffnet.
+	// Läuft das Programm schon, zeigt es auf Zuruf sein Fenster wieder.
 	if laeuftSchon(adresse, p.Token) {
-		if !ohneBrowser {
+		if ohneBrowser {
+			return nil
+		}
+		if !zeigeLaufendes(adresse, p.Token) {
+			// Eine ältere Fassung kennt den Zuruf noch nicht.
 			return oeffneBrowser(start)
 		}
 		return nil
@@ -140,10 +148,16 @@ func lauf(datenFlag string, portFlag int, ohneBrowser bool) error {
 
 	ctx, stopp := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stopp()
+	fenster := &fensterVerwalter{adresse: start, profil: fensterOrdner(), imBrowser: imBrowser, zu: stopp}
+	if !imBrowser && !ohneBrowser {
+		if fenster.browser = findeBrowser(); fenster.browser == "" {
+			log.Print("Kein Browser mit App-Fenster gefunden (Edge, Chrome ...); die Oberfläche erscheint im gewohnten Browser.")
+		}
+	}
 	s := &server.Server{
 		Speicher: sp, Passwort: geheim.Neu(konfig, "postausgang.geheim"), Lexware: geheim.Neu(konfig, "lexware.geheim"),
 		Web: web.Dateien(), Token: p.Token, Version: version.Nummer,
-		Oeffne: oeffneOrdner, Beende: stopp, LexwareBasis: lexwareAdresse,
+		Oeffne: oeffneOrdner, Beende: stopp, LexwareBasis: lexwareAdresse, Zeige: fenster.zeige,
 	}
 	// Die Adresse merken, unter der das Programm gerade läuft. Das Setup
 	// findet es darüber, um es vor einer Aktualisierung zu beenden.
@@ -155,8 +169,8 @@ func lauf(datenFlag string, portFlag int, ohneBrowser bool) error {
 	go func() { fehler <- hs.Serve(horcher) }()
 	log.Printf("Marktrechnung %s läuft: http://%s  Daten: %s", version.Nummer, horcher.Addr(), p.Datenordner)
 	if !ohneBrowser {
-		if err := oeffneBrowser(start); err != nil {
-			log.Printf("Der Browser ließ sich nicht öffnen (%v). Bitte von Hand aufrufen: %s", err, start)
+		if err := fenster.zeige(); err != nil {
+			log.Printf("Das Fenster ließ sich nicht öffnen (%v). Bitte von Hand im Browser aufrufen: %s", err, start)
 		}
 	} else {
 		log.Printf("Aufruf: %s", start)
@@ -169,6 +183,7 @@ func lauf(datenFlag string, portFlag int, ohneBrowser bool) error {
 		}
 	case <-ctx.Done():
 	}
+	fenster.schliesse()
 	ende, abbruch := context.WithTimeout(context.Background(), 5*time.Second)
 	defer abbruch()
 	return hs.Shutdown(ende)
@@ -242,6 +257,25 @@ func beendeLaufendes() {
 		time.Sleep(400 * time.Millisecond)
 		return
 	}
+}
+
+// zeigeLaufendes bittet ein schon laufendes Marktrechnung, sein Fenster zu
+// zeigen. So bleibt das Fenster in der Hand des Programms, das es auch
+// wieder schließen kann.
+func zeigeLaufendes(adresse, token string) bool {
+	anfrage, err := http.NewRequest("POST", "http://"+adresse+"/api/fenster", nil)
+	if err != nil {
+		return false
+	}
+	anfrage.AddCookie(&http.Cookie{Name: "marktrechnung", Value: token})
+	anfrage.Header.Set("X-Marktrechnung", "1")
+	c := &http.Client{Timeout: 5 * time.Second}
+	antwort, err := c.Do(anfrage)
+	if err != nil {
+		return false
+	}
+	antwort.Body.Close()
+	return antwort.StatusCode == http.StatusOK
 }
 
 func richteProtokollEin(konfig string) {

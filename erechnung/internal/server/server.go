@@ -1,5 +1,5 @@
 // Package server ist die Schaltstelle des Programms: Es stellt die
-// Bedienoberfläche im Browser bereit und nimmt deren Aufträge entgegen. Der
+// Bedienoberfläche für das Programmfenster bereit und nimmt deren Aufträge entgegen. Der
 // Server hört nur auf dem eigenen Rechner (127.0.0.1) und verlangt ein
 // Kennwort-Cookie, das beim Start des Programms gesetzt wird.
 package server
@@ -48,6 +48,8 @@ type Server struct {
 	Oeffne func(pfad string) error
 	// Beende fährt das Programm herunter.
 	Beende func()
+	// Zeige bringt das Programmfenster (wieder) auf den Bildschirm.
+	Zeige func() error
 	// Sende verschickt eine E-Mail; in Tests austauschbar.
 	Sende func(n post.Nachricht, p modell.Postausgang, passwort string) ([]byte, error)
 }
@@ -134,6 +136,17 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/ordner", s.ordner)
 	api("GET /api/sicherung.zip", s.sicherung)
 	api("GET /api/export.csv", s.export)
+	api("POST /api/fenster", func(w http.ResponseWriter, r *http.Request) {
+		if s.Zeige == nil {
+			fehler(w, http.StatusNotImplemented, errors.New("dieses Programm hat kein Fenster"))
+			return
+		}
+		if err := s.Zeige(); err != nil {
+			fehler(w, 500, err)
+			return
+		}
+		antworte(w, 200, map[string]bool{"ok": true})
+	})
 	api("POST /api/beenden", func(w http.ResponseWriter, r *http.Request) {
 		antworte(w, 200, map[string]bool{"ok": true})
 		if s.Beende != nil {

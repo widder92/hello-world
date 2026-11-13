@@ -58,6 +58,7 @@ export function Hilfeseite() {
         <li><b>GLN</b> (Global Location Number, 13 Ziffern) bezeichnet eine Firma oder einen Ort, <b>GTIN</b> (früher EAN) einen Artikel. Beide vergibt GS1 Germany. Die GLN der Kunden und Märkte nennt der Kunde.</li>
         <li><b>Fehler nach dem Versand:</b> Eine fertige Rechnung wird nicht geändert, sondern mit „Stornieren“ durch eine Rechnungskorrektur aufgehoben und neu geschrieben.</li>
         <li><b>Aufbewahrung:</b> Rechnungen müssen acht Jahre unverändert aufbewahrt werden. Bei E-Rechnungen zählt die Datei selbst, nicht ein Ausdruck.</li>
+        <li><b>Beenden:</b> Wird das Fenster geschlossen, ist das Programm beendet. Die Daten sind dann längst gespeichert – jede Änderung wird sofort auf dem Rechner abgelegt.</li>
         <li><b>Grenzen:</b> Das Programm prüft die Regeln, an denen Rechnungen in der Praxis scheitern, und wird laufend mit einem amtlichen Prüfprogramm abgeglichen. Es ersetzt keine Steuerberatung, und die Vorgaben der Handelsunternehmen können sich ändern.</li>
       </ul>
       <p class="leise klein">Marktrechnung ${stamm.version} · Schrift im PDF: Liberation Sans (SIL Open Font License) · Oberfläche mit Preact und htm (MIT / Apache 2.0)</p>

@@ -57,7 +57,7 @@ ShowUninstDetails nevershow
 !insertmacro MUI_PAGE_INSTFILES
 
 !define MUI_FINISHPAGE_TITLE "Marktrechnung ist eingerichtet"
-!define MUI_FINISHPAGE_TEXT "Das Programm startet künftig über das Symbol „Marktrechnung“ auf dem Desktop oder im Startmenü. Es öffnet sich im Browser, läuft aber nur auf diesem Rechner.$\r$\n$\r$\nRechnungen und Daten liegen im Ordner Dokumente\Marktrechnung."
+!define MUI_FINISHPAGE_TEXT "Das Programm startet künftig über das Symbol „Marktrechnung“ auf dem Desktop oder im Startmenü. Es öffnet ein eigenes Fenster und läuft nur auf diesem Rechner.$\r$\n$\r$\nRechnungen und Daten liegen im Ordner Dokumente\Marktrechnung."
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${PROGRAMM}"
 !define MUI_FINISHPAGE_RUN_TEXT "Marktrechnung jetzt starten"
 !insertmacro MUI_PAGE_FINISH
@@ -136,7 +136,9 @@ Section "Uninstall"
   DeleteRegKey HKCU "${DEINSTALLATION}"
   DeleteRegKey HKCU "${SCHLUESSEL}"
 
-  ; Einstellungen des Programms samt gespeichertem E-Mail-Passwort. Die
-  ; Rechnungen und Stammdaten liegen woanders und bleiben erhalten.
+  ; Einstellungen des Programms samt gespeichertem E-Mail-Passwort sowie
+  ; das Profil des Programmfensters. Die Rechnungen und Stammdaten liegen
+  ; woanders und bleiben erhalten.
   RMDir /r "$APPDATA\Marktrechnung"
+  RMDir /r "$LOCALAPPDATA\Marktrechnung"
 SectionEnd

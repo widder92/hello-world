@@ -19,6 +19,10 @@ var (
 	shellExecute         = shell32.NewProc("ShellExecuteW")
 	coTaskMemFree        = ole32.NewProc("CoTaskMemFree")
 	messageBox           = user32.NewProc("MessageBoxW")
+	enumWindows          = user32.NewProc("EnumWindows")
+	getWindowProcessID   = user32.NewProc("GetWindowThreadProcessId")
+	isWindowVisible      = user32.NewProc("IsWindowVisible")
+	postMessage          = user32.NewProc("PostMessageW")
 	getConsoleWindow     = kernel32.NewProc("GetConsoleWindow")
 )
 
@@ -79,4 +83,52 @@ func meldeFehler(text string) {
 	t, _ := syscall.UTF16PtrFromString(text)
 	titel, _ := syscall.UTF16PtrFromString("Marktrechnung")
 	messageBox.Call(0, uintptr(unsafe.Pointer(t)), uintptr(unsafe.Pointer(titel)), 0x10)
+}
+
+// browserKandidaten nennt Browser, die App-Fenster beherrschen. Microsoft
+// Edge gehört zu Windows und steht deshalb vorn.
+func browserKandidaten() []string {
+	var l []string
+	orte := []string{os.Getenv("ProgramFiles(x86)"), os.Getenv("ProgramFiles"), os.Getenv("LocalAppData")}
+	for _, teil := range []string{
+		`Microsoft\Edge\Application\msedge.exe`,
+		`Google\Chrome\Application\chrome.exe`,
+		`BraveSoftware\Brave-Browser\Application\brave.exe`,
+		`Vivaldi\Application\vivaldi.exe`,
+	} {
+		for _, ort := range orte {
+			if ort != "" {
+				l = append(l, filepath.Join(ort, teil))
+			}
+		}
+	}
+	return l
+}
+
+// schliesseFenster schließt die Fenster des Browsers so, als hätte jemand
+// auf das Kreuz geklickt. So endet er ordentlich und zeigt beim nächsten
+// Start keine Meldung über einen Absturz.
+func schliesseFenster(p *os.Process) {
+	const wmClose = 0x0010
+	ziel := uint32(p.Pid)
+	rueckruf := syscall.NewCallback(func(fenster, _ uintptr) uintptr {
+		var pid uint32
+		getWindowProcessID.Call(fenster, uintptr(unsafe.Pointer(&pid)))
+		if sichtbar, _, _ := isWindowVisible.Call(fenster); pid == ziel && sichtbar != 0 {
+			postMessage.Call(fenster, wmClose, 0, 0)
+		}
+		return 1 // weiter mit dem nächsten Fenster
+	})
+	enumWindows.Call(rueckruf, 0)
+}
+
+// fensterOrdner ist der Ort für das Profil des Programmfensters. Er liegt
+// bei den lokalen Programmdaten, weil ein Browserprofil groß werden kann und
+// nicht von Rechner zu Rechner mitwandern soll.
+func fensterOrdner() string {
+	ordner, err := os.UserCacheDir()
+	if err != nil {
+		ordner = os.TempDir()
+	}
+	return filepath.Join(ordner, "Marktrechnung", "fenster")
 }
