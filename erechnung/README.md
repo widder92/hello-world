@@ -52,6 +52,8 @@ sagt in einfachen Worten, was fehlt.
 - **Import aus Lexware Office (lexoffice)**: Rechnungen als Datei oder direkt
   über die Schnittstelle einlesen, prüfen, aus den Stammdaten ergänzen und
   mit unveränderter Rechnungsnummer als vollständige E-Rechnung versenden
+- **Übergabe an DATEV**: Buchungsstapel im DATEV-Format für die Steuerkanzlei
+  und Belegpaket für DATEV Unternehmen online (DATEV XML-Schnittstelle online)
 - **Stammdaten prüfen**: ein Klick zeigt, wo bei Firma, Kunden, Märkten und
   Artikeln etwas fehlt oder nicht stimmen kann – unvollständige Anschriften,
   falsche Prüfziffern bei GLN, GTIN und IBAN, falsch geschriebene PLZ,
@@ -239,6 +241,48 @@ Einnahme-Beleg (die PDF-Datei aus dem Ordner `Rechnungen` hochladen) und
 verwendet getrennte Nummernkreise (Einstellungen → *Aufbau der
 Rechnungsnummer*, zum Beispiel `ER-{JJJJ}-{NNNN}`).
 
+## Übergabe an DATEV
+
+Unter *Rechnungen → DATEV-Export* entstehen für einen wählbaren Zeitraum zwei
+Dateien zum Herunterladen. Eine Verbindung zu DATEV baut das Programm nicht
+auf – die direkte Anbindung lässt DATEV nur für angemeldete Softwarehersteller
+zu.
+
+| Datei | Wofür | Wie sie zu DATEV kommt |
+|---|---|---|
+| **Belegpaket** `DATEV-Belege_JJJJ-MM.zip` | Die E-Rechnungen selbst mit ihren Rechnungsdaten für DATEV Unternehmen online | Mit dem kostenlosen Programm *DATEV Belegtransfer*; den Zugang richtet die Steuerkanzlei ein |
+| **Buchungsstapel** `EXTF_Buchungsstapel_…_JJJJ-MM.csv` | Die Buchungen für DATEV Rechnungswesen: je Rechnung und Steuersatz der Bruttobetrag vom Kundenkonto an das Erlöskonto | Die Datei geht an die Steuerkanzlei, die sie über die Stapelverarbeitung einliest |
+
+Das Belegpaket folgt der *DATEV XML-Schnittstelle online* 6.0 (`document.xml`,
+je Rechnung eine Datei mit den Rechnungsdaten, dazu die Rechnung als PDF oder
+XML). Der Buchungsstapel folgt dem *DATEV-Format* (Kopfzeile 700,
+Buchungsstapel Fassung 13, eine Datei je Monat, Zeichentabelle Windows-1252).
+Auf Wunsch verweist jede Buchung über den *Beleglink* auf ihren Beleg in DATEV
+Unternehmen online.
+
+Einzurichten unter *Einstellungen → DATEV*:
+
+- **Berater- und Mandantennummer** – nötig für den Buchungsstapel.
+- **Kontenrahmen** SKR 03 oder SKR 04. Vorbelegt sind die Erlöskonten 8400 /
+  8300 / 8200 (SKR 03) bzw. 4400 / 4300 / 4200 (SKR 04) für 19 %, 7 % und ohne
+  Umsatzsteuer sowie das Sammelkonto 10000 für Kunden. Ein eigenes
+  Debitorenkonto lässt sich beim Kunden hinterlegen. Ohne Kontenrahmen
+  enthält das Belegpaket keine Konten – dann ordnet die Kanzlei sie zu.
+- **Rechnungsordner** in DATEV Unternehmen online, falls er dort nicht
+  „Ausgangsrechnungen“ heißt.
+
+Zu beachten:
+
+- **Erst klären, wer bucht.** Werden die Rechnungen schon in Lexware Office
+  gebucht und von dort an die Kanzlei gegeben, dürfen die Buchungen nicht
+  zusätzlich von hier kommen – sonst stehen sie doppelt in der Buchhaltung.
+- Konten und Ablauf vor der ersten Übergabe mit der Steuerkanzlei abstimmen
+  und mit einem einzelnen Monat ausprobieren.
+- Die CSV-Datei nicht mit Excel öffnen und speichern; das verändert sie.
+- Beide Dateien werden gegen die Vorgaben von DATEV geprüft (Feldregeln der
+  Formatbeschreibung, Schema-Dateien der XML-Schnittstelle). Mit einem echten
+  DATEV-Zugang ist die Übergabe nicht erprobt.
+
 ## Wo die Daten liegen
 
 ```
@@ -296,6 +340,7 @@ internal/zugferd     PDF und XML zusammenfügen, XML aus PDF lesen
 internal/speicher    Datenablage als Dateien, Nummernvergabe
 internal/post        E-Mail-Versand (SMTP)
 internal/lexware     Abruf aus Lexware Office (Belege, Kunden, Artikel)
+internal/datev       Übergabe an DATEV (Buchungsstapel, Belegpaket)
 internal/server      Schnittstelle zwischen Oberfläche und Programm
 web/dateien          Bedienoberfläche
 setup                Windows-Setup (NSIS-Skript, Symbol)

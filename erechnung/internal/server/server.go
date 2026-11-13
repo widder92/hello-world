@@ -138,6 +138,9 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/ordner", s.ordner)
 	api("GET /api/sicherung.zip", s.sicherung)
 	api("GET /api/export.csv", s.export)
+	api("GET /api/datev/uebersicht", s.datevUebersicht)
+	api("GET /api/datev/belege.zip", s.datevBelegpaket)
+	api("GET /api/datev/buchungen", s.datevBuchungen)
 	api("POST /api/fenster", func(w http.ResponseWriter, r *http.Request) {
 		if s.Zeige == nil {
 			fehler(w, http.StatusNotImplemented, errors.New("dieses Programm hat kein Fenster"))
@@ -271,6 +274,10 @@ func (s *Server) einstellungenSchreiben(w http.ResponseWriter, r *http.Request) 
 	if strings.TrimSpace(e.Nummernmuster) == "" {
 		e.Nummernmuster = "RE-{JJJJ}-{NNNN}"
 	}
+	for _, feld := range []*string{&e.Datev.Berater, &e.Datev.Mandant, &e.Datev.Erloes19, &e.Datev.Erloes7, &e.Datev.ErloesOhne, &e.Datev.Debitor} {
+		*feld = strings.ReplaceAll(strings.TrimSpace(*feld), " ", "")
+	}
+	e.Datev.Ordner = strings.TrimSpace(e.Datev.Ordner)
 	if e.NaechsteNummer < 1 {
 		e.NaechsteNummer = 1
 	}

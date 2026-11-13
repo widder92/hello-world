@@ -292,6 +292,9 @@ type Rechnung struct {
 type Kunde struct {
 	ID string `json:"id"`
 	Partei
+	// Debitorenkonto: eigenes Personenkonto dieses Kunden in der
+	// Buchhaltung (DATEV). Leer: das Sammelkonto aus den Einstellungen.
+	Debitorenkonto string `json:"debitorenkonto"`
 	// Alias: abweichende Namen, unter denen der Kunde in einem anderen
 	// Programm geführt wird (durch Semikolon getrennt). Daran erkennt der
 	// Import den Kunden wieder; in der Rechnung erscheint der Alias nicht.
@@ -372,6 +375,23 @@ type Einstellungen struct {
 	LogoDatei       string `json:"logoDatei"`
 
 	Post Postausgang `json:"post"`
+
+	Datev Datev `json:"datev"`
+}
+
+// Datev: Angaben für die Übergabe an DATEV. Ohne Kontenrahmen gibt das
+// Programm keine Konten mit - dann ordnet die Steuerkanzlei sie zu.
+type Datev struct {
+	Berater      string `json:"berater"`      // Beraternummer der Kanzlei
+	Mandant      string `json:"mandant"`      // Mandantennummer
+	Kontenrahmen string `json:"kontenrahmen"` // "03" (SKR 03), "04" (SKR 04) oder leer
+	Kontenlaenge int    `json:"kontenlaenge"` // Länge der Sachkonten, 4 bis 8
+	Erloes19     string `json:"erloes19"`     // Erlöskonto für 19 % USt
+	Erloes7      string `json:"erloes7"`      // Erlöskonto für 7 % USt
+	ErloesOhne   string `json:"erloesOhne"`   // Erlöskonto ohne USt
+	Debitor      string `json:"debitor"`      // Sammelkonto für Kunden ohne eigenes Konto
+	WJBeginn     int    `json:"wjBeginn"`     // Monat, in dem das Wirtschaftsjahr beginnt
+	Ordner       string `json:"ordner"`       // Rechnungsordner in DATEV Unternehmen online
 }
 
 // Meldung ist ein Ergebnis der Prüfung.

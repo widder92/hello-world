@@ -299,6 +299,20 @@ function pruefe(bedingung, text) {
     pruefe(await p.locator('[data-feld="kundeId"] option:checked').innerText() === 'Handelsgesellschaft Nordhessen mbH', 'Rechnung an einen Markt geht auf Wunsch an die Zentrale');
   }
 
+  // 9. DATEV-Export: Zeitraum wählen, Belegpaket holen.
+  await p.goto(basis + '/#/');
+  await p.getByRole('button', { name: 'DATEV-Export' }).click();
+  const jetzt = new Date();
+  const monat = jetzt.getFullYear() + '-' + String(jetzt.getMonth() + 1).padStart(2, '0');
+  await p.locator('input[type=month]').first().fill(monat);
+  await p.locator('input[type=month]').nth(1).fill(monat);
+  await p.getByText(/Rechnung(en)? · .* brutto/).waitFor();
+  pruefe(await p.getByText('Dafür fehlen noch Angaben').count() === 1, 'der DATEV-Export sagt, was für den Buchungsstapel noch fehlt');
+  const [paket] = await Promise.all([p.waitForEvent('download'), p.getByRole('button', { name: /Belegpaket herunterladen/ }).click()]);
+  pruefe(/^DATEV-Belege_\d{4}-\d{2}\.zip$/.test(paket.suggestedFilename()), 'das Belegpaket für DATEV lässt sich herunterladen');
+  await bild('19-datev-export');
+  await p.getByRole('button', { name: 'Schließen' }).click();
+
   await p.goto(basis + '/#/hilfe');
   await p.getByRole('heading', { name: 'REWE Group' }).waitFor();
   await bild('12-hilfe', true);

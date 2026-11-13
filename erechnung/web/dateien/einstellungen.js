@@ -16,6 +16,39 @@ const ANBIETER = [
   ['outlook', 'Outlook.com / Hotmail', 'smtp-mail.outlook.com', 587, 'starttls', 'Microsoft lässt die Anmeldung mit Passwort für private Outlook-Postfächer meist nicht mehr zu. Falls der Test scheitert, bitte ein anderes Postfach verwenden.'],
 ];
 
+// Angaben für die Übergabe an DATEV. Alles freiwillig: Ohne sie gibt es
+// trotzdem das Belegpaket, nur ohne Konten.
+function DatevKarte({ d, setze }) {
+  const laenge = Math.min(8, Math.max(4, Number(d.kontenlaenge) || 4));
+  const lang = (konto, n) => konto.padEnd(n, '0');
+  const vor = d.kontenrahmen === '04' ? ['4400', '4300', '4200'] : ['8400', '8300', '8200'];
+  const monate = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
+  const nurZiffern = (f) => (v) => f(v.replace(/\D/g, ''));
+  return html`<div class="karte">
+    <h2>DATEV</h2>
+    <p class="leise klein" style="margin-top:-.3rem">Nur nötig, wenn Rechnungen an die Steuerkanzlei oder nach DATEV Unternehmen online übergeben werden sollen
+      (Rechnungen → „DATEV-Export“). Die Nummern und Konten nennt die Steuerkanzlei.</p>
+    <div class="raster">
+      <${Feld} titel="Beraternummer" breite="3" hilfe="4 bis 7 Ziffern"><${Text} wert=${d.berater} setze=${nurZiffern(setze('datev.berater'))} inputmode="numeric" maxlength="7" /><//>
+      <${Feld} titel="Mandantennummer" breite="3" hilfe="1 bis 5 Ziffern"><${Text} wert=${d.mandant} setze=${nurZiffern(setze('datev.mandant'))} inputmode="numeric" maxlength="5" /><//>
+      <${Feld} titel="Kontenrahmen" breite="3"><${Auswahl} wert=${d.kontenrahmen || ''} setze=${setze('datev.kontenrahmen')}
+        optionen=${[['', '– keine Konten mitgeben –'], ['03', 'SKR 03'], ['04', 'SKR 04']]} /><//>
+      <${Feld} titel="Länge der Sachkonten" breite="3"><${Auswahl} wert=${String(laenge)} setze=${setze('datev.kontenlaenge')}
+        optionen=${[4, 5, 6, 7, 8].map((n) => [String(n), n + ' Stellen' + (n === 4 ? ' (üblich)' : '')])} /><//>
+      ${d.kontenrahmen && html`
+        <${Feld} titel="Erlöskonto 19 %" breite="3" hilfe=${'leer = ' + lang(vor[0], laenge)}><${Text} wert=${d.erloes19} setze=${nurZiffern(setze('datev.erloes19'))} placeholder=${lang(vor[0], laenge)} inputmode="numeric" maxlength="8" /><//>
+        <${Feld} titel="Erlöskonto 7 %" breite="3" hilfe=${'leer = ' + lang(vor[1], laenge)}><${Text} wert=${d.erloes7} setze=${nurZiffern(setze('datev.erloes7'))} placeholder=${lang(vor[1], laenge)} inputmode="numeric" maxlength="8" /><//>
+        <${Feld} titel="Erlöskonto ohne USt" breite="3" hilfe=${'leer = ' + lang(vor[2], laenge)}><${Text} wert=${d.erloesOhne} setze=${nurZiffern(setze('datev.erloesOhne'))} placeholder=${lang(vor[2], laenge)} inputmode="numeric" maxlength="8" /><//>
+        <${Feld} titel="Sammelkonto für Kunden" breite="3" hilfe=${'leer = ' + lang('10000', laenge + 1) + '; eigene Konten je Kunde stehen beim Kunden'}>
+          <${Text} wert=${d.debitor} setze=${nurZiffern(setze('datev.debitor'))} placeholder=${lang('10000', laenge + 1)} inputmode="numeric" maxlength="9" /><//>
+        <${Feld} titel="Wirtschaftsjahr beginnt im" breite="3"><${Auswahl} wert=${String(d.wjBeginn || 1)} setze=${setze('datev.wjBeginn')}
+          optionen=${monate.map((m, i) => [String(i + 1), m])} /><//>`}
+      <${Feld} titel="Rechnungsordner in DATEV Unternehmen online" breite=${d.kontenrahmen ? '6' : '12'} hilfe="leer = Ausgangsrechnungen (so heißt er dort üblicherweise)">
+        <${Text} wert=${d.ordner} setze=${setze('datev.ordner')} placeholder="Ausgangsrechnungen" /><//>
+    </div>
+  </div>`;
+}
+
 export function Einstellungsseite() {
   const [e, setE] = useState(null);
   const [passwort, setPasswort] = useState('');
@@ -29,7 +62,8 @@ export function Einstellungsseite() {
   const setze = (pfad) => (wert) => { setE((x) => setzeIn(x, pfad, wert)); setGeaendert(true); };
   const speichere = async () => {
     const neu = await api('PUT', '/api/einstellungen', { ...e, passwort, naechsteNummer: Number(e.naechsteNummer) || 1, zieltage: Number(e.zieltage) || 0,
-      post: { ...e.post, port: Number(e.post.port) || 465 } });
+      post: { ...e.post, port: Number(e.post.port) || 465 },
+      datev: { ...e.datev, kontenlaenge: Number(e.datev.kontenlaenge) || 4, wjBeginn: Number(e.datev.wjBeginn) || 1 } });
     setE(neu); setPasswort(''); setGeaendert(false);
     await api('GET', '/api/stamm').then((s) => Object.assign(stamm, s));
     return neu;
@@ -145,6 +179,8 @@ export function Einstellungsseite() {
         <button disabled=${!!testet} onClick=${() => teste(true)}>${testet === 'mail' ? 'Wird gesendet …' : 'Probe-E-Mail an mich senden'}</button>
       </p>
     </div>
+
+    <${DatevKarte} d=${e.datev} setze=${setze} />
 
     <div class="karte">
       <h2>Daten und Sicherung</h2>

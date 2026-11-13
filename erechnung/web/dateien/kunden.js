@@ -44,7 +44,7 @@ export function Kundenliste() {
     </div>`;
 }
 
-const leererKunde = () => ({ id: '', name: '', strasse: '', zusatz: '', plz: '', ort: '', land: 'DE', ustId: '', gln: '', kennung: '', alias: '',
+const leererKunde = () => ({ id: '', name: '', strasse: '', zusatz: '', plz: '', ort: '', land: 'DE', ustId: '', gln: '', kennung: '', alias: '', debitorenkonto: '',
   lieferantennummer: '', kaeuferreferenz: '', profil: 'handel', format: 'zugferd', rechnungsEmail: '', emailBetreff: '', emailText: '',
   zieltage: 0, skontoTage: 0, skontoProzent: '0', lieferorte: [], notiz: '' });
 
@@ -172,7 +172,9 @@ export function Kundenseite({ id, zurueck }) {
             <${Feld} titel="USt-IdNr. des Kunden" breite="4"><${Text} feld="kaeufer.ustId" wert=${k.ustId} setze=${setze('ustId')} placeholder="DE123456789" /><//>
             <${Feld} titel="Unsere Lieferantennummer dort" breite="4" hilfe="Kreditorennummer, die der Kunde vergeben hat"><${Text} feld="verkaeufer.kennung" wert=${k.lieferantennummer} setze=${setze('lieferantennummer')} /><//>
             <${Feld} titel="Kundennummer bei uns" breite="4" hilfe="nur für das PDF"><${Text} wert=${k.kennung} setze=${setze('kennung')} /><//>
-            <${Feld} titel="Name in Lexware Office, falls er dort anders lautet" breite="12" hilfe="Daran erkennt der Import den Kunden wieder. Mehrere Namen mit Semikolon trennen. In der Rechnung erscheint er nicht.">
+            <${Feld} titel="Debitorenkonto (DATEV)" breite="4" hilfe="nur für den DATEV-Export; leer = Sammelkonto">
+              <${Text} wert=${k.debitorenkonto || ''} setze=${(v) => setze('debitorenkonto')(v.replace(/\D/g, ''))} inputmode="numeric" maxlength="9" /><//>
+            <${Feld} titel="Name in Lexware Office, falls er dort anders lautet" breite="8" hilfe="Daran erkennt der Import den Kunden wieder. Mehrere Namen mit Semikolon trennen. In der Rechnung erscheint er nicht.">
               <${Text} wert=${k.alias || ''} setze=${setze('alias')} placeholder="z. B. eine Kurzbezeichnung" /><//>
           </div>
         </div>

@@ -3,7 +3,7 @@
 import {
   html, useState, useEffect, useRef, api, stamm, zahlDE, geld, datumDE, heute, gehe, zeige, zeigeFehler,
   Feld, Text, Mehrzeilig, Auswahl, Zahl, Dialog, Kasten, Etikett, PdfDialog, Meldungsliste, zaehle, springeZu,
-  setzeIn, STATUS, belegName, ladeDatei,
+  setzeIn, STATUS, belegName, ladeDatei, Haken,
 } from './basis.js';
 
 // ------------------------------------------------------------- Übersicht
@@ -14,6 +14,7 @@ export function Uebersicht() {
   const [kunden, setKunden] = useState([]);
   const [filter, setFilter] = useState('alle');
   const [suche, setSuche] = useState('');
+  const [datev, setDatev] = useState(false);
   useEffect(() => {
     Promise.all([api('GET', '/api/rechnungen'), api('GET', '/api/einstellungen'), api('GET', '/api/kunden')])
       .then(([l, e, k]) => { setListe(l); setEinst(e); setKunden(k); }).catch(zeigeFehler);
@@ -37,10 +38,12 @@ export function Uebersicht() {
       <div><h1>Rechnungen</h1>
         <div class="leise">${liste.filter(offen).length} offen · ${geld(summeOffen)} ausstehend</div></div>
       <div class="knoepfe">
+        <button onClick=${() => setDatev(true)} title="Rechnungen an die Steuerkanzlei oder nach DATEV Unternehmen online übergeben">DATEV-Export</button>
         <button onClick=${() => gehe('#/pruefen')}>Aus Lexoffice importieren</button>
         <button class="haupt gross" onClick=${() => gehe('#/rechnung/neu')}>+ Neue Rechnung</button>
       </div>
     </div>
+    ${datev && html`<${DatevDialog} zu=${() => setDatev(false)} />`}
 
     ${!fertigEingerichtet && html`<div class="karte">
       <h2>Erste Schritte</h2>
@@ -112,6 +115,59 @@ export function Rechnungsseite({ id }) {
   if (!zustand) return html`<p class="laden">Rechnung wird geladen …</p>`;
   if (zustand.r.status === 'entwurf') return html`<${Editor} ...${zustand} />`;
   return html`<${Ansicht} anfang=${zustand.r} einst=${zustand.einst} />`;
+}
+
+// ------------------------------------------------------------ DATEV-Export
+
+// DatevDialog: Zeitraum wählen und die beiden Dateien für DATEV holen.
+function DatevDialog({ zu }) {
+  const vormonat = (() => { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); })();
+  const [von, setVon] = useState(vormonat);
+  const [bis, setBis] = useState(vormonat);
+  const [link, setLink] = useState(true);
+  const [u, setU] = useState(null);
+  const frage = `von=${von}&bis=${bis}`;
+  useEffect(() => {
+    if (!/^\d{4}-\d{2}$/.test(von) || !/^\d{4}-\d{2}$/.test(bis)) return;
+    setU(null);
+    api('GET', '/api/datev/uebersicht?' + frage).then(setU).catch(zeigeFehler);
+  }, [von, bis]);
+  const monatDE = (m) => m.slice(5) + '/' + m.slice(0, 4);
+  const leer = u && u.anzahl === 0;
+  return html`<${Dialog} titel="DATEV-Export" zu=${zu} breit aktionen=${html`<button onClick=${zu}>Schließen</button>`}>
+    <p class="leise" style="margin-top:-.4rem">Übergibt fertige Rechnungen an DATEV – als Dateien zum Herunterladen. Eine Verbindung zu DATEV baut das Programm nicht auf.</p>
+    <div class="raster">
+      <label class="feld b3"><span>Von Monat</span><input type="month" value=${von} onInput=${(e) => { setVon(e.target.value); if (e.target.value > bis) setBis(e.target.value); }} /></label>
+      <label class="feld b3"><span>Bis Monat</span><input type="month" value=${bis} min=${von} onInput=${(e) => setBis(e.target.value)} /></label>
+      <div class="feld b6" style="justify-content:flex-end">
+        ${!u ? html`<span class="leise">wird gezählt …</span>`
+          : leer ? html`<span>In diesem Zeitraum gibt es keine fertige Rechnung.</span>`
+          : html`<span><b>${u.anzahl} ${u.anzahl === 1 ? 'Rechnung' : 'Rechnungen'}</b> · ${geld(u.brutto)} brutto
+              ${u.monate.length > 1 ? html`<br /><span class="leise klein">${u.monate.map((m) => `${monatDE(m.monat)}: ${m.anzahl}`).join(' · ')}</span>` : null}</span>`}
+      </div>
+    </div>
+
+    <${Kasten} art="warnung"><b>Erst klären, wer bucht.</b> Werden diese Rechnungen schon in Lexware Office gebucht und von dort an die Steuerkanzlei gegeben,
+      die Buchungen hier nicht zusätzlich übergeben – sonst stehen sie doppelt in der Buchhaltung. Das Belegpaket allein ist dann meist auch nicht nötig.<//>
+
+    <h3>1 · Belege für DATEV Unternehmen online</h3>
+    <p class="klein">Eine ZIP-Datei mit den E-Rechnungen und ihren Rechnungsdaten (DATEV XML-Schnittstelle online).
+      Sie wird mit dem kostenlosen Programm <b>DATEV Belegtransfer</b> übertragen; den Zugang dafür richtet die Steuerkanzlei ein.
+      ${u && !u.mitKonten ? ' Konten gibt das Programm nicht mit – die ordnet dann die Kanzlei zu.' : ''}</p>
+    <p><button class="haupt" disabled=${!u || leer} onClick=${() => ladeDatei('/api/datev/belege.zip?' + frage)}>Belegpaket herunterladen (ZIP)</button></p>
+
+    <h3>2 · Buchungsstapel für die Steuerkanzlei</h3>
+    <p class="klein">Eine CSV-Datei im DATEV-Format je Monat (Name beginnt mit EXTF_), die die Kanzlei in DATEV Rechnungswesen einliest:
+      je Rechnung und Steuersatz der Bruttobetrag vom Kundenkonto an das Erlöskonto. Die Datei nicht mit Excel öffnen und speichern – das verändert sie.</p>
+    ${u && u.angaben.length > 0
+      ? html`<${Kasten} art="hinweis"><b>Dafür fehlen noch Angaben:</b><ul>${u.angaben.map((a) => html`<li>${a}</li>`)}</ul>
+          <a href="#/einstellungen" onClick=${zu}>Zu den Einstellungen, Abschnitt DATEV</a><//>`
+      : html`<${Haken} wert=${link} setze=${setLink}>Buchungen mit den Belegen verknüpfen (Beleglink) – nur sinnvoll, wenn auch das Belegpaket übertragen wird<//>
+          <p style="margin-top:.6rem"><button class="haupt" disabled=${!u || leer} onClick=${() => ladeDatei('/api/datev/buchungen?' + frage + (link ? '&beleglink=1' : ''))}>
+            Buchungsstapel herunterladen${u && u.monate.length > 1 ? ' (ZIP, je Monat eine Datei)' : ' (CSV)'}</button></p>`}
+
+    ${u && u.hinweise.length > 0 && html`<${Kasten} art="warnung"><b>Bitte beachten:</b><ul>${u.hinweise.map((h) => html`<li>${h}</li>`)}</ul><//>`}
+  <//>`;
 }
 
 // ------------------------------------------------------------- Bearbeiten

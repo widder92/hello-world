@@ -53,6 +53,20 @@ jobs:
           curl -sSfL --retry 3 -o "$RUNNER_TEMP/mustang.jar" \
             https://repo1.maven.org/maven2/org/mustangproject/Mustang-CLI/2.26.0/Mustang-CLI-2.26.0.jar
           MUSTANG_JAR="$RUNNER_TEMP/mustang.jar" go test ./internal/zugferd/ -run Amtlich -v -timeout 20m
+      - name: Abgleich mit den Schema-Dateien von DATEV (XML-Schnittstelle online)
+        if: runner.os == 'Linux'
+        run: |
+          # Die Schema-Dateien stellt DATEV im Entwicklerportal bereit. Ist der
+          # Abruf nicht möglich, entfällt nur dieser Abgleich.
+          command -v xmllint >/dev/null || sudo apt-get install -y libxml2-utils >/dev/null
+          mkdir -p "$RUNNER_TEMP/datev-xsd"
+          if curl -sSfL --retry 3 -o "$RUNNER_TEMP/datev-xsd.zip" https://developer.datev.de/assets/XSD_3c866dbe96.zip \
+             && unzip -q -o "$RUNNER_TEMP/datev-xsd.zip" -d "$RUNNER_TEMP/datev-xsd" && [ -f "$RUNNER_TEMP/datev-xsd/Document_v060.xsd" ]; then
+            DATEV_XSD="$RUNNER_TEMP/datev-xsd" go test ./internal/datev/ -run Belegpaket -v | tee "$RUNNER_TEMP/datev.txt"
+            if grep -q "ausgelassen" "$RUNNER_TEMP/datev.txt"; then echo "Die Schema-Prüfung ist nicht gelaufen"; exit 1; fi
+          else
+            echo "::warning::Die Schema-Dateien von DATEV waren nicht abrufbar - Abgleich ausgelassen"
+          fi
       - name: Programm starten und ansprechen
         shell: bash
         run: |

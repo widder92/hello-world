@@ -106,7 +106,7 @@ func (s *Server) stammdatenEinlesen(w http.ResponseWriter, r *http.Request) {
 			wert string
 		}{{&k.Strasse, f.Strasse}, {&k.Zusatz, f.Zusatz}, {&k.PLZ, f.PLZ}, {&k.Ort, f.Ort}, {&k.UStID, f.UStID}, {&k.GLN, f.GLN},
 			{&k.Kennung, f.Kennung}, {&k.Lieferantennummer, f.Lieferantennummer}, {&k.Kaeuferreferenz, f.Kaeuferreferenz},
-			{&k.RechnungsEmail, f.RechnungsEmail}, {&k.Profil, f.Profil}, {&k.Format, f.Format}, {&k.Notiz, f.Notiz}, {&k.Alias, f.Alias}} {
+			{&k.RechnungsEmail, f.RechnungsEmail}, {&k.Profil, f.Profil}, {&k.Format, f.Format}, {&k.Notiz, f.Notiz}, {&k.Alias, f.Alias}, {&k.Debitorenkonto, f.Debitorenkonto}} {
 			if fuelleLeer(paar.ziel, paar.wert) {
 				geaendert = true
 			}
