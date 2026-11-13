@@ -44,9 +44,14 @@ func main() {
 	portFlag := flag.Int("port", 0, "Port auf dem eigenen Rechner (Standard: 47411)")
 	ohneBrowser := flag.Bool("kein-browser", false, "den Browser nicht öffnen")
 	zeigeVersion := flag.Bool("version", false, "Version anzeigen")
+	beenden := flag.Bool("beenden", false, "ein laufendes Marktrechnung beenden (für das Setup)")
 	flag.Parse()
 	if *zeigeVersion {
 		fmt.Println("Marktrechnung", version.Nummer)
+		return
+	}
+	if *beenden {
+		beendeLaufendes()
 		return
 	}
 	if err := lauf(*datenFlag, *portFlag, *ohneBrowser); err != nil {
@@ -136,6 +141,11 @@ func lauf(datenFlag string, portFlag int, ohneBrowser bool) error {
 		Web: web.Dateien(), Token: p.Token, Version: version.Nummer,
 		Oeffne: oeffneOrdner, Beende: stopp,
 	}
+	// Die Adresse merken, unter der das Programm gerade läuft. Das Setup
+	// findet es darüber, um es vor einer Aktualisierung zu beenden.
+	laufdatei := filepath.Join(konfig, laufdateiName)
+	os.WriteFile(laufdatei, []byte(horcher.Addr().String()), 0o600)
+	defer os.Remove(laufdatei)
 	hs := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	fehler := make(chan error, 1)
 	go func() { fehler <- hs.Serve(horcher) }()
@@ -174,6 +184,60 @@ func laeuftSchon(adresse, token string) bool {
 	}
 	defer antwort.Body.Close()
 	return antwort.StatusCode == http.StatusOK
+}
+
+const laufdateiName = "laeuft.txt"
+
+// beendeLaufendes bittet ein laufendes Marktrechnung, sich zu beenden, und
+// wartet, bis es das getan hat. Das Setup ruft dies vor dem Überschreiben
+// und vor dem Entfernen der Programmdatei auf.
+func beendeLaufendes() {
+	konfig, err := os.UserConfigDir()
+	if err != nil {
+		return
+	}
+	konfig = filepath.Join(konfig, "Marktrechnung")
+	var p programm
+	if daten, err := os.ReadFile(filepath.Join(konfig, "programm.json")); err == nil {
+		json.Unmarshal(daten, &p)
+	}
+	if p.Token == "" {
+		return
+	}
+	if p.Port == 0 {
+		p.Port = standardPort
+	}
+	adressen := []string{fmt.Sprintf("127.0.0.1:%d", p.Port)}
+	if daten, err := os.ReadFile(filepath.Join(konfig, laufdateiName)); err == nil && len(daten) > 0 {
+		adressen = append([]string{string(daten)}, adressen...)
+	}
+	for _, adresse := range adressen {
+		if !laeuftSchon(adresse, p.Token) {
+			continue
+		}
+		anfrage, err := http.NewRequest("POST", "http://"+adresse+"/api/beenden", nil)
+		if err != nil {
+			continue
+		}
+		anfrage.AddCookie(&http.Cookie{Name: "marktrechnung", Value: p.Token})
+		anfrage.Header.Set("X-Marktrechnung", "1")
+		c := &http.Client{Timeout: 3 * time.Second}
+		if antwort, err := c.Do(anfrage); err == nil {
+			antwort.Body.Close()
+		}
+		// Warten, bis der Anschluss wirklich frei ist (höchstens acht Sekunden).
+		for i := 0; i < 40; i++ {
+			verb, err := net.DialTimeout("tcp", adresse, 300*time.Millisecond)
+			if err != nil {
+				break
+			}
+			verb.Close()
+			time.Sleep(200 * time.Millisecond)
+		}
+		// Windows gibt die Programmdatei erst kurz nach dem Ende frei.
+		time.Sleep(400 * time.Millisecond)
+		return
+	}
 }
 
 func richteProtokollEin(konfig string) {

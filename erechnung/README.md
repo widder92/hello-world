@@ -57,13 +57,21 @@ Pflichtangaben **vor** dem Versand und sagt in einfachen Worten, was fehlt.
 
 1. **Programm holen.** Unter *Actions → Marktrechnung* im GitHub-Repository
    liegt nach jedem Build das Paket für Windows, macOS und Linux; nach einer
-   Veröffentlichung auch unter *Releases*. Für Windows die Datei
-   `Marktrechnung.exe` an einen festen Ort legen (zum Beispiel
-   `Dokumente\Marktrechnung`) und eine Verknüpfung auf den Desktop ziehen.
-2. **Starten.** Doppelklick auf `Marktrechnung.exe`. Das Programm öffnet sich
-   im Browser. Beim ersten Start warnt Windows vor einem unbekannten
-   Herausgeber: *Weitere Informationen → Trotzdem ausführen*. (macOS:
-   Rechtsklick → *Öffnen*.)
+   Veröffentlichung auch unter *Releases*.
+2. **Einrichten und starten.**
+   - **Windows:** `Marktrechnung-Setup-….exe` ausführen. Das Setup braucht
+     keine Administratorrechte, legt Symbole im Startmenü und auf dem Desktop
+     an und trägt das Programm unter *Einstellungen → Apps* ein, wo es sich
+     wieder entfernen lässt. Beim ersten Start warnt Windows vor einem
+     unbekannten Herausgeber, weil das Setup nicht signiert ist: *Weitere
+     Informationen → Trotzdem ausführen*.
+     Eine neue Fassung wird einfach darüber eingerichtet; Rechnungen und
+     Daten bleiben erhalten. Wer nichts einrichten will, nimmt das
+     Windows-ZIP und startet `Marktrechnung.exe` direkt.
+   - **macOS:** ZIP entpacken, Rechtsklick auf `Marktrechnung` → *Öffnen*.
+   - **Linux:** ZIP entpacken, `./marktrechnung` starten.
+
+   Das Programm öffnet sich im Browser.
 3. **Erste Schritte** auf der Startseite abarbeiten:
    - eigene Firmendaten, Steuernummer oder USt-IdNr., GLN, Bankverbindung
    - Kunden anlegen – für REWE und EDEKA gibt es Vorlagen
@@ -177,6 +185,7 @@ internal/speicher    Datenablage als Dateien, Nummernvergabe
 internal/post        E-Mail-Versand (SMTP)
 internal/server      Schnittstelle zwischen Oberfläche und Programm
 web/dateien          Bedienoberfläche
+setup                Windows-Setup (NSIS-Skript, Symbol)
 ```
 
 Bauen und testen:
@@ -184,7 +193,7 @@ Bauen und testen:
 ```sh
 go test ./...                       # alle Tests
 go run ./cmd/marktrechnung          # starten
-./bauen.sh                          # Pakete für Windows, macOS, Linux nach dist/
+./bauen.sh                          # Setup und Pakete nach dist/ (Setup braucht "makensis")
 ```
 
 Abgleich mit dem amtlichen Prüfprogramm

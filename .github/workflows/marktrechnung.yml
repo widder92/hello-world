@@ -110,17 +110,86 @@ jobs:
         with:
           go-version-file: erechnung/go.mod
           cache: false
+      - name: Werkzeug für das Windows-Setup
+        run: sudo apt-get update && sudo apt-get install -y nsis
       - name: Bauen
-        run: ./erechnung/bauen.sh ${{ inputs.version }}
+        run: |
+          ./erechnung/bauen.sh ${{ inputs.version }}
+          ls erechnung/dist/Marktrechnung-Setup-*.exe
       - uses: actions/upload-artifact@v4
         with:
           name: Marktrechnung
-          path: erechnung/dist/*.zip
+          path: |
+            erechnung/dist/*.exe
+            erechnung/dist/*.zip
       - name: Veröffentlichen
         if: github.event_name == 'workflow_dispatch' && inputs.version != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "marktrechnung-v${{ inputs.version }}" erechnung/dist/*.zip \
+          gh release create "marktrechnung-v${{ inputs.version }}" erechnung/dist/*.exe erechnung/dist/*.zip \
             --target "$GITHUB_SHA" --title "Marktrechnung ${{ inputs.version }}" \
-            --notes "E-Rechnungen für REWE, EDEKA und den Handel. Für Windows die Datei mit „Windows“ im Namen herunterladen, entpacken und Marktrechnung.exe starten. Anleitung: erechnung/README.md"
+            --notes "E-Rechnungen für REWE, EDEKA und den Handel. Für Windows die Datei Marktrechnung-Setup herunterladen und ausführen. Anleitung: erechnung/README.md"
+
+  setup:
+    name: Setup unter Windows prüfen
+    needs: bauen
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Marktrechnung
+          path: paket
+      - name: Einrichten, starten, aktualisieren, entfernen
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Pruefe($bedingung, $text) {
+            if (-not $bedingung) { throw "FEHLGESCHLAGEN: $text" }
+            Write-Host "ok  $text"
+          }
+          function Warte($bedingung, $sekunden) {
+            for ($i = 0; $i -lt $sekunden * 2; $i++) { if (& $bedingung) { return $true }; Start-Sleep -Milliseconds 500 }
+            return $false
+          }
+          $setup = (Get-ChildItem paket -Recurse -Filter 'Marktrechnung-Setup-*.exe' | Select-Object -First 1).FullName
+          $ziel = Join-Path $env:LOCALAPPDATA 'Programs\Marktrechnung'
+          $programm = Join-Path $ziel 'Marktrechnung.exe'
+          $entferner = Join-Path $ziel 'Marktrechnung entfernen.exe'
+          $startmenue = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Marktrechnung.lnk'
+          $desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Marktrechnung.lnk'
+          $eintrag = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Marktrechnung'
+          $daten = Join-Path $env:RUNNER_TEMP 'daten'
+          $einstellungen = Join-Path $env:APPDATA 'Marktrechnung'
+
+          # 1. Einrichten ohne Rückfragen
+          $lauf = Start-Process $setup -ArgumentList '/S' -Wait -PassThru
+          Pruefe ($lauf.ExitCode -eq 0) 'Setup läuft ohne Fehler durch'
+          Pruefe (Test-Path $programm) 'Programmdatei liegt im Programmordner'
+          Pruefe (Test-Path $entferner) 'Programm zum Entfernen ist vorhanden'
+          Pruefe (Test-Path $startmenue) 'Symbol im Startmenü'
+          Pruefe (Test-Path $desktop) 'Symbol auf dem Desktop'
+          $verweis = (New-Object -ComObject WScript.Shell).CreateShortcut($desktop)
+          Pruefe ($verweis.TargetPath -eq $programm) 'das Desktop-Symbol startet das Programm'
+          $apps = Get-ItemProperty $eintrag
+          Pruefe ($apps.DisplayName -eq 'Marktrechnung' -and $apps.UninstallString -like '*Marktrechnung entfernen.exe*') 'Eintrag unter Einstellungen > Apps'
+
+          # 2. Das eingerichtete Programm starten und ansprechen
+          Start-Process $programm -ArgumentList '-daten', $daten, '-port', '47557', '-kein-browser'
+          $erreichbar = Warte { try { (Invoke-WebRequest 'http://127.0.0.1:47557/' -UseBasicParsing -TimeoutSec 2).Content -match 'Marktrechnung' } catch { $false } } 15
+          Pruefe $erreichbar 'das eingerichtete Programm läuft und zeigt die Oberfläche'
+          Pruefe (Test-Path (Join-Path $daten 'Rechnungen')) 'der Datenordner wurde angelegt'
+
+          # 3. Erneut einrichten, während das Programm läuft: Das Setup muss es beenden und ersetzen
+          $lauf = Start-Process $setup -ArgumentList '/S' -Wait -PassThru
+          Pruefe ($lauf.ExitCode -eq 0) 'Aktualisierung bei laufendem Programm gelingt'
+          Pruefe (-not (Get-Process Marktrechnung -ErrorAction SilentlyContinue)) 'das laufende Programm wurde vorher beendet'
+          Pruefe (Test-Path $programm) 'die Programmdatei wurde ersetzt'
+
+          # 4. Entfernen: Programm weg, Rechnungen und Daten bleiben
+          Start-Process $entferner -ArgumentList '/S'
+          Pruefe (Warte { -not (Test-Path $ziel) } 30) 'der Programmordner ist entfernt'
+          Pruefe (-not (Test-Path $startmenue) -and -not (Test-Path $desktop)) 'die Symbole sind entfernt'
+          Pruefe (-not (Test-Path $eintrag)) 'der Eintrag unter Apps ist entfernt'
+          Pruefe (-not (Test-Path $einstellungen)) 'Programmeinstellungen und Passwortablage sind entfernt'
+          Pruefe (Test-Path (Join-Path $daten 'Rechnungen')) 'Rechnungen und Daten sind erhalten geblieben'

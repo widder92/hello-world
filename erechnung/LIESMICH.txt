@@ -3,17 +3,19 @@ Marktrechnung - E-Rechnungen für REWE, EDEKA und den Handel
 
 Starten
 -------
-Windows:  Doppelklick auf Marktrechnung.exe
-          Beim ersten Start meldet Windows einen unbekannten Herausgeber:
-          "Weitere Informationen" und dann "Trotzdem ausführen" wählen.
+Windows:  Nach dem Setup über das Symbol "Marktrechnung" auf dem Desktop
+          oder im Startmenü.
+          Ohne Setup: Doppelklick auf Marktrechnung.exe. Beim ersten Start
+          meldet Windows einen unbekannten Herausgeber: "Weitere
+          Informationen" und dann "Trotzdem ausführen" wählen.
 macOS:    Rechtsklick auf Marktrechnung, dann "Öffnen".
 Linux:    ./marktrechnung
 
 Das Programm öffnet sich im Browser. Es läuft nur auf diesem Rechner; die
-Daten liegen im Ordner Dokumente/Marktrechnung.
+Rechnungen und Daten liegen im Ordner Dokumente/Marktrechnung.
 
-Am besten die Programmdatei an einen festen Ort legen und eine Verknüpfung
-auf den Desktop ziehen.
+Entfernen (Windows): Einstellungen > Apps > Marktrechnung > Deinstallieren.
+Rechnungen und Daten bleiben dabei erhalten.
 
 Erste Schritte
 --------------
