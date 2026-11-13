@@ -108,8 +108,15 @@ func Schreibe(r modell.Rechnung) []byte {
 			a.T("ram:CountryID", oder(l.Land, "DE"))
 		}
 	}
-	if r.Leistungsdatum != "" {
-		zeit(lief.Kind("ram:ActualDeliverySupplyChainEvent").Kind("ram:OccurrenceDateTime"), "udt", r.Leistungsdatum)
+	liefertag := r.Leistungsdatum
+	if liefertag == "" && r.Lieferort.Leer() && r.Lieferscheinnummer == "" && r.Wareneingang == "" {
+		// Ohne jede Lieferangabe bliebe dieser Pflichtabschnitt leer, und
+		// leere Elemente beanstanden die Prüfregeln. Bei einem
+		// Leistungszeitraum gilt deshalb dessen letzter Tag als Liefertag.
+		liefertag = oder(r.ZeitraumBis, r.ZeitraumVon)
+	}
+	if liefertag != "" {
+		zeit(lief.Kind("ram:ActualDeliverySupplyChainEvent").Kind("ram:OccurrenceDateTime"), "udt", liefertag)
 	}
 	lief.Kind("ram:DespatchAdviceReferencedDocument").T("ram:IssuerAssignedID", r.Lieferscheinnummer)
 	lief.Kind("ram:ReceivingAdviceReferencedDocument").T("ram:IssuerAssignedID", r.Wareneingang)
