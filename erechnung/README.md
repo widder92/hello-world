@@ -71,9 +71,13 @@ sagt in einfachen Worten, was fehlt.
      *Installieren* klicken – mehr fragt der Assistent nicht. Das Setup braucht
      keine Administratorrechte, legt Symbole im Startmenü und auf dem Desktop
      an und trägt das Programm unter *Einstellungen → Apps* ein, wo es sich
-     wieder entfernen lässt. (Ein anderer Zielordner: Aufruf mit `/D=Ordner`.) Beim ersten Start warnt Windows vor einem
-     unbekannten Herausgeber, weil das Setup nicht signiert ist: *Weitere
-     Informationen → Trotzdem ausführen*.
+     wieder entfernen lässt. (Ein anderer Zielordner: Aufruf mit `/D=Ordner`.)
+     Beim ersten Start warnt Windows vor einem unbekannten Herausgeber, weil
+     das Setup nicht signiert ist: *Weitere Informationen → Trotzdem
+     ausführen*.
+
+     ![Setup unter Windows](docs/setup-windows.png)
+
      Eine neue Fassung wird einfach darüber eingerichtet; Rechnungen und
      Daten bleiben erhalten. Wer nichts einrichten will, nimmt das
      Windows-ZIP und startet `Marktrechnung.exe` direkt.

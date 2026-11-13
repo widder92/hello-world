@@ -100,7 +100,7 @@ Var Textschrift  ; Schrift der Texte
 
 !define MUI_PAGE_HEADER_TEXT "Marktrechnung entfernen"
 !define MUI_PAGE_HEADER_SUBTEXT "Ihre Rechnungen und Daten bleiben erhalten."
-!define MUI_UNCONFIRMPAGE_TEXT_TOP "Schade, dass Sie gehen! Marktrechnung wird von diesem Rechner entfernt.$\r$\n$\r$\nIhre Rechnungen und Daten im Ordner Dokumente\Marktrechnung bleiben erhalten. Das gespeicherte E-Mail-Passwort wird gelöscht."
+!define MUI_UNCONFIRMPAGE_TEXT_TOP "Schade, dass Sie gehen! Marktrechnung wird von diesem Rechner entfernt. Ihre Rechnungen und Daten im Ordner Dokumente\Marktrechnung bleiben erhalten; nur das gespeicherte E-Mail-Passwort wird gelöscht."
 !insertmacro MUI_UNPAGE_CONFIRM
 !define MUI_PAGE_HEADER_TEXT "Einen Augenblick bitte …"
 !define MUI_PAGE_HEADER_SUBTEXT "Marktrechnung wird entfernt."
@@ -212,7 +212,7 @@ Function WillkommenZeigen
   ; Ist das Programm schon da, bringt das Setup es auf den neuesten Stand.
   ${If} ${FileExists} "$INSTDIR\${PROGRAMM}"
     SendMessage $mui.WelcomePage.Title ${WM_SETTEXT} 0 "STR:Schön, Sie wiederzusehen!"
-    SendMessage $mui.WelcomePage.Text ${WM_SETTEXT} 0 "STR:Marktrechnung ist auf diesem Rechner schon eingerichtet. Dieses Setup bringt das Programm auf den neuesten Stand (Version ${VERSION}).$\r$\n$\r$\n✓  Ihre Rechnungen, Kunden und Einstellungen bleiben erhalten$\r$\n✓  Läuft Marktrechnung gerade, wird es vorher beendet$\r$\n$\r$\nEin Klick auf „Installieren“ genügt."
+    SendMessage $mui.WelcomePage.Text ${WM_SETTEXT} 0 "STR:Marktrechnung ist auf diesem Rechner schon eingerichtet. Dieses Setup bringt das Programm auf den neuesten Stand (Version ${VERSION}).$\r$\n$\r$\n✓  Ihre Daten bleiben vollständig erhalten$\r$\n✓  Das laufende Programm wird dafür beendet$\r$\n$\r$\nEin Klick auf „Installieren“ genügt."
   ${EndIf}
 FunctionEnd
 
