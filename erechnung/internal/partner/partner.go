@@ -188,9 +188,11 @@ func Regeln(id string, r modell.Rechnung) []modell.Meldung {
 		l = append(l, m(kuerzel+"-WE-GLN", modell.Fehler, "lieferort.gln",
 			name+" verlangt die GLN des Warenempfängers, also des belieferten Markts (13 Ziffern, Feld BT-71). Bitte den Markt mit seiner GLN auswählen oder eintragen."))
 	}
-	if r.Leistungsdatum == "" {
+	// Fehlt jede Zeitangabe, meldet das schon die allgemeine Prüfung. Hier
+	// geht es um den Fall, dass nur ein Zeitraum angegeben ist.
+	if r.Leistungsdatum == "" && (r.ZeitraumVon != "" || r.ZeitraumBis != "") {
 		l = append(l, m(kuerzel+"-LIEFERDATUM", modell.Fehler, "leistungsdatum",
-			"Das Lieferdatum fehlt (Feld BT-72). "+name+" gleicht die Rechnung damit gegen den Wareneingang ab."))
+			"Das Lieferdatum fehlt (Feld BT-72); ein Leistungszeitraum genügt hier nicht. "+name+" gleicht die Rechnung mit dem Lieferdatum gegen den Wareneingang ab."))
 	}
 	if r.Waehrung != "" && r.Waehrung != "EUR" {
 		l = append(l, m(kuerzel+"-EUR", modell.Fehler, "waehrung", "Rechnungen an den deutschen Handel müssen in Euro ausgestellt sein."))

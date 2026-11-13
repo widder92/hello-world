@@ -302,6 +302,9 @@ func TestFremdeRechnungPruefenUndUebernehmen(t *testing.T) {
 	}
 	var kunden []modell.Kunde
 	u.ruf("GET", "/api/kunden", nil, &kunden)
+	if entwurf.Einleitung == "" || len(entwurf.Hinweise) != 0 || entwurf.Positionen[2].RabattProzent.String() != "10" || len(entwurf.Positionen[2].ZuAbschlaege) != 0 {
+		t.Errorf("Texte und Rabatt: %q %v %+v", entwurf.Einleitung, entwurf.Hinweise, entwurf.Positionen[2])
+	}
 	if entwurf.Status != modell.StatusEntwurf || entwurf.Nummer != "LX-2026-17" || entwurf.KundeID == "" || len(kunden) != 2 {
 		t.Errorf("Entwurf: %+v, %d Kunden", entwurf.Status, len(kunden))
 	}

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -146,7 +147,12 @@ func (a *loginAuth) Next(vomServer []byte, mehr bool) ([]byte, error) {
 	return nil, errors.New("unerwartete Frage des Mailservers: " + string(vomServer))
 }
 
-// Verbinde baut die verschlüsselte, angemeldete Verbindung auf.
+// vertrauen ersetzt in Tests die Liste der vertrauenswürdigen
+// Zertifizierungsstellen. Im Betrieb bleibt es leer: Dann gilt die Liste des
+// Betriebssystems.
+var vertrauen *x509.CertPool
+
+// verbinde baut die verschlüsselte, angemeldete Verbindung auf.
 func verbinde(p modell.Postausgang, passwort string) (*smtp.Client, error) {
 	if p.Server == "" || p.Absender == "" {
 		return nil, errors.New("der E-Mail-Versand ist noch nicht eingerichtet (Einstellungen → E-Mail-Versand)")
@@ -156,7 +162,7 @@ func verbinde(p modell.Postausgang, passwort string) (*smtp.Client, error) {
 		port = 465
 	}
 	adresse := net.JoinHostPort(p.Server, fmt.Sprint(port))
-	tlsConf := &tls.Config{ServerName: p.Server, MinVersion: tls.VersionTLS12}
+	tlsConf := &tls.Config{ServerName: p.Server, MinVersion: tls.VersionTLS12, RootCAs: vertrauen}
 	waehler := &net.Dialer{Timeout: 20 * time.Second}
 	var c *smtp.Client
 	if p.Sicherheit == "starttls" {

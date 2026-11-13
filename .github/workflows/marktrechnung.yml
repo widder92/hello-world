@@ -1,0 +1,126 @@
+# Prüft und baut das Rechnungsprogramm Marktrechnung (Ordner erechnung/).
+#
+# Bei jeder Änderung: Tests unter Linux und Windows, Abgleich der erzeugten
+# E-Rechnungen mit dem Prüfprogramm Mustang, Pakete für Windows, macOS und
+# Linux als Download am Workflow-Lauf ("Artifacts").
+#
+# Von Hand gestartet mit einer Versionsnummer entsteht zusätzlich eine
+# Veröffentlichung unter "Releases", von der sich das Programm ohne
+# GitHub-Konto herunterladen lässt.
+name: Marktrechnung
+
+on:
+  push:
+    paths: ['erechnung/**', '.github/workflows/marktrechnung.yml']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versionsnummer für eine Veröffentlichung, z. B. 1.0.0 (leer = nur bauen)'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  pruefen:
+    name: Tests (${{ matrix.system }})
+    runs-on: ${{ matrix.system }}
+    strategy:
+      fail-fast: false
+      matrix:
+        system: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: erechnung
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: erechnung/go.mod
+          cache: false
+      - name: Formatierung und statische Prüfung
+        if: runner.os == 'Linux'
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go vet ./...
+          GOOS=windows go vet ./...
+          GOOS=darwin go vet ./...
+      - name: Tests
+        run: go test ./...
+      - name: Abgleich mit dem Prüfprogramm Mustang (EN 16931, XRechnung, PDF/A-3)
+        if: runner.os == 'Linux'
+        run: |
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/mustang.jar" \
+            https://repo1.maven.org/maven2/org/mustangproject/Mustang-CLI/2.26.0/Mustang-CLI-2.26.0.jar
+          MUSTANG_JAR="$RUNNER_TEMP/mustang.jar" go test ./internal/zugferd/ -run Amtlich -v -timeout 20m
+      - name: Programm starten und ansprechen
+        shell: bash
+        run: |
+          go build -o probe-programm$([ "$RUNNER_OS" = Windows ] && echo .exe) ./cmd/marktrechnung
+          ./probe-programm* -daten "$RUNNER_TEMP/daten" -port 47555 -kein-browser &
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -sf http://127.0.0.1:47555/ | grep -q Marktrechnung; then echo "Oberfläche erreichbar"; exit 0; fi
+            sleep 1
+          done
+          echo "Das Programm antwortet nicht"; exit 1
+
+  oberflaeche:
+    name: Oberfläche im Browser
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: erechnung
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: erechnung/go.mod
+          cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Browser einrichten
+        run: |
+          npm install --no-save --prefix "$RUNNER_TEMP/pw" playwright@1.49.1
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Durchlauf
+        run: |
+          go build -o "$RUNNER_TEMP/marktrechnung" ./cmd/marktrechnung
+          XDG_CONFIG_HOME="$RUNNER_TEMP/konfig" "$RUNNER_TEMP/marktrechnung" -daten "$RUNNER_TEMP/daten" -port 47556 -kein-browser 2> "$RUNNER_TEMP/log.txt" &
+          sleep 2
+          start=$(sed -n 's/.*Aufruf: //p' "$RUNNER_TEMP/log.txt")
+          mkdir -p "$RUNNER_TEMP/bilder"
+          NODE_PATH="$RUNNER_TEMP/pw/node_modules" node tests/oberflaeche.js "$start" "$RUNNER_TEMP/bilder"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Bildschirmfotos
+          path: ${{ runner.temp }}/bilder
+          if-no-files-found: ignore
+
+  bauen:
+    name: Pakete bauen
+    needs: [pruefen, oberflaeche]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: erechnung/go.mod
+          cache: false
+      - name: Bauen
+        run: ./erechnung/bauen.sh ${{ inputs.version }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Marktrechnung
+          path: erechnung/dist/*.zip
+      - name: Veröffentlichen
+        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "marktrechnung-v${{ inputs.version }}" erechnung/dist/*.zip \
+            --target "$GITHUB_SHA" --title "Marktrechnung ${{ inputs.version }}" \
+            --notes "E-Rechnungen für REWE, EDEKA und den Handel. Für Windows die Datei mit „Windows“ im Namen herunterladen, entpacken und Marktrechnung.exe starten. Anleitung: erechnung/README.md"

@@ -1,0 +1,32 @@
+Marktrechnung - E-Rechnungen für REWE, EDEKA und den Handel
+============================================================
+
+Starten
+-------
+Windows:  Doppelklick auf Marktrechnung.exe
+          Beim ersten Start meldet Windows einen unbekannten Herausgeber:
+          "Weitere Informationen" und dann "Trotzdem ausführen" wählen.
+macOS:    Rechtsklick auf Marktrechnung, dann "Öffnen".
+Linux:    ./marktrechnung
+
+Das Programm öffnet sich im Browser. Es läuft nur auf diesem Rechner; die
+Daten liegen im Ordner Dokumente/Marktrechnung.
+
+Am besten die Programmdatei an einen festen Ort legen und eine Verknüpfung
+auf den Desktop ziehen.
+
+Erste Schritte
+--------------
+1. Einstellungen: eigene Firmendaten, Steuernummer oder USt-IdNr., GLN, Bank
+2. Kunden: Rechnungsempfänger und Märkte mit ihren GLN anlegen
+   (für REWE und EDEKA gibt es Vorlagen)
+3. Einstellungen: E-Mail-Versand einrichten, Probe-E-Mail senden
+4. Neue Rechnung schreiben - das Programm sagt, was noch fehlt
+
+Im Programm steht unter "Hilfe", worauf es bei REWE und EDEKA ankommt.
+
+Beenden
+-------
+Unten links im Programm: "Programm beenden". Das Schließen des
+Browserfensters allein beendet das Programm nicht; ein erneuter Doppelklick
+öffnet es wieder.

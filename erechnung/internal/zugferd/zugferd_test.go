@@ -2,6 +2,9 @@ package zugferd
 
 import (
 	"bytes"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,6 +48,34 @@ func lang() modell.Rechnung {
 		r.Positionen = append(r.Positionen, p)
 	}
 	return r
+}
+
+// logo malt ein kleines, teils durchsichtiges Bild als PNG.
+func logo() []byte {
+	bild := image.NewNRGBA(image.Rect(0, 0, 240, 80))
+	for y := 0; y < 80; y++ {
+		for x := 0; x < 240; x++ {
+			bild.SetNRGBA(x, y, color.NRGBA{R: 31, G: uint8(111 + x/4), B: 84, A: uint8(255 - y*2)})
+		}
+	}
+	var b bytes.Buffer
+	png.Encode(&b, bild)
+	return b.Bytes()
+}
+
+func TestLogoImPDF(t *testing.T) {
+	r := probe.Handel()
+	mit, err := Erzeuge(r, Optionen{Logo: logo()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ohne, _ := Erzeuge(r, Optionen{})
+	if len(mit[0].Daten) <= len(ohne[0].Daten) || !bytes.Contains(mit[0].Daten, []byte("/Subtype /Image")) {
+		t.Error("das Logo ist nicht im PDF")
+	}
+	if _, err := Erzeuge(r, Optionen{Logo: []byte("kein Bild")}); err == nil {
+		t.Error("ein unlesbares Logo wurde angenommen")
+	}
 }
 
 func beispiele() []modell.Rechnung {
@@ -106,7 +137,11 @@ func TestAmtlichePruefung(t *testing.T) {
 	for _, r := range beispiele() {
 		for _, f := range formate {
 			r.Format = f
-			dateien, err := Erzeuge(r, Optionen{Version: "test"})
+			o := Optionen{Version: "test"}
+			if r.ID == "probe-rabatt" {
+				o.Logo = logo() // ein Beispiel mit Bild im PDF
+			}
+			dateien, err := Erzeuge(r, o)
 			if err != nil {
 				t.Fatal(err)
 			}

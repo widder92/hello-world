@@ -4,6 +4,11 @@
 > geschriebenes Betriebssystem für 64-Bit-PCs mit UEFI, grafischer Oberfläche,
 > Netzwerk und signierten Updates – siehe [os/README.md](os/README.md).
 
+> **Marktrechnung:** Im Verzeichnis [`erechnung/`](erechnung/) liegt ein
+> Programm, das E-Rechnungen (ZUGFeRD, XRechnung) für Lieferanten von REWE,
+> EDEKA und dem Handel erstellt, prüft und verschickt – siehe
+> [erechnung/README.md](erechnung/README.md).
+
 Welcome to GitHub—where millions of developers work together on software. Ready to get started? Let’s learn how this all works by building and publishing your first GitHub Pages website!
 
 ## Repositories

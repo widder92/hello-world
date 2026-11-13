@@ -1200,8 +1200,28 @@ func (s *Server) importUebernehmen(w http.ResponseWriter, r *http.Request) {
 	}
 	re.Faellig = ""
 	for i := range re.Positionen {
-		re.Positionen[i].Netto = 0
+		p := &re.Positionen[i]
+		p.Netto = 0
+		// Ein einzelner Rabatt in Prozent erscheint im Eingabefeld "Rabatt %".
+		if len(p.ZuAbschlaege) == 1 && !p.ZuAbschlaege[0].Zuschlag && !p.ZuAbschlaege[0].Prozent.IstNull() {
+			p.RabattProzent, p.RabattGrund = p.ZuAbschlaege[0].Prozent, p.ZuAbschlaege[0].Grund
+			p.ZuAbschlaege = nil
+		}
 	}
+	// Freitexte ohne Kennzeichen werden zu Einleitung und Schlusstext, damit
+	// sie in der Oberfläche sichtbar und änderbar sind.
+	var uebrig []modell.Hinweis
+	for _, h := range re.Hinweise {
+		switch {
+		case h.Code == "" && re.Einleitung == "" && len(uebrig) == 0:
+			re.Einleitung = h.Text
+		case h.Code == "" && re.Schluss == "":
+			re.Schluss = h.Text
+		default:
+			uebrig = append(uebrig, h)
+		}
+	}
+	re.Hinweise = uebrig
 	if re.Herkunft == "" {
 		re.Herkunft = "eingelesene Datei"
 	}

@@ -15,7 +15,7 @@ function pruefe(bedingung, text) {
 }
 
 (async () => {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({ args: ['--lang=de-DE'], env: { ...process.env, LANGUAGE: 'de_DE', LANG: 'de_DE.UTF-8' } });
   const kontext = await browser.newContext({ viewport: { width: 1400, height: 950 }, locale: 'de-DE', deviceScaleFactor: 1 });
   const p = await kontext.newPage();
   const fehler = [];
@@ -134,18 +134,41 @@ function pruefe(bedingung, text) {
   pruefe(await p.getByRole('cell', { name: '127,12 €' }).count() === 1, 'Rechnung mit Betrag in der Übersicht');
   await bild('10-uebersicht');
 
-  // 5. Fremde Rechnung prüfen
-  if (fremd) {
-    await p.goto(basis + '/#/pruefen');
-    await p.locator('input[type=file]').setInputFiles(fremd);
-    await p.locator('.urteil').waitFor();
-    pruefe((await p.locator('.urteil').textContent()).length > 5, 'fremde Rechnung wird beurteilt: ' + (await p.locator('.urteil').textContent()).trim());
-    await bild('11-pruefen', true);
+  // 5. Fremde Rechnung prüfen. Ohne eigene Datei dient die eben erzeugte
+  // Rechnung als Prüfling - sie muss ohne Beanstandung durchgehen.
+  await p.getByRole('cell', { name: 'RE-2026-0001' }).click();
+  await p.getByRole('heading', { name: 'Rechnung RE-2026-0001' }).waitFor();
+  const rechnungsId = p.url().split('/').pop();
+  const pdf = await (await kontext.request.get(`${basis}/api/rechnungen/${rechnungsId}/datei/0`)).body();
+  pruefe(pdf.subarray(0, 4).toString() === '%PDF', 'fertige Rechnung lässt sich als PDF abrufen');
+  await p.goto(basis + '/#/pruefen');
+  await p.locator('input[type=file]').setInputFiles(fremd || { name: 'Rechnung_RE-2026-0001.pdf', mimeType: 'application/pdf', buffer: pdf });
+  await p.locator('.urteil').waitFor();
+  const urteil = (await p.locator('.urteil').textContent()).trim();
+  pruefe(fremd ? urteil.length > 5 : urteil === 'Keine Beanstandung', 'Prüfung einer eingelesenen Rechnung: ' + urteil);
+  await bild('11-pruefen', true);
+  if (fremd && await p.getByRole('button', { name: 'Als Entwurf übernehmen und ergänzen' }).count()) {
+    await p.getByRole('button', { name: 'Als Entwurf übernehmen und ergänzen' }).click();
+    await p.getByText('wurde aus der Datei').waitFor();
+    pruefe(await feld('Rechnungsnummer').inputValue() !== '', 'übernommener Entwurf behält seine Rechnungsnummer');
+    pruefe(await p.locator('[data-feld="positionen.2.rabattProzent"]').inputValue() === '10', 'Positionsrabatt der fremden Rechnung bleibt sichtbar');
+    await bild('11b-uebernommen', true);
   }
+
+  // 6. Storno: aus der Rechnung wird der Entwurf einer Rechnungskorrektur.
+  await p.goto(`${basis}/#/rechnung/${rechnungsId}`);
+  await p.getByRole('button', { name: /Stornieren/ }).click();
+  await p.getByRole('heading', { name: /Rechnungskorrektur/ }).waitFor();
+  pruefe(await feld('Korrigiert die Rechnung Nr.').inputValue() === 'RE-2026-0001', 'Rechnungskorrektur verweist auf die Rechnung');
+  await p.getByText('Alles in Ordnung').or(p.getByText('Bereit, mit Warnungen')).first().waitFor();
+  await bild('13-storno', true);
+
   await p.goto(basis + '/#/hilfe');
   await p.getByRole('heading', { name: 'REWE Group' }).waitFor();
   await bild('12-hilfe', true);
 
+  await p.waitForTimeout(4000);
+  pruefe(await p.locator('.toast').count() === 0, 'Meldungen verschwinden von selbst');
   pruefe(fehler.length === 0, 'keine Fehler in der Browserkonsole' + (fehler.length ? ': ' + fehler.join(' | ') : ''));
   await browser.close();
 })().catch((e) => { console.error('ABBRUCH: ' + e.message); process.exit(1); });
