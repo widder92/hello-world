@@ -116,6 +116,26 @@ export function Rechnungsseite({ id }) {
 
 // ------------------------------------------------------------- Bearbeiten
 
+const marktText = (l) => [l.name, [l.plz, l.ort].filter(Boolean).join(' ')].filter(Boolean).join(', ') + (l.gln ? ' · GLN ' + l.gln : '');
+
+// Marktsuche ist die Auswahl des Markts bei Kunden mit vielen Märkten: ein
+// Eingabefeld, das beim Tippen die passenden Märkte vorschlägt.
+function Marktsuche({ maerkte, gewaehlt, waehle }) {
+  const [text, setText] = useState(gewaehlt ? marktText(gewaehlt) : '');
+  useEffect(() => { setText(gewaehlt ? marktText(gewaehlt) : ''); }, [gewaehlt && gewaehlt.id]);
+  const eingabe = (wert) => {
+    setText(wert);
+    const treffer = maerkte.find((l) => marktText(l) === wert);
+    if (treffer) waehle(treffer.id);
+    else if (wert.trim() === '' && gewaehlt) waehle('');
+  };
+  return html`
+    <input list="marktliste" data-feld="lieferort.gln" value=${text} placeholder="Markt suchen …" autocomplete="off"
+      style=${gewaehlt || !text ? '' : 'border-color:var(--gelb)'}
+      onInput=${(e) => eingabe(e.target.value)} onBlur=${() => setText(gewaehlt ? marktText(gewaehlt) : '')} />
+    <datalist id="marktliste">${maerkte.map((l) => html`<option value=${marktText(l)}></option>`)}</datalist>`;
+}
+
 function Editor({ r: anfang, einst, kunden, artikel }) {
   const [r, setR] = useState(anfang);
   const [erg, setErg] = useState(null);
@@ -284,15 +304,19 @@ function Editor({ r: anfang, einst, kunden, artikel }) {
                 optionen=${[['', '– bitte wählen –'], ...kunden.map((k) => [k.id, k.name])]} />
             <//>
             <${Feld} titel="Belieferter Markt (Warenempfänger)" breite="6"
-              hilfe=${kunde && kunde.lieferorte.length === 0 ? 'Für diesen Kunden ist noch kein Markt hinterlegt.' : ''}>
-              <${Auswahl} feld="lieferort.gln" wert=${r.lieferort ? r.lieferort.id : ''} setze=${waehleMarkt} disabled=${!kunde}
-                optionen=${[['', kunde && kunde.lieferorte.length ? '– bitte wählen –' : '– keiner –'],
-                  ...(kunde ? kunde.lieferorte.map((l) => [l.id, l.name + (l.ort ? ', ' + l.ort : '') + (l.gln ? ' · GLN ' + l.gln : '')]) : [])]} />
+              hilfe=${kunde && kunde.lieferorte.length === 0 ? 'Für diesen Kunden ist noch kein Markt hinterlegt.' : kunde && kunde.lieferorte.length > 8 ? 'Name, Ort oder GLN eintippen und aus der Liste wählen' : ''}>
+              ${kunde && kunde.lieferorte.length > 8
+                ? html`<${Marktsuche} maerkte=${kunde.lieferorte} gewaehlt=${r.lieferort} waehle=${waehleMarkt} />`
+                : html`<${Auswahl} feld="lieferort.gln" wert=${r.lieferort ? r.lieferort.id : ''} setze=${waehleMarkt} disabled=${!kunde}
+                    optionen=${[['', kunde && kunde.lieferorte.length ? '– bitte wählen –' : '– keiner –'],
+                      ...(kunde ? kunde.lieferorte.map((l) => [l.id, marktText(l)]) : [])]} />`}
             <//>
           </div>
           ${kunde && html`<p class="klein leise" style="margin:.7rem 0 0">
             ${[kunde.strasse, (kunde.plz + ' ' + kunde.ort).trim(), kunde.gln && 'GLN ' + kunde.gln, kunde.ustId, kunde.lieferantennummer && 'unsere Lieferantennr. ' + kunde.lieferantennummer].filter(Boolean).join(' · ')}
             ${' '}<a href=${'#/kunden/' + kunde.id + '?zurueck=' + (r.id || '')} onClick=${(e) => { e.preventDefault(); speichere().then((rid) => gehe('#/kunden/' + kunde.id + '?zurueck=' + rid)).catch(zeigeFehler); }}>Kunde und Märkte bearbeiten</a></p>`}
+          ${r.lieferort && html`<p class="klein leise" style="margin:.3rem 0 0">Markt:${' '}
+            ${[r.lieferort.name, r.lieferort.strasse, ((r.lieferort.plz || '') + ' ' + (r.lieferort.ort || '')).trim(), r.lieferort.gln && 'GLN ' + r.lieferort.gln].filter(Boolean).join(' · ')}</p>`}
           ${!kunden.length && html`<${Kasten} art="warnung">Es ist noch kein Kunde angelegt. <a href="#/kunden/neu">Jetzt einen Kunden anlegen</a><//>`}
         </div>
 
@@ -303,7 +327,7 @@ function Editor({ r: anfang, einst, kunden, artikel }) {
             <${Feld} titel="Lieferdatum" breite="3"><${Text} typ="date" feld="leistungsdatum" wert=${r.leistungsdatum} setze=${(v) => aendere('leistungsdatum', v)} /><//>
             <${Feld} titel="Bestellnummer" breite="3"><${Text} feld="bestellnummer" wert=${r.bestellnummer} setze=${(v) => aendere('bestellnummer', v)} /><//>
             <${Feld} titel="Lieferscheinnummer" breite="3"><${Text} feld="lieferscheinnummer" wert=${r.lieferscheinnummer} setze=${(v) => aendere('lieferscheinnummer', v)} /><//>
-            <${Feld} titel="Kostenstelle" breite="3" hilfe=${kunde && kunde.profil === 'rewe' ? 'REWE: 10 Ziffern' : 'falls der Kunde eine nennt'}>
+            <${Feld} titel="Kostenstelle" breite="3" hilfe=${kunde && kunde.profil === 'rewe' ? 'nur bei Kostenrechnungen (10 Ziffern)' : 'falls der Kunde eine nennt'}>
               <${Text} feld="kostenstelle" wert=${r.kostenstelle} setze=${(v) => aendere('kostenstelle', v.trim())} /><//>
             <${Feld} titel="Käuferreferenz" breite="3" hilfe=${xr ? 'Pflicht in der XRechnung; leer = GLN des Kunden' : 'nur falls vom Kunden verlangt'}>
               <${Text} feld="kaeuferreferenz" wert=${r.kaeuferreferenz} setze=${(v) => aendere('kaeuferreferenz', v)} placeholder=${kunde ? kunde.kaeuferreferenz : ''} /><//>

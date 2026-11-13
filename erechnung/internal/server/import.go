@@ -38,6 +38,15 @@ type importErgebnis struct {
 	FirmaLeer bool `json:"firmaLeer"`
 	// Kunde: Name des passenden Kunden in den Stammdaten, sonst leer.
 	Kunde string `json:"kunde"`
+	// AusText: Angaben, die als Text in der Rechnung standen und in ihre
+	// Felder übernommen wurden.
+	AusText []string `json:"ausText"`
+	// Zentrale und Markt: Der Empfänger der Rechnung ist kein Kunde, aber
+	// als Markt eines Kunden bekannt - etwa wenn im anderen Programm jeder
+	// Markt ein eigener Kunde ist, der Handel die Rechnung aber an seine
+	// Zentrale verlangt. Zentrale ist der Name dieses Kunden.
+	Zentrale string `json:"zentrale"`
+	Markt    string `json:"markt"`
 }
 
 // liesRechnungsdatei liest ein ZUGFeRD-PDF oder eine XML-Datei.
@@ -91,10 +100,16 @@ func (s *Server) importPruefen(w http.ResponseWriter, r *http.Request) {
 // sich übernehmen lässt. ausDatei: Die Rechnung stammt aus einer
 // E-Rechnungs-Datei; dann werden auch deren Summen nachgerechnet.
 func (s *Server) beurteile(erg *importErgebnis, re modell.Rechnung, profil string, ausDatei bool) {
+	if erg.AusText = entwirre(&re); erg.AusText == nil {
+		erg.AusText = []string{}
+	}
 	kunden, _ := s.Speicher.Kunden()
 	kunde := findeKunde(kunden, re.Kaeufer)
+	markt, eltern := findeMarkt(kunden, re.Kaeufer.GLN, re.Kaeufer.Kennung, re.Kaeufer.Name)
 	if kunde != nil {
 		erg.Kunde = kunde.Name
+	} else if eltern != nil {
+		erg.Zentrale, erg.Markt = eltern.Name, markt.Name
 	}
 	// Ohne ausdrückliche Vorgabe gelten die Regeln, die zum Kunden gehören.
 	switch {
@@ -104,6 +119,8 @@ func (s *Server) beurteile(erg *importErgebnis, re modell.Rechnung, profil strin
 		}
 	case kunde != nil:
 		profil = kunde.Profil
+	case eltern != nil:
+		profil = eltern.Profil // der Empfänger ist ein bekannter Markt dieses Kunden
 	default:
 		profil = rateProfil(re.Kaeufer.Name)
 	}
@@ -166,16 +183,28 @@ func gleicheFirma(a, b modell.Partei) bool {
 }
 
 // findeKunde sucht den Rechnungsempfänger in den Stammdaten: über die GLN,
-// sonst über den Namen.
+// sonst über den Namen - auch über einen abweichenden Namen, unter dem der
+// Kunde im anderen Programm geführt wird.
 func findeKunde(kunden []modell.Kunde, kaeufer modell.Partei) *modell.Kunde {
 	for i, k := range kunden {
 		if k.GLN != "" && k.GLN == kaeufer.GLN {
 			return &kunden[i]
 		}
 	}
+	name := normal(kaeufer.Name)
+	if name == "" {
+		return nil
+	}
 	for i, k := range kunden {
-		if normal(k.Name) != "" && normal(k.Name) == normal(kaeufer.Name) {
+		if normal(k.Name) == name {
 			return &kunden[i]
+		}
+	}
+	for i, k := range kunden {
+		for _, a := range strings.FieldsFunc(k.Alias, func(r rune) bool { return r == ';' || r == '\n' }) {
+			if normal(a) == name {
+				return &kunden[i]
+			}
 		}
 	}
 	return nil
@@ -193,6 +222,27 @@ func rateProfil(name string) string {
 	return ""
 }
 
+// findeMarkt sucht einen Markt über alle Kunden hinweg: nach seiner GLN,
+// nach der Kundennummer, unter der er im alten Rechnungsprogramm geführt
+// wird, oder nach seinem Namen. Zurück kommen der Markt und sein Kunde.
+func findeMarkt(kunden []modell.Kunde, gln, kundennummer, name string) (*modell.Lieferort, *modell.Kunde) {
+	passt := []func(l modell.Lieferort) bool{
+		func(l modell.Lieferort) bool { return gln != "" && l.GLN == gln },
+		func(l modell.Lieferort) bool { return kundennummer != "" && l.Kundennummer == kundennummer },
+		func(l modell.Lieferort) bool { return normal(name) != "" && normal(l.Name) == normal(name) },
+	}
+	for _, p := range passt {
+		for i := range kunden {
+			for j := range kunden[i].Lieferorte {
+				if p(kunden[i].Lieferorte[j]) {
+					return &kunden[i].Lieferorte[j], &kunden[i]
+				}
+			}
+		}
+	}
+	return nil, nil
+}
+
 func findeLieferort(k modell.Kunde, l modell.Lieferort) *modell.Lieferort {
 	for i, x := range k.Lieferorte {
 		gleicheAdresse := normal(x.Strasse) != "" && normal(x.Strasse) == normal(l.Strasse) && strings.TrimSpace(x.PLZ) == strings.TrimSpace(l.PLZ)
@@ -207,12 +257,16 @@ type uebernahme struct {
 	// ArtikelAnlegen: Positionen, die es in den Stammdaten noch nicht gibt,
 	// werden dort als Artikel angelegt.
 	ArtikelAnlegen bool
+	// AnZentrale: Ist der Empfänger als Markt eines Kunden bekannt, geht die
+	// Rechnung an diesen Kunden, und der Markt wird Warenempfänger.
+	AnZentrale bool
 }
 
 // uebernimm macht aus einer eingelesenen eigenen Rechnung einen Entwurf. Die
 // Rechnungsnummer bleibt erhalten. Kunde und Markt werden in den Stammdaten
 // gesucht und sonst angelegt; bekannte Artikel liefern ihre GTIN.
 func (s *Server) uebernimm(re modell.Rechnung, o uebernahme) (modell.Rechnung, error) {
+	entwirre(&re)
 	if strings.TrimSpace(re.Kaeufer.Name) == "" {
 		return re, errors.New("die Rechnung nennt keinen Empfänger")
 	}
@@ -237,41 +291,76 @@ func (s *Server) uebernimm(re modell.Rechnung, o uebernahme) (modell.Rechnung, e
 	if err != nil {
 		return re, err
 	}
+	// Ist der Empfänger selbst ein Markt, den ein Kunde schon führt? Das
+	// kommt bei selbstständigen Kaufleuten vor.
+	empfaengerMarkt, eltern := findeMarkt(kunden, re.Kaeufer.GLN, re.Kaeufer.Kennung, re.Kaeufer.Name)
 	var kunde modell.Kunde
-	if k := findeKunde(kunden, re.Kaeufer); k != nil {
+	kundeGeaendert := false
+	k := findeKunde(kunden, re.Kaeufer)
+	if k == nil && eltern != nil && o.AnZentrale {
+		// Die Rechnung geht an die Zentrale. Was die Datei über den
+		// Empfänger sagt (Anschrift, USt-IdNr.), gilt für den Markt und
+		// wandert deshalb nicht in die Stammdaten der Zentrale.
+		kunde = *eltern
+	} else if k != nil {
 		kunde = *k
+		// Was in den Stammdaten noch fehlt, liefert die Rechnung.
+		f := re.Kaeufer
+		for _, paar := range []struct {
+			ziel *string
+			wert string
+		}{{&kunde.Strasse, f.Strasse}, {&kunde.PLZ, f.PLZ}, {&kunde.Ort, f.Ort}, {&kunde.UStID, f.UStID}, {&kunde.GLN, f.GLN},
+			{&kunde.Kennung, f.Kennung}, {&kunde.Lieferantennummer, re.Verkaeufer.Kennung}} {
+			if fuelleLeer(paar.ziel, paar.wert) {
+				kundeGeaendert = true
+			}
+		}
 	} else {
 		kunde = modell.Kunde{Partei: re.Kaeufer, Lieferantennummer: re.Verkaeufer.Kennung,
 			Profil: rateProfil(re.Kaeufer.Name), Format: modell.FormatZugferd}
+		if eltern != nil {
+			kunde.Profil, kunde.Format = eltern.Profil, eltern.Format
+		}
 		saeubere(&kunde.Partei)
 		if re.Kaeufer.Email != "" {
 			kunde.RechnungsEmail = re.Kaeufer.Email
 		}
+		kundeGeaendert = true
 	}
-	// Markt: aus der Rechnung, sonst der einzige des Kunden.
-	kundeGeaendert := kunde.ID == ""
-	if !re.Lieferort.Leer() {
-		if l := findeLieferort(kunde, *re.Lieferort); l != nil {
-			re.Lieferort = l
-		} else {
-			neu := *re.Lieferort
-			neu.ID = ""
-			if neu.Name == "" {
-				neu.Name = strings.TrimSpace(neu.Strasse + " " + neu.Ort)
-			}
-			kunde.Lieferorte = append(kunde.Lieferorte, neu)
-			kundeGeaendert = true
+
+	// Markt: aus der Rechnung; sonst der Empfänger selbst, wenn er ein
+	// bekannter Markt ist; sonst der einzige Markt des Kunden.
+	var gesucht modell.Lieferort
+	switch {
+	case !re.Lieferort.Leer():
+		gesucht = *re.Lieferort
+	case empfaengerMarkt != nil:
+		gesucht = *empfaengerMarkt
+	}
+	if !gesucht.Leer() && findeLieferort(kunde, gesucht) == nil {
+		neu := gesucht
+		// Führt ein anderer Kunde diesen Markt schon, gelten dessen Angaben.
+		if bekannt, _ := findeMarkt(kunden, gesucht.GLN, "", gesucht.Name); bekannt != nil {
+			neu = *bekannt
 		}
+		neu.ID = ""
+		if neu.Name == "" {
+			if neu.Name = strings.TrimSpace(neu.Strasse + " " + neu.Ort); neu.Name == "" {
+				neu.Name = "Markt mit GLN " + neu.GLN
+			}
+		}
+		kunde.Lieferorte = append(kunde.Lieferorte, neu)
+		kundeGeaendert = true
 	}
 	if kundeGeaendert {
 		if kunde, err = s.Speicher.SpeichereKunde(kunde); err != nil {
 			return re, err
 		}
-		if !re.Lieferort.Leer() {
-			re.Lieferort = findeLieferort(kunde, *re.Lieferort)
-		}
 	}
-	if re.Lieferort.Leer() && len(kunde.Lieferorte) == 1 {
+	re.Lieferort = nil
+	if !gesucht.Leer() {
+		re.Lieferort = findeLieferort(kunde, gesucht)
+	} else if len(kunde.Lieferorte) == 1 {
 		re.Lieferort = &kunde.Lieferorte[0]
 	}
 	if !re.Lieferort.Leer() {
@@ -349,8 +438,17 @@ func (s *Server) uebernimm(re modell.Rechnung, o uebernahme) (modell.Rechnung, e
 
 	// Freitexte ohne Kennzeichen werden zu Einleitung und Schlusstext, damit
 	// sie in der Oberfläche sichtbar und änderbar sind.
+	iban := strings.ToUpper(strings.ReplaceAll(re.Zahlung.IBAN, " ", ""))
 	var uebrig []modell.Hinweis
 	for _, h := range re.Hinweise {
+		if kunde.Profil == partner.Rewe {
+			// REWE will Angaben, für die es ein Feld gibt, nicht im Freitext:
+			// Die Bankverbindung steht bei der Zahlung, und den Hinweis auf
+			// die Konditionen setzt das Programm selbst.
+			if h.Code == "AAK" || (iban != "" && strings.Contains(strings.ToUpper(strings.ReplaceAll(h.Text, " ", "")), iban)) {
+				continue
+			}
+		}
 		switch {
 		case h.Code == "" && re.Einleitung == "" && len(uebrig) == 0:
 			re.Einleitung = h.Text
@@ -371,6 +469,7 @@ func (s *Server) importUebernehmen(w http.ResponseWriter, r *http.Request) {
 	var ein struct {
 		Rechnung       modell.Rechnung `json:"rechnung"`
 		ArtikelAnlegen bool            `json:"artikelAnlegen"`
+		AnZentrale     bool            `json:"anZentrale"`
 	}
 	if err := liesJSON(r, &ein); err != nil {
 		fehler(w, 400, err)
@@ -385,7 +484,7 @@ func (s *Server) importUebernehmen(w http.ResponseWriter, r *http.Request) {
 		fehler(w, 422, errors.New("übernehmen lässt sich nur eine Rechnung der eigenen Firma"))
 		return
 	}
-	re, err := s.uebernimm(ein.Rechnung, uebernahme{ArtikelAnlegen: ein.ArtikelAnlegen})
+	re, err := s.uebernimm(ein.Rechnung, uebernahme{ArtikelAnlegen: ein.ArtikelAnlegen, AnZentrale: ein.AnZentrale})
 	if err != nil {
 		fehler(w, 409, err)
 		return

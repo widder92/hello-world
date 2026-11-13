@@ -39,6 +39,11 @@ func TestBeispieleOhneFehler(t *testing.T) {
 		for _, f := range []string{modell.FormatZugferd, modell.FormatZugferdXR, modell.FormatXRechnungCII} {
 			for _, profil := range []string{"", partner.Handel, partner.Rewe, partner.Edeka} {
 				r.Format, r.Profil = f, profil
+				r.Hinweise = nil
+				if profil == partner.Rewe {
+					// Diesen Pflichthinweis setzt das Programm bei REWE selbst.
+					r.Hinweise = []modell.Hinweis{{Code: "AAK", Text: partner.ReweKonditionen}}
+				}
 				l, _ := Pruefe(r, Optionen{})
 				if HatFehler(l) {
 					t.Errorf("%s/%s/%s: Fehler %s", r.ID, f, profil, regeln(l, modell.Fehler))
@@ -90,7 +95,9 @@ func TestFehlendeHandelsangaben(t *testing.T) {
 	r.Profil = partner.Rewe
 	r.Kaeufer.GLN, r.Lieferort.GLN, r.Kostenstelle = "", "", "12345"
 	l, _ := Pruefe(r, Optionen{})
-	for _, regel := range []string{"REWE-RE-GLN", "REWE-WE-GLN", "REWE-KOSTENSTELLE"} {
+	r.Kaeufer.UStID, r.Positionen[0].GTIN, r.Positionen[0].Artikelnummer, r.Lieferscheinnummer = "", "", "", ""
+	l, _ = Pruefe(r, Optionen{})
+	for _, regel := range []string{"REWE-RE-GLN", "REWE-WE-GLN", "REWE-KOSTENSTELLE", "REWE-USTID", "REWE-ARTIKEL", "REWE-LIEFERSCHEIN", "REWE-KONDITIONEN"} {
 		if !hat(l, regel) {
 			t.Errorf("Regel %s hätte anschlagen müssen; gemeldet: %s", regel, regeln(l, ""))
 		}

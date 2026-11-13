@@ -1,6 +1,6 @@
 // Durchlauf durch die Bedienoberfläche mit einem echten Browser: Firma
 // einrichten, Kunde und Artikel anlegen, Rechnung schreiben, fertigstellen,
-// Versanddialog öffnen, fremde Rechnung prüfen.
+// Versanddialog öffnen, fremde Rechnung prüfen, Stammdaten-Datei einlesen.
 //
 // Aufruf (das Programm muss mit leerem Datenordner laufen):
 //   node tests/oberflaeche.js http://127.0.0.1:47411/?t=KENNWORT [Bilderordner] [fremde-rechnung.xml] [Port]
@@ -85,7 +85,7 @@ function pruefe(bedingung, text) {
   // 2. Kunde aus der REWE-Vorlage, mit erfundenen Daten überschrieben
   await p.goto(basis + '/#/kunden/neu');
   await p.getByRole('button', { name: /REWE Markt GmbH/ }).click();
-  pruefe(await feld('E-Mail-Adresse für Rechnungen').inputValue() === 'rechnung.rewemarkt@rewe-group.com', 'Vorlage füllt das Rechnungspostfach');
+  pruefe(await feld('USt-IdNr. des Kunden').inputValue() === 'DE812706034', 'die Vorlage bringt die Stammdaten des Empfängers mit');
   await feld('Name der Firma (genau').fill('Muster Markt GmbH ZwNl. West');
   await feld('GLN des Rechnungsempfängers').fill('4000001000006');
   await p.getByText('Prüfziffer falsch').first().waitFor();
@@ -242,6 +242,57 @@ function pruefe(bedingung, text) {
   pruefe(await feld('Korrigiert die Rechnung Nr.').inputValue() === 'RE-2026-0001', 'Rechnungskorrektur verweist auf die Rechnung');
   await p.getByText('Alles in Ordnung').or(p.getByText('Bereit, mit Warnungen')).first().waitFor();
   await bild('13-storno', true);
+
+  // 7. Kunden und Märkte aus einer Stammdaten-Datei; viele Märkte bleiben
+  //    über die Suche bedienbar.
+  const gln = (n) => {
+    const z = '43999020' + String(n).padStart(4, '0');
+    const summe = [...z].reduce((a, c, i) => a + Number(c) * (i % 2 ? 3 : 1), 0);
+    return z + ((10 - (summe % 10)) % 10);
+  };
+  const orte = ['Korbach', 'Waldeck', 'Bad Wildungen', 'Frankenberg', 'Fritzlar', 'Kassel', 'Baunatal', 'Melsungen', 'Homberg', 'Marburg', 'Wolfhagen', 'Volkmarsen'];
+  const stammdaten = {
+    kunden: [{
+      name: 'Handelsgesellschaft Nordhessen mbH', profil: 'edeka', gln: gln(0), strasse: 'Am Lager 1', plz: '34212', ort: 'Melsungen', land: 'DE', rechnungsEmail: 'rechnung@nordhessen.example',
+      lieferorte: orte.map((ort, i) => ({ name: 'Markt ' + ort, gln: gln(i + 1), strasse: 'Hauptstraße ' + (i + 1), plz: String(34100 + i), ort, land: 'DE', kundennummer: String(10100 + i) })),
+    }],
+  };
+  await p.goto(basis + '/#/kunden');
+  await p.getByText('Aus Datei einlesen').waitFor();
+  await p.setInputFiles('input[type=file]', { name: 'Stammdaten.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(stammdaten)) });
+  await p.getByText('Eingelesen: 1 Kunden neu, 0 ergänzt, 12 Märkte neu.').waitFor();
+  pruefe(true, 'Stammdaten-Datei bringt Kunde und Märkte');
+  await p.locator('tr', { hasText: 'Nordhessen' }).first().click();
+  const suche = p.getByPlaceholder(/In 12 Märkten suchen/);
+  await suche.waitFor();
+  await suche.fill('wildungen');
+  pruefe(await p.getByRole('button', { name: 'Bearbeiten' }).count() === 1, 'die Suche findet den Markt unter vielen');
+  await bild('16-viele-maerkte', true);
+  await p.goto(basis + '/#/rechnung/neu');
+  await p.locator('[data-feld="kundeId"]').selectOption({ label: 'Handelsgesellschaft Nordhessen mbH' });
+  const markt = p.locator('input[data-feld="lieferort.gln"]');
+  await markt.waitFor();
+  await markt.fill(`Markt Waldeck, 34101 Waldeck · GLN ${gln(2)}`);
+  await p.getByText(`Markt: Markt Waldeck · Hauptstraße 2 · 34101 Waldeck · GLN ${gln(2)}`).waitFor();
+  pruefe(true, 'der Markt lässt sich in der Rechnung über die Suche wählen');
+  await p.getByRole('button', { name: 'Entwurf löschen' }).click();
+  await p.getByRole('heading', { name: 'Rechnungen', exact: true }).waitFor().catch(() => {});
+
+  // 8. Steht in der eingelesenen Rechnung ein Markt als Kunde, bietet der
+  //    Import an, sie an die Zentrale zu stellen.
+  if (fremd) {
+    const xml = require('fs').readFileSync(fremd, 'utf8')
+      .replace(/<ram:BuyerTradeParty>\s*<ram:Name>[^<]*<\/ram:Name>/, '<ram:BuyerTradeParty><ram:ID>10101</ram:ID><ram:Name>Kaufmann Waldeck e.K.</ram:Name>')
+      .replace(/RE-2026-0042/g, 'RE-2026-0077');
+    await p.goto(basis + '/#/pruefen');
+    await p.locator('input[type=file]').setInputFiles({ name: 'RE-2026-0077.xml', mimeType: 'text/xml', buffer: Buffer.from(xml) });
+    await p.getByText('ist als Markt von Handelsgesellschaft Nordhessen mbH hinterlegt').waitFor();
+    await bild('17-an-die-zentrale', true);
+    await p.getByRole('button', { name: 'Übernehmen', exact: true }).click();
+    await p.locator('[data-feld="kundeId"]').waitFor();
+    await p.getByText(`Markt: Markt Waldeck · Hauptstraße 2 · 34101 Waldeck · GLN ${gln(2)}`).waitFor();
+    pruefe(await p.locator('[data-feld="kundeId"] option:checked').innerText() === 'Handelsgesellschaft Nordhessen mbH', 'Rechnung an einen Markt geht auf Wunsch an die Zentrale');
+  }
 
   await p.goto(basis + '/#/hilfe');
   await p.getByRole('heading', { name: 'REWE Group' }).waitFor();

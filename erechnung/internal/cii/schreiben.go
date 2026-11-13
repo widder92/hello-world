@@ -103,7 +103,7 @@ func Schreibe(r modell.Rechnung) []byte {
 			a := ziel.Kind("ram:PostalTradeAddress")
 			a.T("ram:PostcodeCode", l.PLZ)
 			a.T("ram:LineOne", l.Strasse)
-			a.T("ram:LineTwo", l.Zusatz)
+			zusatzzeilen(a, l.Zusatz)
 			a.T("ram:CityName", l.Ort)
 			a.T("ram:CountryID", oder(l.Land, "DE"))
 		}
@@ -372,7 +372,7 @@ func partei(n *xmlbaum.Knoten, p modell.Partei, verkaeufer bool) {
 	a := n.Kind("ram:PostalTradeAddress")
 	a.T("ram:PostcodeCode", p.PLZ)
 	a.T("ram:LineOne", p.Strasse)
-	a.T("ram:LineTwo", p.Zusatz)
+	zusatzzeilen(a, p.Zusatz)
 	a.T("ram:CityName", p.Ort)
 	a.T("ram:CountryID", oder(p.Land, "DE"))
 	if p.EAdresse != "" {
@@ -384,6 +384,14 @@ func partei(n *xmlbaum.Knoten, p modell.Partei, verkaeufer bool) {
 	if verkaeufer && p.Steuernummer != "" {
 		n.Kind("ram:SpecifiedTaxRegistration").T("ram:ID", p.Steuernummer).A("schemeID", "FC")
 	}
+}
+
+// zusatzzeilen schreibt den Adresszusatz in die zweite und, wenn er zwei
+// Zeilen hat, auch in die dritte Anschriftzeile.
+func zusatzzeilen(a *xmlbaum.Knoten, zusatz string) {
+	zwei, drei, _ := strings.Cut(strings.TrimSpace(zusatz), "\n")
+	a.T("ram:LineTwo", zwei)
+	a.T("ram:LineThree", strings.ReplaceAll(drei, "\n", " "))
 }
 
 func zeit(n *xmlbaum.Knoten, praefix, datum string) {

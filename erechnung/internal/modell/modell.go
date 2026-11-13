@@ -86,6 +86,9 @@ type Lieferort struct {
 	Land    string `json:"land"`         // BT-80
 	// Kostenstelle des Markts; wird beim Auswählen in die Rechnung übernommen.
 	Kostenstelle string `json:"kostenstelle,omitempty"`
+	// Kundennummer, unter der dieser Markt im eigenen Rechnungsprogramm
+	// geführt wird. Sie hilft beim Einlesen, den Markt wiederzuerkennen.
+	Kundennummer string `json:"kundennummer,omitempty"`
 }
 
 // Leer meldet, ob gar kein Lieferort angegeben ist.
@@ -289,6 +292,10 @@ type Rechnung struct {
 type Kunde struct {
 	ID string `json:"id"`
 	Partei
+	// Alias: abweichende Namen, unter denen der Kunde in einem anderen
+	// Programm geführt wird (durch Semikolon getrennt). Daran erkennt der
+	// Import den Kunden wieder; in der Rechnung erscheint der Alias nicht.
+	Alias string `json:"alias"`
 	// Unsere Lieferantennummer bei diesem Kunden (wandert in BT-29).
 	Lieferantennummer string `json:"lieferantennummer"`
 	// Feste Käuferreferenz / Leitweg-ID (BT-10), falls der Kunde eine vorgibt.

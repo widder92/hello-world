@@ -43,7 +43,7 @@ export function Pruefseite() {
 
   const uebernimm = async (e, danachOeffnen) => {
     try {
-      const r = await api('POST', '/api/import/uebernehmen', { rechnung: e.erg.rechnung, artikelAnlegen });
+      const r = await api('POST', '/api/import/uebernehmen', { rechnung: e.erg.rechnung, artikelAnlegen, anZentrale: !!e.erg.zentrale && !e.anMarkt });
       aendere(e.nr, { entwurf: r.id });
       if (danachOeffnen) { zeige('Als Entwurf übernommen. Bitte die fehlenden Angaben ergänzen.', 'gut'); gehe('#/rechnung/' + r.id); }
       return true;
@@ -80,7 +80,7 @@ export function Pruefseite() {
       <ol class="schritte">
         <li><span><b>Rechnung wie gewohnt in Lexware Office schreiben</b> und dort herunterladen (Rechnung öffnen → Herunterladen). Die PDF-Datei enthält die Rechnungsdaten.</span></li>
         <li><span><b>Dateien hier hineinziehen</b> – auch viele auf einmal. Das Programm zeigt, was dem Handel daran fehlt.</span></li>
-        <li><span><b>Übernehmen.</b> Die Rechnungsnummer bleibt. GLN, Markt, Kostenstelle und GTIN ergänzt das Programm aus den Stammdaten, sobald Kunde und Artikel hier einmal gepflegt sind.</span></li>
+        <li><span><b>Übernehmen.</b> Die Rechnungsnummer bleibt. GLN, Lieferschein- und Bestellnummer liest das Programm auch aus Freitext und Anschrift. GLN, Markt mit Anschrift und GTIN ergänzt es aus den Stammdaten, sobald Kunde und Artikel hier einmal gepflegt sind.</span></li>
         <li><span><b>Fertigstellen und senden</b> – als vollständige E-Rechnung an REWE oder EDEKA.</span></li>
       </ol>
     </div>
@@ -121,12 +121,12 @@ export function Pruefseite() {
       <table>
         <thead><tr><th>Datei</th><th>Nummer</th><th>Datum</th><th>Kunde</th><th class="zahl">Betrag</th><th>Befund</th><th></th></tr></thead>
         <tbody>${eintraege.map((e) => html`<${Zeile} key=${e.nr} e=${e} umschalten=${() => aendere(e.nr, { offen: !e.offen })}
-          uebernimm=${() => uebernimm(e, eintraege.length === 1)} bereit=${bereit(e)} />`)}</tbody>
+          uebernimm=${() => uebernimm(e, eintraege.length === 1)} bereit=${bereit(e)} setzeAnMarkt=${(v) => aendere(e.nr, { anMarkt: v })} />`)}</tbody>
       </table>
     </div>`}`;
 }
 
-function Zeile({ e, umschalten, uebernimm, bereit }) {
+function Zeile({ e, umschalten, uebernimm, bereit, setzeAnMarkt }) {
   const erg = e.erg;
   if (e.laeuft || !erg) return html`<tr><td>${e.name}</td><td colspan="6" class="leise">wird geprüft …</td></tr>`;
   if (erg.fehler) {
@@ -140,7 +140,9 @@ function Zeile({ e, umschalten, uebernimm, bereit }) {
       <td style="overflow-wrap:anywhere">${e.name}</td>
       <td class="nowrap"><b>${r.nummer || '–'}</b></td>
       <td class="nowrap">${datumDE(r.datum)}</td>
-      <td>${r.kaeufer.name || '–'}<br /><span class="leise klein">${erg.kunde ? 'bekannt – Stammdaten werden ergänzt' : 'neu – wird als Kunde angelegt'}</span></td>
+      <td>${r.kaeufer.name || '–'}<br /><span class="leise klein">${erg.kunde ? 'bekannt – Stammdaten werden ergänzt'
+        : erg.zentrale && !e.anMarkt ? html`Markt von ${erg.zentrale} – die Rechnung geht an die Zentrale`
+        : 'neu – wird als Kunde angelegt'}</span></td>
       <td class="zahl">${r.summen ? geld(r.summen.brutto, r.waehrung) : ''}</td>
       <td class="nowrap"><span class=${'ampel ' + (z.fehler ? 'fehler' : z.warnung ? 'warnung' : 'gut')}></span>
         ${' '}${z.fehler ? `${z.fehler} Fehler` : z.warnung ? `${z.warnung} Warnung${z.warnung > 1 ? 'en' : ''}` : 'in Ordnung'}
@@ -156,10 +158,21 @@ function Zeile({ e, umschalten, uebernimm, bereit }) {
       <div class="urteil" style="margin:.3rem 0 .2rem"><span class=${'ampel ' + (z.fehler ? 'fehler' : z.warnung ? 'warnung' : 'gut')}></span>${urteil}</div>
       <p class="leise klein">${erg.dateiart || ''}${erg.stand === 'entwurf' ? ' · wurde schon einmal übernommen; ein erneutes Übernehmen ersetzt den Entwurf' : ''}</p>
       ${erg.auffaellig.length > 0 && html`<${Kasten} art="warnung"><b>Auffälligkeiten an der Datei:</b><ul>${erg.auffaellig.map((a) => html`<li>${a}</li>`)}</ul><//>`}
+      ${erg.zentrale && !e.entwurf && html`<${Kasten} art="warnung">
+        <b>„${r.kaeufer.name}“ ist als Markt von ${erg.zentrale} hinterlegt.</b> Rechnet der Handel über seine Zentrale ab, muss sie der Rechnungsempfänger sein und der Markt der Warenempfänger – sonst kommt die Rechnung zurück.
+        <label class="haken" style="align-items:flex-start;margin:.6rem 0 .4rem;font-weight:400">
+          <input type="checkbox" style="flex:none;margin-top:.15rem" checked=${!e.anMarkt} onChange=${(ev) => setzeAnMarkt(!ev.target.checked)} />
+          <span>Rechnung an <b>${erg.zentrale}</b> stellen, „${erg.markt || r.kaeufer.name}“ wird der belieferte Markt (empfohlen).
+            Ohne Haken bleibt der Markt selbst der Rechnungsempfänger – richtig nur, wenn er als eigene Firma direkt abrechnet.</span>
+        </label>
+        <span class="leise klein">In Lexware Office steht die Rechnung weiter auf den Markt. Am besten dort künftig gleich den Kunden „${erg.zentrale}“ wählen.</span><//>`}
+      ${(erg.ausText || []).length > 0 && html`<${Kasten} art="gut"><b>Als Text in der Rechnung gefunden und in die richtigen Felder übernommen:</b>
+        <ul>${erg.ausText.map((a) => html`<li>${a}</li>`)}</ul><//>`}
       <div class="spalten">
         <div>
           ${erg.meldungen.length === 0 ? html`<${Kasten} art="gut">Die Rechnung erfüllt alle geprüften Regeln.<//>` : html`<${Meldungsliste} meldungen=${erg.meldungen} />`}
-          ${erg.kunde && z.fehler > 0 && html`<p class="leise klein">Der Kunde ist in den Stammdaten bekannt. Was dort hinterlegt ist (GLN, Markt, Kostenstelle, GTIN der Artikel), wird beim Übernehmen ergänzt – die Liste zeigt, was der Datei allein fehlt.</p>`}
+          ${erg.kunde && z.fehler > 0 && html`<p class="leise klein">Der Kunde ist in den Stammdaten bekannt. Was dort hinterlegt ist (GLN, Markt mit Anschrift, USt-IdNr., GTIN der Artikel), wird beim Übernehmen ergänzt – die Liste zeigt, was der Datei allein fehlt.</p>`}
+          ${erg.zentrale && !e.anMarkt && z.fehler > 0 && html`<p class="leise klein">Was bei ${erg.zentrale} und beim Markt hinterlegt ist (GLN, Anschrift, USt-IdNr.), wird beim Übernehmen ergänzt – die Liste zeigt, was der Datei allein fehlt.</p>`}
           ${!erg.uebernehmen && !erg.firmaLeer && html`<p class="leise klein">Übernehmen lässt sich nur eine Rechnung der eigenen Firma (Name, Steuernummer oder USt-IdNr. wie unter Einstellungen).</p>`}
         </div>
         <dl class="daten klein">

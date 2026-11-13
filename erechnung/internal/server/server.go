@@ -127,6 +127,7 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/import", s.importPruefen)
 	api("POST /api/import/uebernehmen", s.importUebernehmen)
 	api("POST /api/import/firma", s.importFirma)
+	api("POST /api/stammdaten", s.stammdatenEinlesen)
 	api("GET /api/lexware", s.lexwareStand)
 	api("POST /api/lexware/schluessel", s.lexwareSchluessel)
 	api("GET /api/lexware/belege", s.lexwareBelege)
@@ -529,6 +530,17 @@ func (s *Server) zusammenstellen(r modell.Rechnung) (modell.Rechnung, modell.Ein
 	if r.Format == "" {
 		r.Format = modell.FormatZugferd
 	}
+	// REWE verlangt in jeder Rechnung einen festen Hinweis auf die
+	// Konditionsvereinbarungen; das Programm setzt ihn selbst.
+	if r.Profil == partner.Rewe {
+		vorhanden := false
+		for _, h := range r.Hinweise {
+			vorhanden = vorhanden || h.Code == "AAK"
+		}
+		if !vorhanden {
+			r.Hinweise = append(append([]modell.Hinweis{}, r.Hinweise...), modell.Hinweis{Code: "AAK", Text: partner.ReweKonditionen})
+		}
+	}
 	if r.Lieferort.Leer() {
 		r.Lieferort = nil
 	}
@@ -872,14 +884,20 @@ func (s *Server) versandVorschlag(w http.ResponseWriter, r *http.Request) {
 		groesse += len(daten)
 		namen = append(namen, filepath.Base(d))
 	}
+	if n := strings.ToLower(an); strings.Contains(n, "onboarding@") || strings.Contains(n, "-test@") || strings.Contains(n, ".test@") {
+		hinweise = append(hinweise, "Achtung: "+an+" sieht nach einem Test-Postfach aus. Dorthin gehören nur Testrechnungen. Für echte Rechnungen bitte beim Kunden die Adresse eintragen, die er dafür genannt hat.")
+	}
 	if p, ok := partner.Finde(re.Profil); ok {
+		if p.OhneText {
+			text = ""
+		}
 		switch re.Profil {
 		case partner.Rewe:
 			h := "REWE nimmt Rechnungen nur von angemeldeten Absenderadressen und erst ab dem bestätigten Starttermin an."
 			if e.Post.Absender != "" {
 				h += " Absender ist " + e.Post.Absender + "."
 			}
-			hinweise = append(hinweise, h)
+			hinweise = append(hinweise, h, "REWE möchte keinen Text und keine Signatur in der E-Mail - nur die Rechnung als Anhang. Das Textfeld ist deshalb leer.")
 		case partner.Edeka:
 			hinweise = append(hinweise, "EDEKA: eine Rechnung und ein Anhang je E-Mail, die Rechnungsnummer im Betreff.")
 		}

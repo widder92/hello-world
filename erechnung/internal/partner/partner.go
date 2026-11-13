@@ -31,6 +31,8 @@ type Profil struct {
 	MaxMB int `json:"maxMB"`
 	// Nur der Rechnungsanhang, kein rechnungsrelevanter Text in der E-Mail.
 	NeutralerText bool `json:"neutralerText"`
+	// Gar kein Text in der E-Mail: nur die Rechnung als Anhang.
+	OhneText bool `json:"ohneText"`
 	// Vorlagen sind Rechnungsempfänger mit öffentlich bekannten Stammdaten.
 	Vorlagen []Vorlage `json:"vorlagen"`
 }
@@ -48,6 +50,11 @@ const (
 	Rewe   = "rewe"
 	Edeka  = "edeka"
 )
+
+// ReweKonditionen ist der Hinweis, den REWE in jeder E-Rechnung verlangt
+// (Freitext BT-22 mit dem Kennzeichen "AAK" in BT-21). Das Programm setzt
+// ihn bei REWE-Rechnungen selbst.
+const ReweKonditionen = "Bezüglich der Entgeltminderungen verweisen wir auf die aktuellen Zahlungs- und Konditionsvereinbarungen"
 
 const quelleVeR = "Verband elektronische Rechnung: Mindeststandard „E-Rechnung bereit für den Handel“ (09/2026)"
 
@@ -71,45 +78,45 @@ func profile() []Profil {
 		{
 			ID: Rewe, Name: "REWE Group", Kurz: "REWE Markt, PENNY, REWE-Zentralfinanz und weitere Gesellschaften der REWE Group",
 			Hinweise: []string{
-				"Vor der ersten E-Rechnung ist eine Anmeldung nötig: Format und Versandweg müssen mit REWE vereinbart und getestet werden. Die Anmeldung läuft über e-rechnungen.onboarding@rewe-group.com; dabei die eigene Kreditorennummer (Lieferantennummer bei REWE) nennen. An dieses Postfach keine echten Rechnungen schicken.",
-				"REWE nimmt Rechnungen nur von angemeldeten Absenderadressen an (höchstens fünf). Eine Rechnung von einer nicht angemeldeten Adresse oder vor dem bestätigten Starttermin wird automatisch abgelehnt und nicht gebucht.",
-				"Pflicht auf jeder Rechnung: die 10-stellige Kostenstelle, die GLN des Rechnungsempfängers und die GLN des Warenempfängers (Markt). Der Auftraggeber bei REWE teilt sie auf Anfrage mit.",
-				"Der Namenszusatz der Zweigniederlassung gehört zum Empfängernamen, zum Beispiel „REWE Markt GmbH ZwNl. West“.",
-				"Je E-Mail nur eine Rechnung, je Datei nur eine Rechnung. Der E-Mail-Text wird nicht gelesen - dort darf nichts Rechnungsrelevantes stehen.",
-				"Der öffentlich beschriebene E-Mail-Weg gilt laut REWE derzeit für Kostenrechnungen. Für Warenrechnungen bitte beim Onboarding nachfragen, welcher Weg und welche Adresse gelten.",
-				"Selbstständige REWE-Kaufleute sind eigene Firmen und stehen nicht in der REWE-Kundenliste: Rechnungsempfänger, GLN und Rechnungsadresse direkt beim Markt erfragen.",
+				"Vor der ersten E-Rechnung ist eine Anmeldung nötig (e-rechnungen.onboarding@rewe-group.com, dabei die eigene Lieferantennummer bei REWE nennen). REWE schickt dann ein Startpaket mit den genauen Vorgaben. In der Testphase geht eine Testrechnung an das Onboarding-Postfach; erst nach der Freigabe gehen echte Rechnungen an die Adresse, die REWE dafür nennt.",
+				"REWE nimmt Rechnungen nur von angemeldeten Absenderadressen an. Eine Rechnung von einer anderen Adresse oder vor dem bestätigten Starttermin wird automatisch abgelehnt.",
+				"In die Rechnung gehören laut Startpaket: die eigene GLN, GLN und USt-IdNr. des Rechnungsempfängers, der Warenempfänger (Markt) mit GLN und Anschrift, die Lieferscheinnummer und je Position die GTIN oder die eigene Artikelnummer. Den verlangten Hinweis auf die Konditionsvereinbarungen setzt das Programm selbst.",
+				"REWE möchte je Lieferung und Markt eine eigene Rechnung.",
+				"Angaben, für die es ein Feld gibt (GLN, Lieferschein, Bestellung, Bankverbindung), sollen nicht zusätzlich in Freitexten stehen. Beim Einlesen aus Lexware Office räumt das Programm solche Zeilen auf.",
+				"Versand: je E-Mail genau eine Rechnung, kein Text und keine Signatur in der E-Mail - ein Logo in der Signatur zählt als weiterer Anhang. Das Programm verschickt deshalb nur die Rechnung.",
+				"Pfand möchte REWE gesondert gekennzeichnet haben. Wie, ist mit REWE zu klären.",
+				"Für Kostenrechnungen (keine Handelsware) gelten eigene Vorgaben, unter anderem eine 10-stellige Kostenstelle.",
+				"Selbstständige REWE-Kaufleute sind eigene Firmen mit eigener USt-IdNr.: Geht die Rechnung an den Kaufmann, ist er der Rechnungsempfänger und meist zugleich der Markt.",
 			},
 			Quellen: []string{
+				"REWE-Startpaket für E-Rechnungen (erhält der Lieferant bei der Anmeldung; berücksichtigt ist der Stand 1.7 vom 14.07.2026)",
 				"REWE Group: E-Rechnungen bei der REWE Group – https://service.rewe-group.com/de/rechnungsstellung/e-rechnungen-bei-der-rewe-group/",
 				"REWE Group: Häufig gestellte Fragen zur Rechnungsstellung – https://service.rewe-group.com/de/rechnungsstellung/haufig-gestellte-fragen/",
-				"REWE Group: Starterkit Zentraler Belegeingang und Kundenliste (auf denselben Seiten verlinkt)",
 			},
-			Formate:       []string{modell.FormatZugferd, modell.FormatXRechnungCII},
-			MaxMB:         30,
-			NeutralerText: true,
+			Formate:  []string{modell.FormatZugferd, modell.FormatXRechnungCII},
+			MaxMB:    30,
+			OhneText: true,
 			Vorlagen: []Vorlage{
 				{
 					Titel:   "REWE Markt GmbH",
-					Hinweis: "Bitte den Namenszusatz der Zweigniederlassung ergänzen und deren GLN eintragen (laut REWE-Kundenliste zum Beispiel ZwNl. West 4388093000005, ZwNl. Nord 4388091000007). Adresse und Rechnungspostfach vor der ersten Rechnung mit der aktuellen Kundenliste von REWE abgleichen.",
+					Hinweis: "GLN des Rechnungsempfängers und das Rechnungspostfach stehen im Startpaket von REWE. Die belieferten Märkte unten mit ihrer GLN und Anschrift anlegen.",
 					Kunde: modell.Kunde{
-						Partei: modell.Partei{Name: "REWE Markt GmbH ZwNl. ", Strasse: "Domstraße 20", PLZ: "50668", Ort: "Köln", Land: "DE", UStID: "DE812706034"},
+						Partei: modell.Partei{Name: "REWE Markt GmbH", Strasse: "Domstraße 20", PLZ: "50668", Ort: "Köln", Land: "DE", UStID: "DE812706034"},
 						Profil: Rewe, Format: modell.FormatZugferd,
-						RechnungsEmail: "rechnung.rewemarkt@rewe-group.com",
 					},
 				},
 				{
 					Titel:   "PENNY Markt GmbH",
-					Hinweis: "Adresse, GLN und Rechnungspostfach vor der ersten Rechnung mit der aktuellen Kundenliste von REWE abgleichen.",
+					Hinweis: "GLN und Rechnungspostfach vor der ersten Rechnung mit den Angaben von REWE abgleichen.",
 					Kunde: modell.Kunde{
 						Partei: modell.Partei{Name: "PENNY Markt GmbH", Strasse: "Domstraße 20", PLZ: "50668", Ort: "Köln", Land: "DE", UStID: "DE202748117", GLN: "4388290000006"},
 						Profil: Rewe, Format: modell.FormatZugferd,
-						RechnungsEmail: "rechnung.pennymarkt@rewe-group.com",
 					},
 				},
 				{
 					Titel:   "Selbstständiger REWE-Kaufmann",
-					Hinweis: "Name, Anschrift, USt-IdNr., GLN und Rechnungsadresse direkt beim Markt erfragen - jeder Kaufmann ist eine eigene Firma.",
-					Kunde:   modell.Kunde{Partei: modell.Partei{Land: "DE"}, Profil: Handel, Format: modell.FormatZugferd},
+					Hinweis: "Name, Anschrift, USt-IdNr. und GLN direkt beim Markt erfragen - jeder Kaufmann ist eine eigene Firma. Mit dem Knopf „Der Rechnungsempfänger ist selbst der Markt“ wird er zugleich als Warenempfänger eingetragen.",
+					Kunde:   modell.Kunde{Partei: modell.Partei{Land: "DE"}, Profil: Rewe, Format: modell.FormatZugferd},
 				},
 			},
 		},
@@ -117,7 +124,7 @@ func profile() []Profil {
 			ID: Edeka, Name: "EDEKA-Verbund", Kurz: "EDEKA-Regionalgesellschaften, Netto Marken-Discount und selbstständige EDEKA-Kaufleute",
 			Hinweise: []string{
 				"EDEKA veröffentlicht die Rechnungsadressen nicht. Vor der ersten E-Rechnung bei der abrechnenden Gesellschaft (Regionalgesellschaft oder Markt) erfragen: die E-Mail-Adresse für E-Rechnungen, den Leitfaden zum elektronischen Rechnungsversand sowie die GLN des Rechnungsempfängers und der belieferten Märkte.",
-				"Wer Rechnungsempfänger ist, hängt vom Vertrag ab: Bei Direktlieferung ist es meist der Markt selbst (der Kaufmann als eigene Firma), bei Streckenlieferung und Zentralregulierung die Regionalgesellschaft.",
+				"Wer Rechnungsempfänger ist, hängt vom Vertrag ab. Bei Zentralregulierung ist es die Regionalgesellschaft (zum Beispiel die EDEKA Handelsgesellschaft der Region), und der belieferte Markt steht als Warenempfänger mit GLN und Anschrift in der Rechnung. Bei reiner Direktlieferung kann der Markt selbst - der Kaufmann als eigene Firma - der Empfänger sein.",
 				"EDEKA verlangt die GLN in eigenen Feldern der Rechnung: Rechnungsempfänger, Warenempfänger (Markt) und möglichst auch die eigene GLN als Lieferant. Eine GLN im Firmennamen oder im Freitext zählt nicht. Die eigene GLN und die GTIN der Artikel vergibt GS1 Germany.",
 				"Üblich sind außerdem Bestellnummer, Lieferscheinnummer, Lieferdatum und GTIN je Position; in der Regel eine Rechnung je Lieferschein.",
 				"Versand: eine Rechnung und ein Anhang je E-Mail, höchstens 10 MB, die Rechnungsnummer im Betreff. An das Rechnungspostfach keine Mahnungen oder andere Schreiben schicken.",
@@ -188,6 +195,14 @@ func Regeln(id string, r modell.Rechnung) []modell.Meldung {
 		l = append(l, m(kuerzel+"-WE-GLN", modell.Fehler, "lieferort.gln",
 			name+" verlangt die GLN des Warenempfängers, also des belieferten Markts (13 Ziffern, Feld BT-71). Bitte den Markt mit seiner GLN auswählen oder eintragen."))
 	}
+	if !r.Lieferort.Leer() && r.Lieferort.GLN != "" && (r.Lieferort.Strasse == "" || r.Lieferort.PLZ == "" || r.Lieferort.Ort == "") {
+		schwere := modell.Fehler
+		if id == Handel {
+			schwere = modell.Warnung
+		}
+		l = append(l, m(kuerzel+"-WE-ANSCHRIFT", schwere, "lieferort.strasse",
+			name+" verlangt beim Warenempfänger neben der GLN die Anschrift des Markts (Straße, PLZ, Ort; Felder BT-75 bis BT-80). Bitte beim Kunden den Markt vervollständigen."))
+	}
 	// Fehlt jede Zeitangabe, meldet das schon die allgemeine Prüfung. Hier
 	// geht es um den Fall, dass nur ein Zeitraum angegeben ist.
 	if r.Leistungsdatum == "" && (r.ZeitraumVon != "" || r.ZeitraumBis != "") {
@@ -201,29 +216,46 @@ func Regeln(id string, r modell.Rechnung) []modell.Meldung {
 	stufe := modell.Warnung
 	switch id {
 	case Rewe:
-		ks := strings.TrimSpace(r.Kostenstelle)
-		if ks == "" {
+		if strings.TrimSpace(r.Kaeufer.UStID) == "" {
+			l = append(l, m("REWE-USTID", modell.Fehler, "kaeufer.ustId",
+				"REWE verlangt die USt-IdNr. des Rechnungsempfängers (Feld BT-48), auch bei Rechnungen innerhalb Deutschlands. Sie steht zum Beispiel auf Bestellungen oder Gutschriften von REWE und wird beim Kunden hinterlegt."))
+		}
+		if r.Verkaeufer.GLN == "" {
+			l = append(l, m("REWE-LIEFERANT-GLN", modell.Fehler, "verkaeufer.gln",
+				"REWE verlangt die eigene GLN als Lieferant (Feld BT-29). Sie wird unter Einstellungen bei den Firmendaten eingetragen."))
+		}
+		// Nur Kostenrechnungen brauchen eine Kostenstelle; ist eine
+		// eingetragen, muss sie die richtige Form haben.
+		if ks := strings.TrimSpace(r.Kostenstelle); ks != "" && (len(ks) != 10 || strings.Trim(ks, "0123456789") != "") {
 			l = append(l, m("REWE-KOSTENSTELLE", modell.Fehler, "kostenstelle",
-				"REWE verlangt auf jeder Rechnung die 10-stellige Kostenstelle (Feld BT-19). Der Auftraggeber bei REWE teilt sie auf Anfrage mit."))
-		} else if len(ks) != 10 || strings.Trim(ks, "0123456789") != "" {
-			l = append(l, m("REWE-KOSTENSTELLE", modell.Fehler, "kostenstelle",
-				"Die REWE-Kostenstelle besteht aus genau 10 Ziffern - eingetragen ist „"+ks+"“."))
+				"Die REWE-Kostenstelle besteht aus genau 10 Ziffern - eingetragen ist „"+ks+"“. Für Warenrechnungen kann das Feld leer bleiben."))
 		}
-		if r.Verkaeufer.Kennung == "" {
-			l = append(l, m("REWE-KREDITOR", modell.Warnung, "verkaeufer.kennung",
-				"Die Lieferantennummer (Kreditorennummer) bei REWE fehlt. REWE fragt sie bei der Anmeldung ab; mit ihr wird die Rechnung sicher zugeordnet. Sie wird beim Kunden hinterlegt."))
+		if r.Lieferscheinnummer == "" && r.Art != modell.ArtGutschrift {
+			l = append(l, m("REWE-LIEFERSCHEIN", modell.Warnung, "lieferscheinnummer",
+				"Die Lieferscheinnummer fehlt (Feld BT-16). REWE wünscht sie ausdrücklich und möchte je Lieferung und Markt eine eigene Rechnung. Bitte eintragen, wenn es einen Lieferschein gibt."))
 		}
-		if !r.Lieferort.Leer() && !r.Lieferort.HatAdresse() {
-			l = append(l, m("REWE-LEISTUNGSORT", modell.Warnung, "lieferort.strasse",
-				"REWE möchte den Ort der Leistung auf der Rechnung sehen, zum Beispiel die Anschrift des Markts. Bitte beim Markt Straße, PLZ und Ort ergänzen."))
+		for i, p := range r.Positionen {
+			if p.GTIN == "" && strings.TrimSpace(p.Artikelnummer) == "" {
+				l = append(l, m("REWE-ARTIKEL", modell.Fehler, feldPos(i, "artikelnummer"),
+					"Position "+p.Nr+": REWE verlangt je Position die GTIN (EAN) oder die eigene Artikelnummer. Bitte eine von beiden eintragen - am besten beim Artikel in den Stammdaten."))
+				break
+			}
 		}
-		if r.Bestellnummer == "" && r.Lieferscheinnummer == "" {
-			l = append(l, m("REWE-BEZUG", modell.Info, "bestellnummer",
-				"Weder Bestell- noch Lieferscheinnummer sind angegeben. Wenn es eine gibt, hilft sie REWE bei der Zuordnung."))
+		for i, p := range r.Positionen {
+			n := strings.ToLower(p.Bezeichnung)
+			if strings.Contains(n, "pfand") && !strings.Contains(n, "ohne pfand") && !strings.Contains(n, "o. pfand") {
+				l = append(l, m("REWE-PFAND", modell.Warnung, feldPos(i, "bezeichnung"),
+					"Position "+p.Nr+" sieht nach Pfand aus. REWE möchte Pfand gesondert gekennzeichnet haben; das kann dieses Programm noch nicht. Bitte mit REWE klären, wie Pfand abzurechnen ist."))
+				break
+			}
 		}
-		if n := strings.ToLower(r.Kaeufer.Name); strings.Contains(n, "rewe markt") && !strings.Contains(n, "zwnl") && !strings.Contains(n, "zweigniederlassung") {
-			l = append(l, m("REWE-ZWNL", modell.Info, "kaeufer.name",
-				"Bei der REWE Markt GmbH soll der Zusatz der Zweigniederlassung im Namen stehen, zum Beispiel „REWE Markt GmbH ZwNl. West“."))
+		hatAAK := false
+		for _, h := range r.Hinweise {
+			hatAAK = hatAAK || (h.Code == "AAK" && strings.TrimSpace(h.Text) != "")
+		}
+		if !hatAAK {
+			l = append(l, m("REWE-KONDITIONEN", modell.Fehler, "hinweise",
+				"Der von REWE verlangte Hinweis auf die Zahlungs- und Konditionsvereinbarungen fehlt (Freitext mit Kennzeichen AAK)."))
 		}
 	case Edeka:
 		if r.Verkaeufer.GLN == "" {
@@ -270,11 +302,8 @@ func Regeln(id string, r modell.Rechnung) []modell.Meldung {
 			}
 		}
 	}
-	if ohneGTIN > 0 && r.Art != modell.ArtGutschrift {
+	if ohneGTIN > 0 && r.Art != modell.ArtGutschrift && id != Rewe {
 		schwere := modell.Warnung
-		if id == Rewe {
-			schwere = modell.Info
-		}
 		text := "Bei einer Position fehlt die GTIN (EAN, Feld BT-157)."
 		if ohneGTIN > 1 {
 			text = "Bei mehreren Positionen fehlt die GTIN (EAN, Feld BT-157)."

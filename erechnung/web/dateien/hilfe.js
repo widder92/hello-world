@@ -30,14 +30,14 @@ export function Hilfeseite() {
 
     <div class="karte">
       <h2>Warum Rechnungen aus Lexware Office (lexoffice) abgelehnt werden</h2>
-      <p>Meist ist nicht die Datei kaputt, sondern dem Handel fehlen Angaben für seine automatische Verarbeitung: die <b>GLN</b> von Rechnungsempfänger und Markt, die <b>Bestell-</b> und <b>Lieferscheinnummer</b>, bei REWE die <b>Kostenstelle</b>, oft auch die <b>GTIN</b> der Artikel. Dazu kommen Versandregeln – bei REWE etwa die vorherige Anmeldung der Absenderadresse.</p>
+      <p>Meist ist nicht die Datei kaputt, sondern dem Handel fehlen Angaben für seine automatische Verarbeitung: die <b>GLN</b> von Rechnungsempfänger und Markt, der <b>Markt mit Anschrift</b>, die <b>Bestell-</b> und <b>Lieferscheinnummer</b>, die <b>USt-IdNr.</b> des Kunden, oft auch die <b>GTIN</b> der Artikel. In Lexware Office stehen diese Angaben häufig nur im Freitext oder in der Anschrift – dort findet sie die Maschine des Handels nicht. Dazu kommen Versandregeln – bei REWE etwa die vorherige Anmeldung der Absenderadresse.</p>
       <h3>Zusammenspiel mit Lexware Office</h3>
       <p>Lexware Office kann für Buchhaltung, Bank und Steuer weiterlaufen. Es gibt zwei Wege:</p>
       <ul>
-        <li><b>Weiter in Lexware Office schreiben, hier versenden (empfohlen):</b> Die Rechnung entsteht wie gewohnt in Lexware Office – mit dessen Rechnungsnummer und gleich richtig verbucht. Unter <a href="#/pruefen">Import aus Lexoffice</a> wird sie eingelesen: als heruntergeladene Datei oder direkt über die Verbindung zu Lexware Office. Das Programm ergänzt aus seinen Stammdaten, was dem Handel fehlt (GLN, Markt, Kostenstelle, GTIN), prüft die Rechnung und verschickt sie als vollständige E-Rechnung. Aus Lexware Office selbst wird diese Rechnung dann nicht mehr verschickt.</li>
+        <li><b>Weiter in Lexware Office schreiben, hier versenden (empfohlen):</b> Die Rechnung entsteht wie gewohnt in Lexware Office – mit dessen Rechnungsnummer und gleich richtig verbucht. Unter <a href="#/pruefen">Import aus Lexoffice</a> wird sie eingelesen: als heruntergeladene Datei oder direkt über die Verbindung zu Lexware Office. Das Programm liest GLN, Lieferschein- und Bestellnummer auch aus dem Freitext und der Anschrift heraus, ergänzt aus seinen Stammdaten, was dem Handel fehlt (GLN, Markt mit Anschrift, USt-IdNr., GTIN), prüft die Rechnung und verschickt sie als vollständige E-Rechnung. Aus Lexware Office selbst wird diese Rechnung dann nicht mehr verschickt.</li>
         <li><b>Hier schreiben:</b> Rechnungen an REWE und EDEKA entstehen direkt in diesem Programm und werden in Lexware Office als Einnahme-Beleg erfasst (die PDF-Datei aus dem Ordner „Rechnungen“ hochladen). Dann getrennte Nummernkreise verwenden, damit keine Rechnungsnummer doppelt vorkommt.</li>
       </ul>
-      <p>Damit der Import ohne Nacharbeit läuft, einmal die Stammdaten pflegen: beim Kunden die GLN und die Märkte mit ihren GLN (und bei REWE den Kostenstellen), bei den Artikeln die GTIN. Kunden und Artikel lassen sich auf der Importseite aus Lexware Office holen.</p>
+      <p>Damit der Import ohne Nacharbeit läuft, einmal die Stammdaten pflegen: beim Kunden die GLN und die Märkte mit GLN und Anschrift, bei den Artikeln die GTIN. Kunden und Artikel lassen sich auf der Importseite aus Lexware Office holen; eine fertige Liste von Kunden und Märkten lässt sich unter <a href="#/kunden">Kunden</a> mit „Aus Datei einlesen“ übernehmen.</p>
     </div>
 
     ${stamm.profile.map((p) => html`<div class="karte" key=${p.id}>

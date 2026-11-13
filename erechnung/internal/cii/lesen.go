@@ -102,7 +102,7 @@ func LiesBaum(w *xmlbaum.Knoten) (modell.Rechnung, []string, error) {
 			l.Kennung = id
 		}
 		if a := ziel.Finde("PostalTradeAddress"); a != nil {
-			l.Strasse, l.Zusatz = a.Wert("LineOne"), a.Wert("LineTwo")
+			l.Strasse, l.Zusatz = a.Wert("LineOne"), zusatz(a)
 			l.PLZ, l.Ort, l.Land = a.Wert("PostcodeCode"), a.Wert("CityName"), a.Wert("CountryID")
 		}
 		r.Lieferort = l
@@ -246,6 +246,12 @@ func liesSkonto(text string, z *modell.Zahlung) string {
 	return strings.Join(rest, "\n")
 }
 
+// zusatz fasst die zweite und dritte Anschriftzeile zusammen, durch einen
+// Zeilenumbruch getrennt.
+func zusatz(a *xmlbaum.Knoten) string {
+	return strings.TrimSpace(a.Wert("LineTwo") + "\n" + a.Wert("LineThree"))
+}
+
 func liesZuAbschlag(a *xmlbaum.Knoten) modell.ZuAbschlag {
 	return modell.ZuAbschlag{
 		Zuschlag: strings.EqualFold(a.Wert("ChargeIndicator", "Indicator"), "true"),
@@ -283,7 +289,7 @@ func liesPartei(n *xmlbaum.Knoten) modell.Partei {
 		p.Email = k.Wert("EmailURIUniversalCommunication", "URIID")
 	}
 	if a := n.Finde("PostalTradeAddress"); a != nil {
-		p.Strasse, p.Zusatz = a.Wert("LineOne"), a.Wert("LineTwo")
+		p.Strasse, p.Zusatz = a.Wert("LineOne"), zusatz(a)
 		p.PLZ, p.Ort, p.Land = a.Wert("PostcodeCode"), a.Wert("CityName"), a.Wert("CountryID")
 	}
 	if e := n.Finde("URIUniversalCommunication", "URIID"); e != nil {

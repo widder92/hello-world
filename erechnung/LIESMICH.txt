@@ -21,7 +21,8 @@ Erste Schritte
 --------------
 1. Einstellungen: eigene Firmendaten, Steuernummer oder USt-IdNr., GLN, Bank
 2. Kunden: Rechnungsempfänger und Märkte mit ihren GLN anlegen
-   (für REWE und EDEKA gibt es Vorlagen)
+   (für REWE und EDEKA gibt es Vorlagen). Eine fertige Liste von Kunden
+   und Märkten übernimmt "Aus Datei einlesen ..." auf der Seite Kunden.
 3. Einstellungen: E-Mail-Versand einrichten, Probe-E-Mail senden
 4. Neue Rechnung schreiben - das Programm sagt, was noch fehlt
 

@@ -24,15 +24,19 @@ seine automatische Verarbeitung:
 | Angabe | Feld der Norm | Wer sie verlangt |
 |---|---|---|
 | GLN des Rechnungsempfängers | BT-46 | REWE, EDEKA, Handel allgemein |
-| GLN des Warenempfängers (Markt) | BT-71 | REWE, EDEKA, Handel allgemein |
-| Kostenstelle, 10 Ziffern | BT-19 | REWE |
-| Eigene GLN als Lieferant | BT-29 | EDEKA |
-| Bestell- und Lieferscheinnummer | BT-13, BT-16 | EDEKA, Handel allgemein |
+| Warenempfänger (Markt) mit GLN und Anschrift | BT-71, BG-15 | REWE, EDEKA, Handel allgemein |
+| USt-IdNr. des Rechnungsempfängers | BT-48 | REWE |
+| Eigene GLN als Lieferant | BT-29 | REWE, EDEKA |
+| Lieferscheinnummer, Bestellnummer | BT-16, BT-13 | REWE, EDEKA, Handel allgemein |
 | Lieferdatum | BT-72 | alle |
-| GTIN (EAN) je Artikel | BT-157 | EDEKA, Handel allgemein |
+| GTIN (EAN) oder Artikelnummer je Position | BT-157, BT-155 | REWE, EDEKA, Handel allgemein |
+| Hinweis auf die Konditionsvereinbarungen | BT-22 (AAK) | REWE |
 
-Marktrechnung führt diese Angaben als eigene Felder, prüft Prüfziffern und
-Pflichtangaben **vor** dem Versand und sagt in einfachen Worten, was fehlt.
+In Lexware Office stehen solche Angaben oft nur in der Anschrift („GLN: …“)
+oder im Freitext – dort findet sie die automatische Verarbeitung des Handels
+nicht. Marktrechnung führt sie als eigene Felder, liest sie beim Import aus
+dem Text heraus, prüft Prüfziffern und Pflichtangaben **vor** dem Versand und
+sagt in einfachen Worten, was fehlt.
 
 ## Was das Programm kann
 
@@ -98,18 +102,26 @@ auch erzwingen.
 
 **REWE Group**
 
-- E-Rechnungen müssen angemeldet werden: Format und Versandweg werden
-  vereinbart und getestet. Anmeldung über
-  `e-rechnungen.onboarding@rewe-group.com`, dabei die eigene Kreditorennummer
-  nennen. An dieses Postfach keine echten Rechnungen schicken.
+- E-Rechnungen müssen angemeldet werden. Anmeldung über
+  `e-rechnungen.onboarding@rewe-group.com`, dabei die eigene Lieferantennummer
+  nennen. REWE schickt ein Startpaket mit den genauen Vorgaben; in der
+  Testphase geht eine Testrechnung an dieses Postfach, echte Rechnungen erst
+  nach der Freigabe an die Adresse, die REWE dafür nennt.
 - REWE nimmt Rechnungen **nur von angemeldeten Absenderadressen** und erst ab
   dem bestätigten Starttermin an. Alles andere wird automatisch abgelehnt –
   das ist eine häufige Ursache für „Fehler“, die mit dem Inhalt der Rechnung
   nichts zu tun haben.
-- Beim Auftraggeber erfragen: Kostenstelle (10 Ziffern), GLN des
-  Rechnungsempfängers und GLN jedes belieferten Markts.
-- Der öffentlich beschriebene E-Mail-Weg gilt laut REWE derzeit für
-  Kostenrechnungen. Für Warenrechnungen beim Onboarding nachfragen.
+- In die Rechnung gehören laut Startpaket (Stand 1.7): die eigene GLN, GLN und
+  USt-IdNr. des Rechnungsempfängers, der Markt als Warenempfänger mit GLN und
+  Anschrift, die Lieferscheinnummer, je Position GTIN oder Artikelnummer und
+  der Hinweis auf die Konditionsvereinbarungen. Den Hinweis setzt das Programm
+  selbst; alles andere prüft es vor dem Versand.
+- Je Lieferung und Markt eine Rechnung, je E-Mail eine Rechnung – ohne Text
+  und ohne Signatur. Das Programm verschickt an REWE deshalb nur den Anhang.
+- Was ein eigenes Feld hat (GLN, Lieferschein, Bankverbindung), soll nicht
+  zusätzlich im Freitext stehen. Der Import räumt solche Zeilen auf.
+- Eine Kostenstelle (10 Ziffern) verlangt REWE nur bei Kostenrechnungen, nicht
+  bei Warenlieferungen.
 
 **EDEKA**
 
@@ -117,6 +129,9 @@ auch erzwingen.
   Gesellschaft (Regionalgesellschaft oder Markt) erfragen: E-Mail-Adresse für
   E-Rechnungen, den Leitfaden zum elektronischen Rechnungsversand, die GLN von
   Rechnungsempfänger und Märkten.
+- Bei Zentralregulierung ist die Regionalgesellschaft der Rechnungsempfänger;
+  der belieferte Markt steht als Warenempfänger mit GLN und Anschrift in der
+  Rechnung.
 - Die eigene GLN und die GTIN der Artikel vergibt GS1 Germany.
 - EDEKA prüft auch das PDF streng auf PDF/A-3.
 
@@ -148,15 +163,52 @@ was es aus seinen Stammdaten kennt:
 
 | Fehlt in der Lexware-Rechnung | Kommt aus |
 |---|---|
-| GLN des Rechnungsempfängers, Lieferantennummer | Kunde |
-| Markt mit GLN, Kostenstelle | Markt des Kunden |
+| GLN und USt-IdNr. des Rechnungsempfängers, Lieferantennummer | Kunde |
+| Markt mit GLN und Anschrift | Markt des Kunden |
 | GTIN, Artikelnummer beim Kunden | Artikel |
 
+Vorher liest es heraus, was in der Lexware-Rechnung nur als Text steht: eine
+„GLN: …“ in der Anschrift des Kunden, Lieferschein- und Bestellnummer und die
+GLN des Markts in den Bemerkungen. Die Werte wandern in die richtigen Felder,
+die Textzeilen verschwinden. Über die GLN oder die Kundennummer erkennt das
+Programm den Markt wieder – auch wenn in Lexware Office der Markt selbst als
+Kunde geführt wird, die Rechnung aber an die Zentrale gehen muss.
+
+Zwei Fälle aus der Praxis fängt der Import ab:
+
+- **Der Kunde heißt in Lexware Office anders** (etwa eine Kurzbezeichnung).
+  Beim Kunden lässt sich der dortige Name hinterlegen; daran erkennt ihn der
+  Import wieder.
+- **In Lexware Office ist der Markt der Kunde, der Handel will die Rechnung
+  aber an seine Zentrale.** Ist der Empfänger als Markt eines Kunden bekannt,
+  schlägt der Import vor, die Rechnung an diesen Kunden zu stellen und den
+  Markt als Warenempfänger einzutragen. Der Haken lässt sich entfernen, wenn
+  der Markt als eigene Firma direkt abrechnet.
+
 Unbekannte Kunden, Märkte und Artikel legt der Import an; für REWE und EDEKA
-stellt er die passenden Vorgaben ein. Danach genügt es, einmal die GLN,
-Kostenstellen und GTIN nachzutragen – bei den folgenden Rechnungen sind sie
-dann von selbst da. Die erste eingelesene Rechnung kann außerdem die eigenen
-Firmendaten in die Einstellungen eintragen.
+stellt er die passenden Vorgaben ein. Danach genügt es, einmal die GLN und
+GTIN nachzutragen – bei den folgenden Rechnungen sind sie dann von selbst da.
+Die erste eingelesene Rechnung kann außerdem die eigenen Firmendaten in die
+Einstellungen eintragen.
+
+**Kunden und Märkte aus einer Datei.** Wer viele Märkte beliefert, muss sie
+nicht einzeln eintippen: Unter *Kunden* übernimmt „Aus Datei einlesen …“ eine
+Stammdaten-Datei (JSON) mit Kunden und ihren Märkten. Vorhandene Einträge
+bleiben erhalten; leere Felder werden ergänzt, Märkte an ihrer GLN erkannt.
+
+```json
+{
+  "firma": { "gln": "4012345000009" },
+  "kunden": [{
+    "name": "Beispiel Handels GmbH", "alias": "BHG Nord", "profil": "edeka", "gln": "4399901000001",
+    "strasse": "Musterstraße 1", "plz": "34117", "ort": "Kassel", "land": "DE",
+    "lieferorte": [{
+      "name": "Markt Musterstadt", "gln": "4399901000018", "kundennummer": "10023",
+      "strasse": "Hauptstraße 5", "plz": "34497", "ort": "Korbach", "land": "DE"
+    }]
+  }]
+}
+```
 
 Zu beachten:
 

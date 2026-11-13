@@ -5,13 +5,28 @@ import {
 
 export function Kundenliste() {
   const [liste, setListe] = useState(null);
-  useEffect(() => { api('GET', '/api/kunden').then(setListe).catch(zeigeFehler); }, []);
+  const lade = () => api('GET', '/api/kunden').then(setListe).catch(zeigeFehler);
+  useEffect(() => { lade(); }, []);
+  const liesDatei = async (datei) => {
+    if (!datei) return;
+    try {
+      let inhalt;
+      try { inhalt = JSON.parse(await datei.text()); } catch (e) { throw new Error('Die Datei ist keine Stammdaten-Datei von Marktrechnung.'); }
+      const a = await api('POST', '/api/stammdaten', inhalt);
+      zeige(`Eingelesen: ${a.kundenNeu} Kunden neu, ${a.kundenErgaenzt} ergänzt, ${a.maerkteNeu} Märkte neu${a.firma ? ', eigene Firmendaten ergänzt' : ''}.`, 'gut');
+      lade();
+    } catch (e) { zeigeFehler(e); }
+  };
   if (!liste) return html`<p class="laden">Kunden werden geladen …</p>`;
   const profil = (id) => (stamm.profile.find((p) => p.id === id) || {}).name || '';
   return html`
     <div class="kopf">
       <div><h1>Kunden</h1><div class="leise">Rechnungsempfänger, ihre Märkte und wohin die Rechnungen gehen</div></div>
-      <div class="knoepfe"><button class="haupt" onClick=${() => gehe('#/kunden/neu')}>+ Neuer Kunde</button></div>
+      <div class="knoepfe">
+        <label class="knopf" title="Kunden und Märkte aus einer Stammdaten-Datei übernehmen. Vorhandenes bleibt erhalten.">Aus Datei einlesen …<input type="file" accept=".json,application/json" hidden
+          onChange=${(e) => { liesDatei(e.target.files[0]); e.target.value = ''; }} /></label>
+        <button class="haupt" onClick=${() => gehe('#/kunden/neu')}>+ Neuer Kunde</button>
+      </div>
     </div>
     <div class="karte">
       ${liste.length === 0 ? html`<div class="leer">Noch kein Kunde angelegt.</div>` : html`<table class="wahl">
@@ -25,7 +40,7 @@ export function Kundenliste() {
     </div>`;
 }
 
-const leererKunde = () => ({ id: '', name: '', strasse: '', zusatz: '', plz: '', ort: '', land: 'DE', ustId: '', gln: '', kennung: '',
+const leererKunde = () => ({ id: '', name: '', strasse: '', zusatz: '', plz: '', ort: '', land: 'DE', ustId: '', gln: '', kennung: '', alias: '',
   lieferantennummer: '', kaeuferreferenz: '', profil: 'handel', format: 'zugferd', rechnungsEmail: '', emailBetreff: '', emailText: '',
   zieltage: 0, skontoTage: 0, skontoProzent: '0', lieferorte: [], notiz: '' });
 
@@ -40,6 +55,8 @@ export function Kundenseite({ id, zurueck }) {
   const [k, setK] = useState(null);
   const [vorlagen, setVorlagen] = useState(id === 'neu');
   const [speichert, setSpeichert] = useState(false);
+  const [marktSuche, setMarktSuche] = useState('');
+  const [offen, setOffen] = useState({});
   useEffect(() => {
     if (id === 'neu') { setK(leererKunde()); return; }
     api('GET', '/api/kunden').then((l) => {
@@ -65,6 +82,7 @@ export function Kundenseite({ id, zurueck }) {
     if (!confirm(`Kunde „${k.name}“ löschen?\n\nBestehende Rechnungen bleiben unverändert erhalten.`)) return;
     try { await api('DELETE', '/api/kunden/' + k.id); gehe('#/kunden'); } catch (e) { zeigeFehler(e); }
   };
+  const viele = k.lieferorte.length > 6;
   const alleVorlagen = stamm.profile.flatMap((p) => (p.vorlagen || []).map((v) => ({ ...v, profil: p.name })));
 
   return html`
@@ -102,14 +120,27 @@ export function Kundenseite({ id, zurueck }) {
             <${Feld} titel="USt-IdNr. des Kunden" breite="4"><${Text} feld="kaeufer.ustId" wert=${k.ustId} setze=${setze('ustId')} placeholder="DE123456789" /><//>
             <${Feld} titel="Unsere Lieferantennummer dort" breite="4" hilfe="Kreditorennummer, die der Kunde vergeben hat"><${Text} feld="verkaeufer.kennung" wert=${k.lieferantennummer} setze=${setze('lieferantennummer')} /><//>
             <${Feld} titel="Kundennummer bei uns" breite="4" hilfe="nur für das PDF"><${Text} wert=${k.kennung} setze=${setze('kennung')} /><//>
+            <${Feld} titel="Name in Lexware Office, falls er dort anders lautet" breite="12" hilfe="Daran erkennt der Import den Kunden wieder. Mehrere Namen mit Semikolon trennen. In der Rechnung erscheint er nicht.">
+              <${Text} wert=${k.alias || ''} setze=${setze('alias')} placeholder="z. B. eine Kurzbezeichnung" /><//>
           </div>
         </div>
 
         <div class="karte">
           <h2>Belieferte Märkte (Warenempfänger)</h2>
           <p class="leise klein">Jeder Markt mit seiner eigenen GLN. Beim Schreiben der Rechnung wird der Markt nur noch ausgewählt.</p>
+          ${viele && html`<input style="margin-bottom:.6rem" placeholder=${`In ${k.lieferorte.length} Märkten suchen: Name, Ort, Straße oder GLN`} value=${marktSuche} onInput=${(e) => setMarktSuche(e.target.value)} />`}
           ${k.lieferorte.map((l, i) => {
             const s = (n) => setze(`lieferorte.${i}.${n}`);
+            const wort = marktSuche.trim().toLowerCase();
+            if (viele && wort && ![l.name, l.ort, l.strasse, l.plz, l.gln, l.kennung].some((t) => (t || '').toLowerCase().includes(wort))) return null;
+            const unvollstaendig = !l.gln || !l.strasse || !l.plz || !l.ort;
+            if (viele && !offen[i]) {
+              return html`<div class="position" key=${i} style="display:flex;gap:.8rem;align-items:center;padding:.45rem .8rem;margin-bottom:.35rem">
+                <span style="flex:1;min-width:0"><b>${l.name || 'ohne Namen'}</b> <span class="leise klein">· ${[l.strasse, (l.plz + ' ' + l.ort).trim()].filter(Boolean).join(', ')} · GLN ${l.gln || 'fehlt'}</span>
+                  ${unvollstaendig ? html` <span class="klein" style="color:var(--rot)">unvollständig</span>` : null}</span>
+                <button class="schlicht" onClick=${() => setOffen({ ...offen, [i]: true })}>Bearbeiten</button>
+              </div>`;
+            }
             return html`<div class="position" key=${i}>
               <div class="raster">
                 <${Feld} titel="Name des Markts" breite="5"><${Text} wert=${l.name} setze=${s('name')} /><//>
@@ -118,14 +149,15 @@ export function Kundenseite({ id, zurueck }) {
                 <${Feld} titel="Straße und Hausnummer" breite="5"><${Text} feld=${i === 0 ? 'lieferort.strasse' : ''} wert=${l.strasse} setze=${s('strasse')} /><//>
                 <${Feld} titel="PLZ" breite="2"><${Text} wert=${l.plz} setze=${s('plz')} /><//>
                 <${Feld} titel="Ort" breite="5"><${Text} wert=${l.ort} setze=${s('ort')} /><//>
-                <${Feld} titel="Kostenstelle" breite="5" hilfe=${k.profil === 'rewe' ? 'REWE: 10 Ziffern, wird in die Rechnung übernommen' : 'falls der Kunde eine nennt'}><${Text} wert=${l.kostenstelle} setze=${s('kostenstelle')} /><//>
+                <${Feld} titel="Kostenstelle" breite="5" hilfe=${k.profil === 'rewe' ? 'nur für Kostenrechnungen an REWE (10 Ziffern)' : 'falls der Kunde eine nennt'}><${Text} wert=${l.kostenstelle} setze=${s('kostenstelle')} /><//>
                 <div class="feld b7" style="grid-column:span 7;justify-content:flex-end;align-items:flex-end">
-                  <button class="schlicht" onClick=${() => setK((x) => ({ ...x, lieferorte: x.lieferorte.filter((_, j) => j !== i) }))}>Markt entfernen</button></div>
+                  ${viele && html`<button class="schlicht" onClick=${() => setOffen({ ...offen, [i]: false })}>Zuklappen</button>`}
+                  <button class="schlicht" onClick=${() => { setOffen({}); setK((x) => ({ ...x, lieferorte: x.lieferorte.filter((_, j) => j !== i) })); }}>Markt entfernen</button></div>
               </div>
             </div>`;
           })}
           <div style="display:flex;gap:.5rem;flex-wrap:wrap">
-            <button onClick=${() => setK((x) => ({ ...x, lieferorte: [...x.lieferorte, { id: '', name: '', gln: '', kennung: '', strasse: '', plz: '', ort: '', land: 'DE', kostenstelle: '' }] }))}>+ Markt hinzufügen</button>
+            <button onClick=${() => { setOffen({ ...offen, [k.lieferorte.length]: true }); setMarktSuche(''); setK((x) => ({ ...x, lieferorte: [...x.lieferorte, { id: '', name: '', gln: '', kennung: '', strasse: '', plz: '', ort: '', land: 'DE', kostenstelle: '' }] })); }}>+ Markt hinzufügen</button>
             ${k.lieferorte.length === 0 && html`<button title="Für selbstständige Kaufleute: Der Rechnungsempfänger ist zugleich der belieferte Markt."
               onClick=${() => setK((x) => ({ ...x, lieferorte: [{ id: '', name: x.name, gln: x.gln, kennung: '', strasse: x.strasse, plz: x.plz, ort: x.ort, land: x.land || 'DE', kostenstelle: '' }] }))}>Der Rechnungsempfänger ist selbst der Markt</button>`}
           </div>
