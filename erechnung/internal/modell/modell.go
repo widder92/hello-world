@@ -271,6 +271,9 @@ type Rechnung struct {
 	Spezifikation string `json:"spezifikation,omitempty"`
 	Prozess       string `json:"prozess,omitempty"` // BT-23
 	Herkunft      string `json:"herkunft,omitempty"`
+	// Bruttobetrag, wie er in der eingelesenen Datei stand. Weicht die neu
+	// berechnete Summe davon ab, warnt das Programm.
+	Herkunftsbetrag dec.D `json:"herkunftsbetrag,omitempty"`
 
 	Dateien        []string  `json:"dateien,omitempty"` // erzeugte Dateien im Ausgangsordner
 	Versand        []Versand `json:"versand,omitempty"`

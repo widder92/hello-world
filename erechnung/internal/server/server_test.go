@@ -25,6 +25,7 @@ import (
 var timeNull = time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)
 
 type umgebung struct {
+	server   *Server
 	t        *testing.T
 	ts       *httptest.Server
 	gesendet []post.Nachricht
@@ -36,12 +37,13 @@ func neu(t *testing.T) *umgebung {
 		t.Fatal(err)
 	}
 	u := &umgebung{t: t}
-	s := &Server{Speicher: sp, Passwort: geheim.Neu(t.TempDir(), "p"), Token: "geheim", Version: "test",
+	s := &Server{Speicher: sp, Passwort: geheim.Neu(t.TempDir(), "p"), Lexware: geheim.Neu(t.TempDir(), "l"), Token: "geheim", Version: "test",
 		Web: fstest.MapFS{"index.html": {Data: []byte("<html>Marktrechnung</html>")}},
 		Sende: func(n post.Nachricht, p modell.Postausgang, pw string) ([]byte, error) {
 			u.gesendet = append(u.gesendet, n)
 			return post.Baue(n, p, timeNull), nil
 		}}
+	u.server = s
 	u.ts = httptest.NewServer(s.Handler())
 	t.Cleanup(u.ts.Close)
 	return u
@@ -288,19 +290,20 @@ func TestFremdeRechnungPruefenUndUebernehmen(t *testing.T) {
 	// Eine Rechnung, wie sie ein anderes Programm ohne Handelsangaben
 	// erzeugt: keine GLN, keine Kostenstelle.
 	r := probe.Handel()
-	r.Kaeufer.GLN, r.Lieferort, r.Kostenstelle, r.Kaeufer.Name = "", nil, "", "Neuer Markt GmbH"
+	r.Kaeufer.GLN, r.Lieferort, r.Kostenstelle, r.Kaeufer.Name = "", nil, "", "REWE Neuer Markt GmbH"
 	r.Nummer = "LX-2026-17"
 	xml := cii.Schreibe(rechnen.Ausrechnen(r))
 	var erg importErgebnis
-	if code := u.ruf("POST", "/api/import?profil=rewe&name=lexoffice.xml", xml, &erg); code != 200 || !erg.Lesbar {
+	if code := u.ruf("POST", "/api/import?name=lexoffice.xml", xml, &erg); code != 200 || !erg.Lesbar {
 		t.Fatalf("import: %d %s", code, erg.Fehler)
 	}
 	gefunden := map[string]bool{}
 	for _, m := range erg.Meldungen {
 		gefunden[m.Regel] = true
 	}
-	if !gefunden["REWE-RE-GLN"] || !gefunden["REWE-WE-GLN"] || !gefunden["REWE-KOSTENSTELLE"] || !erg.Uebernehmen {
-		t.Errorf("Meldungen: %v, übernehmen %v", gefunden, erg.Uebernehmen)
+	// Das REWE-Profil ergibt sich aus dem Namen des unbekannten Kunden.
+	if !gefunden["REWE-RE-GLN"] || !gefunden["REWE-WE-GLN"] || !gefunden["REWE-KOSTENSTELLE"] || !erg.Uebernehmen || erg.Stand != "neu" || erg.Kunde != "" {
+		t.Errorf("Meldungen: %v, übernehmen %v, Stand %s", gefunden, erg.Uebernehmen, erg.Stand)
 	}
 	// Dasselbe als PDF.
 	dateien, _ := zugferd.Erzeuge(r, zugferd.Optionen{})
@@ -317,7 +320,7 @@ func TestFremdeRechnungPruefenUndUebernehmen(t *testing.T) {
 	}
 
 	var entwurf modell.Rechnung
-	if code := u.ruf("POST", "/api/import/uebernehmen", erg.Rechnung, &entwurf); code != 200 {
+	if code := u.ruf("POST", "/api/import/uebernehmen", map[string]any{"rechnung": erg.Rechnung, "artikelAnlegen": true}, &entwurf); code != 200 {
 		t.Fatalf("übernehmen: %d", code)
 	}
 	var kunden []modell.Kunde
@@ -325,12 +328,109 @@ func TestFremdeRechnungPruefenUndUebernehmen(t *testing.T) {
 	if entwurf.Einleitung == "" || len(entwurf.Hinweise) != 0 || entwurf.Positionen[2].RabattProzent.String() != "10" || len(entwurf.Positionen[2].ZuAbschlaege) != 0 {
 		t.Errorf("Texte und Rabatt: %q %v %+v", entwurf.Einleitung, entwurf.Hinweise, entwurf.Positionen[2])
 	}
-	if entwurf.Status != modell.StatusEntwurf || entwurf.Nummer != "LX-2026-17" || entwurf.KundeID == "" || len(kunden) != 2 {
-		t.Errorf("Entwurf: %+v, %d Kunden", entwurf.Status, len(kunden))
+	if entwurf.Status != modell.StatusEntwurf || entwurf.Nummer != "LX-2026-17" || entwurf.KundeID == "" || len(kunden) != 2 ||
+		entwurf.Profil != partner.Rewe || entwurf.Herkunftsbetrag.Fest(2) != "338.59" {
+		t.Errorf("Entwurf: %+v, %d Kunden, Profil %q, Herkunftsbetrag %s", entwurf.Status, len(kunden), entwurf.Profil, entwurf.Herkunftsbetrag)
+	}
+	var artikel []modell.Artikel
+	u.ruf("GET", "/api/artikel", nil, &artikel)
+	if len(artikel) != 4 {
+		t.Errorf("aus den Positionen wurden %d Artikel angelegt, erwartet 4", len(artikel))
 	}
 	var geprueft pruefErgebnis
 	u.ruf("POST", "/api/pruefen", entwurf, &geprueft)
 	if geprueft.Rechnung.Summen.Brutto.Fest(2) != "338.59" || geprueft.Rechnung.Faellig != "2026-12-13" {
 		t.Errorf("übernommener Entwurf: %s fällig %s", geprueft.Rechnung.Summen.Brutto, geprueft.Rechnung.Faellig)
+	}
+
+	// Ein zweites Einlesen derselben Rechnung ersetzt den Entwurf.
+	var nochmal importErgebnis
+	u.ruf("POST", "/api/import", xml, &nochmal)
+	if nochmal.Stand != "entwurf" || nochmal.VorhandenID != entwurf.ID || nochmal.Kunde != "REWE Neuer Markt GmbH" {
+		t.Errorf("zweites Einlesen: Stand %s, Kunde %q", nochmal.Stand, nochmal.Kunde)
+	}
+	var ersetzt modell.Rechnung
+	u.ruf("POST", "/api/import/uebernehmen", map[string]any{"rechnung": nochmal.Rechnung}, &ersetzt)
+	var liste []zeile
+	u.ruf("GET", "/api/rechnungen", nil, &liste)
+	if ersetzt.ID != entwurf.ID || len(liste) != 1 {
+		t.Errorf("Entwurf doppelt: %d Einträge", len(liste))
+	}
+}
+
+// Der eigentliche Zweck des Imports: Was die Datei nicht enthält, kommt aus
+// den Stammdaten - GLN des Kunden, Markt, Kostenstelle, GTIN der Artikel.
+func TestImportErgaenztAusStammdaten(t *testing.T) {
+	u := neu(t)
+	k := u.einrichten() // Kunde mit GLN, einem Markt und REWE-Profil
+	k.Lieferorte[0].Kostenstelle = "1234567890"
+	u.ruf("POST", "/api/kunden", k, &k)
+	u.ruf("POST", "/api/artikel", modell.Artikel{Bezeichnung: "Blütenhonig 500 g", GTIN: "4012345000016", Einheit: "XJR",
+		KundenArtNr: map[string]string{k.ID: "880012"}}, nil)
+
+	r := probe.Handel()
+	r.Nummer = "LX-2026-18"
+	r.Kaeufer.GLN, r.Lieferort, r.Kostenstelle, r.Verkaeufer.Kennung = "", nil, "", ""
+	r.Positionen = r.Positionen[:1]
+	r.Positionen[0].GTIN, r.Positionen[0].KundenArtNr, r.Positionen[0].Einheit = "", "", "C62"
+	r.Zahlung.SkontoTage, r.Zahlung.SkontoProzent = 0, 0
+	var erg importErgebnis
+	u.ruf("POST", "/api/import?name=Rechnung.xml", cii.Schreibe(rechnen.Ausrechnen(r)), &erg)
+	if erg.Kunde != k.Name || !erg.Uebernehmen {
+		t.Fatalf("Kunde nicht erkannt: %q", erg.Kunde)
+	}
+	var entwurf modell.Rechnung
+	if code := u.ruf("POST", "/api/import/uebernehmen", map[string]any{"rechnung": erg.Rechnung}, &entwurf); code != 200 {
+		t.Fatalf("übernehmen: %d", code)
+	}
+	p := entwurf.Positionen[0]
+	if entwurf.KundeID != k.ID || entwurf.Lieferort == nil || entwurf.Lieferort.GLN != "4000001000012" || entwurf.Kostenstelle != "1234567890" ||
+		p.GTIN != "4012345000016" || p.KundenArtNr != "880012" || p.Einheit != "XJR" {
+		t.Errorf("nicht ergänzt: Markt %+v Kostenstelle %q Position %+v", entwurf.Lieferort, entwurf.Kostenstelle, p)
+	}
+	// Mit den Stammdaten ist die Rechnung ohne weiteres Zutun versandfertig.
+	var geprueft pruefErgebnis
+	u.ruf("POST", "/api/pruefen", entwurf, &geprueft)
+	for _, m := range geprueft.Meldungen {
+		if m.Schwere == modell.Fehler {
+			t.Errorf("nach der Übernahme noch ein Fehler: %s %s", m.Regel, m.Text)
+		}
+	}
+	if geprueft.Rechnung.Kaeufer.GLN != "4000001000005" || geprueft.Rechnung.Verkaeufer.Kennung != "700123" {
+		t.Errorf("Kundendaten nicht eingesetzt: %+v", geprueft.Rechnung.Kaeufer)
+	}
+	var fertig modell.Rechnung
+	if code := u.ruf("POST", "/api/rechnungen/"+entwurf.ID+"/fertigstellen", map[string]bool{"trotzWarnungen": true}, &fertig); code != 200 || fertig.Nummer != "LX-2026-18" {
+		t.Fatalf("fertigstellen: %d %s", code, fertig.Nummer)
+	}
+	// Eine fertige Rechnung wird nicht noch einmal übernommen.
+	u.ruf("POST", "/api/import", cii.Schreibe(rechnen.Ausrechnen(r)), &erg)
+	if erg.Stand != "vorhanden" {
+		t.Errorf("Stand %s, erwartet vorhanden", erg.Stand)
+	}
+	if code := u.ruf("POST", "/api/import/uebernehmen", map[string]any{"rechnung": erg.Rechnung}, nil); code != 409 {
+		t.Errorf("doppelte Übernahme: %d", code)
+	}
+}
+
+// Die erste eingelesene Rechnung kann die eigenen Firmendaten liefern.
+func TestFirmendatenAusRechnung(t *testing.T) {
+	u := neu(t)
+	r := probe.Handel()
+	var erg importErgebnis
+	u.ruf("POST", "/api/import", cii.Schreibe(rechnen.Ausrechnen(r)), &erg)
+	if !erg.FirmaLeer || erg.Uebernehmen {
+		t.Fatalf("leere Firma nicht erkannt: %+v", erg.FirmaLeer)
+	}
+	var e modell.Einstellungen
+	if code := u.ruf("POST", "/api/import/firma", map[string]any{"verkaeufer": erg.Rechnung.Verkaeufer, "zahlung": erg.Rechnung.Zahlung}, &e); code != 200 {
+		t.Fatalf("Firma übernehmen: %d", code)
+	}
+	if e.Firma.Name != r.Verkaeufer.Name || e.Firma.UStID != "DE123456789" || e.Firma.GLN != r.Verkaeufer.GLN || e.IBAN == "" || e.Firma.Telefon == "" {
+		t.Errorf("Firmendaten: %+v IBAN %q", e.Firma, e.IBAN)
+	}
+	u.ruf("POST", "/api/import", cii.Schreibe(rechnen.Ausrechnen(r)), &erg)
+	if erg.FirmaLeer || !erg.Uebernehmen {
+		t.Error("nach dem Eintragen der Firma muss sich die Rechnung übernehmen lassen")
 	}
 }

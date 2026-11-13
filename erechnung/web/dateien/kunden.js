@@ -124,7 +124,11 @@ export function Kundenseite({ id, zurueck }) {
               </div>
             </div>`;
           })}
-          <button onClick=${() => setK((x) => ({ ...x, lieferorte: [...x.lieferorte, { id: '', name: '', gln: '', kennung: '', strasse: '', plz: '', ort: '', land: 'DE', kostenstelle: '' }] }))}>+ Markt hinzufügen</button>
+          <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+            <button onClick=${() => setK((x) => ({ ...x, lieferorte: [...x.lieferorte, { id: '', name: '', gln: '', kennung: '', strasse: '', plz: '', ort: '', land: 'DE', kostenstelle: '' }] }))}>+ Markt hinzufügen</button>
+            ${k.lieferorte.length === 0 && html`<button title="Für selbstständige Kaufleute: Der Rechnungsempfänger ist zugleich der belieferte Markt."
+              onClick=${() => setK((x) => ({ ...x, lieferorte: [{ id: '', name: x.name, gln: x.gln, kennung: '', strasse: x.strasse, plz: x.plz, ort: x.ort, land: x.land || 'DE', kostenstelle: '' }] }))}>Der Rechnungsempfänger ist selbst der Markt</button>`}
+          </div>
         </div>
 
         <div class="karte">

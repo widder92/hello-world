@@ -86,11 +86,12 @@ jobs:
       - name: Durchlauf
         run: |
           go build -o "$RUNNER_TEMP/marktrechnung" ./cmd/marktrechnung
-          XDG_CONFIG_HOME="$RUNNER_TEMP/konfig" "$RUNNER_TEMP/marktrechnung" -daten "$RUNNER_TEMP/daten" -port 47556 -kein-browser 2> "$RUNNER_TEMP/log.txt" &
+          XDG_CONFIG_HOME="$RUNNER_TEMP/konfig" "$RUNNER_TEMP/marktrechnung" -daten "$RUNNER_TEMP/daten" -port 47556 -kein-browser \
+            -lexware-adresse http://127.0.0.1:47560 2> "$RUNNER_TEMP/log.txt" &
           sleep 2
           start=$(sed -n 's/.*Aufruf: //p' "$RUNNER_TEMP/log.txt")
           mkdir -p "$RUNNER_TEMP/bilder"
-          NODE_PATH="$RUNNER_TEMP/pw/node_modules" node tests/oberflaeche.js "$start" "$RUNNER_TEMP/bilder"
+          NODE_PATH="$RUNNER_TEMP/pw/node_modules" node tests/oberflaeche.js "$start" "$RUNNER_TEMP/bilder" "" 47560
       - uses: actions/upload-artifact@v4
         if: always()
         with:

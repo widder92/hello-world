@@ -29,3 +29,20 @@ func TestPruefziffern(t *testing.T) {
 		t.Error("IBAN-Prüfung falsch")
 	}
 }
+
+func TestEinheitAusName(t *testing.T) {
+	faelle := map[string]string{"Stück": "H87", "Stk.": "H87", "Flasche": "XBO", " Karton ": "XCT", "kg": "KGM", "Liter": "LTR", "H87": "H87", "Kanister": "XCI"}
+	for name, soll := range faelle {
+		if ist, ok := EinheitAusName(name); ist != soll || !ok {
+			t.Errorf("EinheitAusName(%q) = %s, %v; erwartet %s", name, ist, ok, soll)
+		}
+	}
+	if c, ok := EinheitAusName("Download-Code"); c != "C62" || ok {
+		t.Errorf("unbekannte Einheit: %s %v", c, ok)
+	}
+	for name, code := range einheitNamen {
+		if !Gueltig(Einheit, code) {
+			t.Errorf("%s -> %s ist kein gültiger Code", name, code)
+		}
+	}
+}

@@ -20,7 +20,7 @@ export function Hilfeseite() {
     <div class="karte">
       <h2>So geht eine Rechnung hinaus</h2>
       <ol class="schritte">
-        <li><span><b>Neue Rechnung</b> – Kunde und Markt auswählen, Lieferdatum, Bestell- und Lieferscheinnummer eintragen, Positionen erfassen.</span></li>
+        <li><span><b>Neue Rechnung</b> oder <b>Import aus Lexoffice</b> – Kunde und Markt auswählen, Lieferdatum, Bestell- und Lieferscheinnummer eintragen, Positionen erfassen.</span></li>
         <li><span><b>Prüfung beachten</b> – rechts steht laufend, ob etwas fehlt. Ein Klick auf eine Meldung führt zum Feld. Rot muss behoben werden, Gelb sollte.</span></li>
         <li><span><b>Fertigstellen</b> – die Rechnung bekommt ihre Nummer und wird als E-Rechnung abgelegt. Danach ist sie nicht mehr änderbar.</span></li>
         <li><span><b>Senden</b> – per E-Mail an das Rechnungspostfach des Kunden. Empfänger, Betreff und Anhang sind vorbereitet.</span></li>
@@ -31,9 +31,13 @@ export function Hilfeseite() {
     <div class="karte">
       <h2>Warum Rechnungen aus Lexware Office (lexoffice) abgelehnt werden</h2>
       <p>Meist ist nicht die Datei kaputt, sondern dem Handel fehlen Angaben für seine automatische Verarbeitung: die <b>GLN</b> von Rechnungsempfänger und Markt, die <b>Bestell-</b> und <b>Lieferscheinnummer</b>, bei REWE die <b>Kostenstelle</b>, oft auch die <b>GTIN</b> der Artikel. Dazu kommen Versandregeln – bei REWE etwa die vorherige Anmeldung der Absenderadresse.</p>
-      <p>Unter <a href="#/pruefen">Fremde Rechnung prüfen</a> lässt sich eine abgelehnte Rechnung einlesen. Das Programm sagt, was fehlt, und kann sie als Entwurf übernehmen, um die Angaben zu ergänzen.</p>
       <h3>Zusammenspiel mit Lexware Office</h3>
-      <p>Lexware Office kann für Buchhaltung, Bank und Steuer weiterlaufen. Rechnungen an REWE und EDEKA werden dann hier geschrieben und verschickt und in Lexware Office als Einnahme-Beleg erfasst (die PDF-Datei aus dem Ordner „Rechnungen“ hochladen). Wichtig: getrennte Nummernkreise, damit keine Rechnungsnummer doppelt vorkommt.</p>
+      <p>Lexware Office kann für Buchhaltung, Bank und Steuer weiterlaufen. Es gibt zwei Wege:</p>
+      <ul>
+        <li><b>Weiter in Lexware Office schreiben, hier versenden (empfohlen):</b> Die Rechnung entsteht wie gewohnt in Lexware Office – mit dessen Rechnungsnummer und gleich richtig verbucht. Unter <a href="#/pruefen">Import aus Lexoffice</a> wird sie eingelesen: als heruntergeladene Datei oder direkt über die Verbindung zu Lexware Office. Das Programm ergänzt aus seinen Stammdaten, was dem Handel fehlt (GLN, Markt, Kostenstelle, GTIN), prüft die Rechnung und verschickt sie als vollständige E-Rechnung. Aus Lexware Office selbst wird diese Rechnung dann nicht mehr verschickt.</li>
+        <li><b>Hier schreiben:</b> Rechnungen an REWE und EDEKA entstehen direkt in diesem Programm und werden in Lexware Office als Einnahme-Beleg erfasst (die PDF-Datei aus dem Ordner „Rechnungen“ hochladen). Dann getrennte Nummernkreise verwenden, damit keine Rechnungsnummer doppelt vorkommt.</li>
+      </ul>
+      <p>Damit der Import ohne Nacharbeit läuft, einmal die Stammdaten pflegen: beim Kunden die GLN und die Märkte mit ihren GLN (und bei REWE den Kostenstellen), bei den Artikeln die GTIN. Kunden und Artikel lassen sich auf der Importseite aus Lexware Office holen.</p>
     </div>
 
     ${stamm.profile.map((p) => html`<div class="karte" key=${p.id}>

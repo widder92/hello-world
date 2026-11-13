@@ -30,7 +30,6 @@ import (
 	"marktrechnung/internal/pruefung"
 	"marktrechnung/internal/rechnen"
 	"marktrechnung/internal/speicher"
-	"marktrechnung/internal/xmlbaum"
 	"marktrechnung/internal/zugferd"
 )
 
@@ -38,9 +37,13 @@ import (
 type Server struct {
 	Speicher *speicher.Speicher
 	Passwort *geheim.Ablage
-	Web      fs.FS  // Dateien der Oberfläche
-	Token    string // Zugangskennwort für diesen Rechner
-	Version  string
+	// Lexware bewahrt den Zugangsschlüssel für Lexware Office auf.
+	Lexware *geheim.Ablage
+	// LexwareBasis ersetzt in Tests die Adresse der Lexware-Schnittstelle.
+	LexwareBasis string
+	Web          fs.FS  // Dateien der Oberfläche
+	Token        string // Zugangskennwort für diesen Rechner
+	Version      string
 	// Oeffne öffnet einen Ordner im Dateimanager des Betriebssystems.
 	Oeffne func(pfad string) error
 	// Beende fährt das Programm herunter.
@@ -121,6 +124,13 @@ func (s *Server) Handler() http.Handler {
 
 	api("POST /api/import", s.importPruefen)
 	api("POST /api/import/uebernehmen", s.importUebernehmen)
+	api("POST /api/import/firma", s.importFirma)
+	api("GET /api/lexware", s.lexwareStand)
+	api("POST /api/lexware/schluessel", s.lexwareSchluessel)
+	api("GET /api/lexware/belege", s.lexwareBelege)
+	api("POST /api/lexware/abrufen", s.lexwareAbrufen)
+	api("POST /api/lexware/kunden", s.lexwareKunden)
+	api("POST /api/lexware/artikel", s.lexwareArtikel)
 	api("POST /api/ordner", s.ordner)
 	api("GET /api/sicherung.zip", s.sicherung)
 	api("GET /api/export.csv", s.export)
@@ -1060,183 +1070,6 @@ func (s *Server) kopie(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	antworte(w, 200, neu)
-}
-
-// ---------------------------------------------------------------------------
-// Fremde Rechnungen prüfen
-
-type importErgebnis struct {
-	Dateiart    string           `json:"dateiart"`
-	Rechnung    modell.Rechnung  `json:"rechnung"`
-	Meldungen   []modell.Meldung `json:"meldungen"`
-	Auffaellig  []string         `json:"auffaellig"`
-	Lesbar      bool             `json:"lesbar"`
-	Fehler      string           `json:"fehler,omitempty"`
-	Uebernehmen bool             `json:"uebernehmen"`
-}
-
-func (s *Server) importPruefen(w http.ResponseWriter, r *http.Request) {
-	daten, err := io.ReadAll(io.LimitReader(r.Body, 40<<20))
-	if err != nil || len(daten) == 0 {
-		fehler(w, 400, errors.New("es wurde keine Datei übertragen"))
-		return
-	}
-	erg := importErgebnis{Meldungen: []modell.Meldung{}, Auffaellig: []string{}}
-	xml := daten
-	if bytes.HasPrefix(bytes.TrimLeft(daten[:min(len(daten), 64)], "\xef\xbb\xbf \r\n\t"), []byte("%PDF")) {
-		erg.Dateiart = "PDF mit eingebetteter E-Rechnung (ZUGFeRD / Factur-X)"
-		if xml, err = zugferd.XMLAusPDF(daten); err != nil {
-			erg.Dateiart, erg.Fehler = "PDF", err.Error()
-			antworte(w, 200, erg)
-			return
-		}
-		if !bytes.Contains(daten, []byte("pdfaid:part")) {
-			erg.Auffaellig = append(erg.Auffaellig, "Das PDF weist sich nicht als PDF/A aus. ZUGFeRD verlangt PDF/A-3; strenge Empfänger wie EDEKA lehnen andere PDFs ab.")
-		} else if !bytes.Contains(daten, []byte("<pdfaid:part>3")) && !bytes.Contains(daten, []byte(`pdfaid:part="3"`)) {
-			erg.Auffaellig = append(erg.Auffaellig, "Das PDF ist kein PDF/A-3. ZUGFeRD verlangt genau diese Fassung.")
-		}
-	} else {
-		erg.Dateiart = "XML-Datei"
-	}
-	baum, err := xmlbaum.Lies(xml)
-	if err != nil {
-		erg.Fehler = "Die Datei ist weder ein PDF noch gültiges XML: " + err.Error()
-		antworte(w, 200, erg)
-		return
-	}
-	if baum.Name == "Invoice" || baum.Name == "CreditNote" {
-		erg.Fehler = "Die Datei ist eine E-Rechnung in der Syntax UBL. REWE und EDEKA nennen als Format ZUGFeRD oder XRechnung in der Syntax CII - eine UBL-Rechnung kann schon deshalb abgelehnt werden. Dieses Programm prüft und erzeugt CII."
-		antworte(w, 200, erg)
-		return
-	}
-	re, auffaellig, err := cii.LiesBaum(baum)
-	erg.Auffaellig = append(erg.Auffaellig, auffaellig...)
-	if err != nil {
-		erg.Fehler = err.Error()
-		antworte(w, 200, erg)
-		return
-	}
-	re.Profil = r.URL.Query().Get("profil")
-	re.Herkunft = r.URL.Query().Get("name")
-	erg.Meldungen, _ = pruefung.Pruefe(re, pruefung.Optionen{Fremd: true})
-	if erg.Meldungen == nil {
-		erg.Meldungen = []modell.Meldung{}
-	}
-	erg.Rechnung, erg.Lesbar = re, true
-	// Übernehmen ist nur sinnvoll, wenn die Rechnung von der eigenen Firma
-	// stammt.
-	e, _ := s.Speicher.Einstellungen()
-	erg.Uebernehmen = gleicheFirma(e.Firma, re.Verkaeufer)
-	antworte(w, 200, erg)
-}
-
-func normal(s string) string {
-	return strings.ToLower(strings.Join(strings.Fields(strings.NewReplacer(".", " ", ",", " ", "-", " ").Replace(s)), " "))
-}
-
-func gleicheFirma(a, b modell.Partei) bool {
-	if a.Name == "" {
-		return false
-	}
-	if a.UStID != "" && strings.EqualFold(strings.ReplaceAll(a.UStID, " ", ""), strings.ReplaceAll(b.UStID, " ", "")) {
-		return true
-	}
-	if a.Steuernummer != "" && normal(a.Steuernummer) == normal(b.Steuernummer) {
-		return true
-	}
-	return normal(a.Name) == normal(b.Name)
-}
-
-// importUebernehmen legt aus einer eingelesenen eigenen Rechnung einen
-// Entwurf an. Der Kunde wird in den Stammdaten gesucht und sonst angelegt.
-func (s *Server) importUebernehmen(w http.ResponseWriter, r *http.Request) {
-	var re modell.Rechnung
-	if err := liesJSON(r, &re); err != nil {
-		fehler(w, 400, err)
-		return
-	}
-	kunden, err := s.Speicher.Kunden()
-	if err != nil {
-		fehler(w, 500, err)
-		return
-	}
-	var kunde *modell.Kunde
-	for i, k := range kunden {
-		if (k.UStID != "" && strings.EqualFold(k.UStID, strings.ReplaceAll(re.Kaeufer.UStID, " ", "")) && normal(k.Name) == normal(re.Kaeufer.Name)) ||
-			(k.GLN != "" && k.GLN == re.Kaeufer.GLN) || normal(k.Name) == normal(re.Kaeufer.Name) {
-			kunde = &kunden[i]
-			break
-		}
-	}
-	if kunde == nil {
-		neu := modell.Kunde{Partei: re.Kaeufer, Lieferantennummer: re.Verkaeufer.Kennung, Profil: re.Profil,
-			Format: modell.FormatZugferd, Zieltage: re.Zahlung.Zieltage}
-		saeubere(&neu.Partei)
-		if neu.Name == "" {
-			fehler(w, 422, errors.New("die Rechnung nennt keinen Empfänger"))
-			return
-		}
-		if !re.Lieferort.Leer() {
-			neu.Lieferorte = []modell.Lieferort{*re.Lieferort}
-		}
-		k, err := s.Speicher.SpeichereKunde(neu)
-		if err != nil {
-			fehler(w, 500, err)
-			return
-		}
-		kunde = &k
-	}
-	re.KundeID = kunde.ID
-	if !re.Lieferort.Leer() {
-		for _, l := range kunde.Lieferorte {
-			if (l.GLN != "" && l.GLN == re.Lieferort.GLN) || normal(l.Name) == normal(re.Lieferort.Name) {
-				re.Lieferort.ID = l.ID
-			}
-		}
-	}
-	re.ID, re.Status, re.Summen = "", modell.StatusEntwurf, nil
-	re.Format, re.Spezifikation, re.Prozess = "", "", ""
-	re.Profil = kunde.Profil
-	// Der Zahlungstext wird neu gebildet; Rabatte bleiben als Nachlässe.
-	re.Zahlung.Bedingungen = ""
-	if t, ok := rechnen.Datum(re.Datum); ok && re.Faellig != "" {
-		if f, ok := rechnen.Datum(re.Faellig); ok {
-			re.Zahlung.Zieltage = int(f.Sub(t).Hours()/24 + 0.5)
-		}
-	}
-	re.Faellig = ""
-	for i := range re.Positionen {
-		p := &re.Positionen[i]
-		p.Netto = 0
-		// Ein einzelner Rabatt in Prozent erscheint im Eingabefeld "Rabatt %".
-		if len(p.ZuAbschlaege) == 1 && !p.ZuAbschlaege[0].Zuschlag && !p.ZuAbschlaege[0].Prozent.IstNull() {
-			p.RabattProzent, p.RabattGrund = p.ZuAbschlaege[0].Prozent, p.ZuAbschlaege[0].Grund
-			p.ZuAbschlaege = nil
-		}
-	}
-	// Freitexte ohne Kennzeichen werden zu Einleitung und Schlusstext, damit
-	// sie in der Oberfläche sichtbar und änderbar sind.
-	var uebrig []modell.Hinweis
-	for _, h := range re.Hinweise {
-		switch {
-		case h.Code == "" && re.Einleitung == "" && len(uebrig) == 0:
-			re.Einleitung = h.Text
-		case h.Code == "" && re.Schluss == "":
-			re.Schluss = h.Text
-		default:
-			uebrig = append(uebrig, h)
-		}
-	}
-	re.Hinweise = uebrig
-	if re.Herkunft == "" {
-		re.Herkunft = "eingelesene Datei"
-	}
-	re, err = s.Speicher.SpeichereEntwurf(re)
-	if err != nil {
-		fehler(w, 500, err)
-		return
-	}
-	antworte(w, 200, re)
 }
 
 // ---------------------------------------------------------------------------

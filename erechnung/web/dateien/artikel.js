@@ -43,7 +43,7 @@ export function Artikelseite() {
         <${Feld} titel="GTIN / EAN (Strichcode)" breite="6" falsch=${gtinFalsch} hilfe="vom Handel für Ware erwartet"><${Text} wert=${offen.gtin} setze=${(v) => s('gtin')(v.replace(/\s/g, ''))} inputmode="numeric" /><//>
         <${Feld} titel="Einheit" breite="4"><${Auswahl} wert=${offen.einheit} setze=${s('einheit')} optionen=${stamm.einheiten.map((e) => [e.code, e.name])} /><//>
         <${Feld} titel="Preis netto je Einheit" breite="4"><${Zahl} wert=${offen.preis} min="2" max="4" setze=${s('preis')} /><//>
-        <${Feld} titel="Umsatzsteuer" breite="4"><${Auswahl} wert=${String(Number(offen.steuerSatz))} setze=${s('steuerSatz')} optionen=${[['7', '7 % (Lebensmittel)'], ['19', '19 %'], ['0', '0 %']]} /><//>
+        <${Feld} titel="Umsatzsteuer" breite="4"><${Auswahl} wert=${String(Number(offen.steuerSatz))} setze=${s('steuerSatz')} optionen=${[['19', '19 % (Regelsatz, auch Getränke)'], ['7', '7 % (ermäßigt, viele Lebensmittel)'], ['0', '0 %']]} /><//>
         <${Feld} titel="Zusatztext auf der Rechnung" breite="12"><${Text} wert=${offen.beschreibung} setze=${s('beschreibung')} /><//>
       </div>
     <//>`}`;

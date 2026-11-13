@@ -37,7 +37,7 @@ export function Uebersicht() {
       <div><h1>Rechnungen</h1>
         <div class="leise">${liste.filter(offen).length} offen · ${geld(summeOffen)} ausstehend</div></div>
       <div class="knoepfe">
-        <button onClick=${() => gehe('#/pruefen')}>Fremde Rechnung prüfen</button>
+        <button onClick=${() => gehe('#/pruefen')}>Aus Lexoffice importieren</button>
         <button class="haupt gross" onClick=${() => gehe('#/rechnung/neu')}>+ Neue Rechnung</button>
       </div>
     </div>
@@ -269,6 +269,10 @@ function Editor({ r: anfang, einst, kunden, artikel }) {
     </div>
 
     ${r.herkunft && html`<${Kasten} art="hinweis">Dieser Entwurf wurde aus der Datei <b>${r.herkunft}</b> übernommen. Die Rechnungsnummer ${r.nummer} bleibt erhalten. Bitte die fehlenden Angaben ergänzen und die Rechnung dann als korrigierte E-Rechnung erneut versenden.<//>`}
+
+    ${Number(r.herkunftsbetrag) && summen && Number(summen.brutto) !== Number(r.herkunftsbetrag) ? html`<${Kasten} art="warnung">
+      <b>Die Summe weicht ab:</b> In der eingelesenen Rechnung beträgt der Rechnungsbetrag ${geld(r.herkunftsbetrag)}, hier ergeben sich ${geld(summen.brutto)}.
+      Beide Fassungen müssen denselben Betrag ausweisen. Bitte Positionen, Rabatte und Steuersätze vergleichen; eine Abweichung um einen Cent entsteht meist durch andere Rundung.<//>` : null}
 
     <div class="spalten">
       <div>

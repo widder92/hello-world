@@ -108,7 +108,7 @@ export function Einstellungsseite() {
         <${Feld} titel="Nächste laufende Nummer" breite="3"><${Text} typ="number" min="1" wert=${String(e.naechsteNummer || 1)} setze=${setze('naechsteNummer')} /><//>
         <div class="feld b5" style="justify-content:center"><${Haken} wert=${e.jaehrlichNeu} setze=${setze('jaehrlichNeu')}>Jedes Jahr wieder bei 1 beginnen<//></div>
         <${Feld} titel="Übliches Zahlungsziel in Tagen" breite="3"><${Text} typ="number" min="0" wert=${String(e.zieltage || 0)} setze=${setze('zieltage')} /><//>
-        <${Feld} titel="Üblicher Steuersatz" breite="3"><${Auswahl} wert=${String(Number(e.standardSteuer))} setze=${setze('standardSteuer')} optionen=${[['7', '7 % (Lebensmittel)'], ['19', '19 %'], ['0', '0 %']]} /><//>
+        <${Feld} titel="Üblicher Steuersatz" breite="3"><${Auswahl} wert=${String(Number(e.standardSteuer))} setze=${setze('standardSteuer')} optionen=${[['19', '19 % (Regelsatz, auch Getränke)'], ['7', '7 % (ermäßigt, viele Lebensmittel)'], ['0', '0 %']]} /><//>
         <${Feld} titel="Übliche Einheit" breite="3"><${Auswahl} wert=${e.standardEinheit} setze=${setze('standardEinheit')} optionen=${stamm.einheiten.map((x) => [x.code, x.name])} /><//>
         <${Feld} titel="Übliches Format" breite="3"><${Auswahl} wert=${e.format} setze=${setze('format')} optionen=${stamm.formate.map((x) => [x.id, x.name])} /><//>
         <${Feld} titel="Einleitungstext neuer Rechnungen" breite="6"><${Mehrzeilig} zeilen="2" wert=${e.einleitung} setze=${setze('einleitung')} /><//>

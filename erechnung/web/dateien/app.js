@@ -55,7 +55,7 @@ function App() {
         ${punkt('#/', 'Rechnungen', undefined)}
         ${punkt('#/kunden', 'Kunden', 'kunden')}
         ${punkt('#/artikel', 'Artikel', 'artikel')}
-        ${punkt('#/pruefen', 'Fremde Rechnung prüfen', 'pruefen')}
+        ${punkt('#/pruefen', 'Import aus Lexoffice', 'pruefen')}
         ${punkt('#/einstellungen', 'Einstellungen', 'einstellungen')}
         ${punkt('#/hilfe', 'Hilfe', 'hilfe')}
       </nav>

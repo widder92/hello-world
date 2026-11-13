@@ -3,12 +3,46 @@
 // Versanddialog öffnen, fremde Rechnung prüfen.
 //
 // Aufruf (das Programm muss mit leerem Datenordner laufen):
-//   node tests/oberflaeche.js http://127.0.0.1:47411/?t=KENNWORT [Bilderordner] [fremde-rechnung.xml]
+//   node tests/oberflaeche.js http://127.0.0.1:47411/?t=KENNWORT [Bilderordner] [fremde-rechnung.xml] [Port]
+//
+// Mit einem Port als viertem Wert stellt der Test die Schnittstelle von
+// Lexware Office nach und prüft auch den direkten Abruf. Das Programm muss
+// dafür mit -lexware-adresse http://127.0.0.1:PORT gestartet sein.
 const { chromium } = require('playwright');
 
-const [start, bilder = '.', fremd = ''] = process.argv.slice(2);
+const [start, bilder = '.', fremd = '', lexwarePort = ''] = process.argv.slice(2);
 if (!start) { console.error('Aufruf: node tests/oberflaeche.js START-ADRESSE [Bilderordner] [XML-Datei]'); process.exit(2); }
 const basis = new URL(start).origin;
+
+// Nachbau der Lexware-Schnittstelle mit den Beispielen aus deren Beschreibung.
+function lexwareAttrappe(port) {
+  const rechnung = { voucherNumber: 'RE1019', voucherDate: '2023-02-22T00:00:00.000+01:00', dueDate: null,
+    address: { name: 'Bike & Ride GmbH & Co. KG', supplement: 'Gebäude 10', street: 'Musterstraße 42', city: 'Freiburg', zip: '79112', countryCode: 'DE' },
+    lineItems: [
+      { type: 'material', name: 'Abus Kabelschloss Primo 590', quantity: 2, unitName: 'Stück', unitPrice: { currency: 'EUR', netAmount: 13.4, grossAmount: 15.95, taxRatePercentage: 19 }, discountPercentage: 50, lineItemAmount: 13.4 },
+      { type: 'service', name: 'Aufwändige Montage', quantity: 1, unitName: 'Stunde', unitPrice: { currency: 'EUR', netAmount: 8.32, grossAmount: 8.9, taxRatePercentage: 7 }, discountPercentage: 0, lineItemAmount: 8.32 }],
+    totalPrice: { currency: 'EUR', totalNetAmount: 21.72, totalGrossAmount: 24.85, totalTaxAmount: 3.13 },
+    taxConditions: { taxType: 'net' }, paymentConditions: { paymentTermDuration: 30 },
+    shippingConditions: { shippingDate: '2023-04-22T00:00:00.000+02:00', shippingType: 'delivery' }, introduction: 'Ihre bestellten Positionen stellen wir Ihnen hiermit in Rechnung' };
+  const antworten = {
+    '/v1/profile': { companyName: 'Testfirma GmbH', smallBusiness: false },
+    '/v1/voucherlist': { content: [{ id: 'bbbb', voucherType: 'invoice', voucherStatus: 'open', voucherNumber: 'RE1019', voucherDate: '2023-02-22T00:00:00.000+01:00', contactName: 'Bike & Ride GmbH & Co. KG', totalAmount: 24.85 }], last: true },
+    '/v1/invoices/bbbb': rechnung,
+    '/v1/contacts': { content: [{ roles: { customer: { number: 10307 } }, company: { name: 'Testfirma', vatRegistrationId: 'DE123456789' },
+      addresses: { billing: [{ street: 'Hauptstr. 5', zip: '12345', city: 'Musterort', countryCode: 'DE' }] }, xRechnung: { vendorNumberAtCustomer: '70123456' } }], last: true },
+    '/v1/articles': { content: [{ title: 'Holunderblütensirup 0,33 l', articleNumber: 'S-033', gtin: '4012345000054', unitName: 'Flasche', price: { netPrice: 3.2, taxRate: 19 } }], last: true },
+  };
+  return new Promise((bereit) => {
+    const server = require('http').createServer((anfrage, antwort) => {
+      const pfad = anfrage.url.split('?')[0];
+      if (anfrage.headers.authorization !== 'Bearer probe-schluessel') { antwort.writeHead(401); antwort.end('{"message":"Unauthorized"}'); return; }
+      if (!antworten[pfad]) { antwort.writeHead(404); antwort.end('{"status":404}'); return; }
+      antwort.writeHead(200, { 'Content-Type': 'application/json' });
+      antwort.end(JSON.stringify(antworten[pfad]));
+    });
+    server.listen(Number(port), '127.0.0.1', () => bereit(server));
+  });
+}
 
 function pruefe(bedingung, text) {
   if (!bedingung) { console.error('FEHLGESCHLAGEN: ' + text); process.exitCode = 1; } else console.log('ok  ' + text);
@@ -81,6 +115,7 @@ function pruefe(bedingung, text) {
   await feld('Eigene Artikelnummer').fill('H-001');
   await feld('GTIN / EAN').fill('4012345000016');
   await feld('Preis netto je Einheit').fill('4,95');
+  await feld('Umsatzsteuer').selectOption('7');
   await p.getByRole('button', { name: 'Speichern' }).click();
   await p.getByText('Artikel gespeichert.').waitFor();
   pruefe(await p.getByRole('cell', { name: '4,95 €' }).count() === 1, 'Artikel mit Preis in der Liste');
@@ -147,12 +182,57 @@ function pruefe(bedingung, text) {
   const urteil = (await p.locator('.urteil').textContent()).trim();
   pruefe(fremd ? urteil.length > 5 : urteil === 'Keine Beanstandung', 'Prüfung einer eingelesenen Rechnung: ' + urteil);
   await bild('11-pruefen', true);
-  if (fremd && await p.getByRole('button', { name: 'Als Entwurf übernehmen und ergänzen' }).count()) {
-    await p.getByRole('button', { name: 'Als Entwurf übernehmen und ergänzen' }).click();
+  pruefe(await p.getByRole('heading', { name: 'Direkt aus Lexware Office abrufen' }).count() === 1, 'die Importseite bietet den direkten Abruf an');
+  if (fremd) {
+    await p.getByRole('button', { name: 'Übernehmen', exact: true }).click();
     await p.getByText('wurde aus der Datei').waitFor();
     pruefe(await feld('Rechnungsnummer').inputValue() !== '', 'übernommener Entwurf behält seine Rechnungsnummer');
     pruefe(await p.locator('[data-feld="positionen.2.rabattProzent"]').inputValue() === '10', 'Positionsrabatt der fremden Rechnung bleibt sichtbar');
+    pruefe(await feld('Kostenstelle').inputValue() === '1234567890', 'Kostenstelle kommt beim Import aus den Stammdaten');
+    pruefe(await p.locator('[data-feld="positionen.0.gtin"]').inputValue() === '4012345000016', 'GTIN bleibt bzw. kommt aus den Stammdaten');
+    await p.getByText('Alles in Ordnung').or(p.getByText('Bereit, mit Warnungen')).first().waitFor();
+    pruefe(true, 'die übernommene Rechnung ist ohne Nacharbeit versandfertig');
     await bild('11b-uebernommen', true);
+  }
+
+  // 5b. Direkter Abruf aus Lexware Office gegen die nachgebaute Schnittstelle.
+  if (lexwarePort) {
+    const attrappe = await lexwareAttrappe(lexwarePort);
+    await p.goto(basis + '/#/');
+    await p.getByRole('heading', { name: 'Rechnungen', exact: true }).waitFor();
+    await p.goto(basis + '/#/pruefen');
+    await p.getByText('Verbindung einrichten').click();
+    await feld('Zugangsschlüssel von Lexware Office').fill('falsch');
+    await p.getByRole('button', { name: 'Verbinden' }).click();
+    await p.getByText('lehnt den Zugangsschlüssel ab').waitFor();
+    pruefe(true, 'ein falscher Zugangsschlüssel wird verständlich abgelehnt');
+    // Die Absage erscheint auch als Meldung des Browsers; sie ist hier gewollt.
+    for (let i = fehler.length - 1; i >= 0; i--) if (fehler[i].includes('422')) fehler.splice(i, 1);
+    await feld('Zugangsschlüssel von Lexware Office').fill('probe-schluessel');
+    await p.getByRole('button', { name: 'Verbinden' }).click();
+    await p.getByText('Verbunden mit Lexware Office – Testfirma GmbH').waitFor();
+    await feld('Belege ab dem').fill('2023-01-01');
+    await p.getByRole('button', { name: 'Rechnungen anzeigen' }).click();
+    await p.getByRole('cell', { name: 'RE1019' }).waitFor();
+    await bild('14-lexware-belege', true);
+    await p.getByRole('button', { name: 'Ausgewählten Beleg einlesen' }).click();
+    await p.getByRole('cell', { name: 'Lexware Office RE1019' }).waitFor();
+    pruefe(await p.getByRole('heading', { name: 'Eingelesene Rechnungen' }).count() === 1, 'der Beleg aus Lexware Office steht in der Importliste');
+    await p.getByRole('button', { name: 'Kunden abgleichen' }).click();
+    await p.getByText(/Kunden abgeglichen: 1 Firmenkunden/).waitFor();
+    await p.getByRole('button', { name: 'Artikel abgleichen' }).click();
+    await p.getByText(/Artikel abgeglichen: 1 in Lexware Office, 1 neu/).waitFor();
+    pruefe(true, 'Kunden und Artikel lassen sich aus Lexware Office holen');
+    await p.getByRole('button', { name: 'Übernehmen', exact: true }).click();
+    await p.getByText('wurde aus der Datei').waitFor();
+    pruefe(await feld('Rechnungsnummer').inputValue() === 'RE1019', 'Beleg aus Lexware Office wird mit seiner Nummer zum Entwurf');
+    pruefe(await p.locator('.summen .gesamt').textContent().then((t) => t.includes('24,85')), 'Summe wie in Lexware Office: 24,85 €');
+    await bild('15-lexware-entwurf', true);
+    await p.goto(basis + '/#/artikel');
+    await p.getByRole('heading', { name: 'Artikel', exact: true }).waitFor();
+    await p.getByText('Holunderblütensirup 0,33 l').first().waitFor({ timeout: 5000 }).catch(() => {});
+    pruefe(await p.getByText('Holunderblütensirup 0,33 l').count() === 1, 'Artikel aus Lexware Office steht in den Stammdaten');
+    attrappe.close();
   }
 
   // 6. Storno: aus der Rechnung wird der Entwurf einer Rechnungskorrektur.

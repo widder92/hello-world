@@ -39,12 +39,16 @@ type programm struct {
 
 const standardPort = 47411
 
+// lexwareAdresse ersetzt in Tests die Adresse von Lexware Office.
+var lexwareAdresse string
+
 func main() {
 	datenFlag := flag.String("daten", "", "Ordner für Rechnungen und Stammdaten (Standard: Dokumente/Marktrechnung)")
 	portFlag := flag.Int("port", 0, "Port auf dem eigenen Rechner (Standard: 47411)")
 	ohneBrowser := flag.Bool("kein-browser", false, "den Browser nicht öffnen")
 	zeigeVersion := flag.Bool("version", false, "Version anzeigen")
 	beenden := flag.Bool("beenden", false, "ein laufendes Marktrechnung beenden (für das Setup)")
+	flag.StringVar(&lexwareAdresse, "lexware-adresse", "", "andere Adresse der Lexware-Schnittstelle (nur für Tests)")
 	flag.Parse()
 	if *zeigeVersion {
 		fmt.Println("Marktrechnung", version.Nummer)
@@ -137,9 +141,9 @@ func lauf(datenFlag string, portFlag int, ohneBrowser bool) error {
 	ctx, stopp := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stopp()
 	s := &server.Server{
-		Speicher: sp, Passwort: geheim.Neu(konfig, "postausgang.geheim"),
+		Speicher: sp, Passwort: geheim.Neu(konfig, "postausgang.geheim"), Lexware: geheim.Neu(konfig, "lexware.geheim"),
 		Web: web.Dateien(), Token: p.Token, Version: version.Nummer,
-		Oeffne: oeffneOrdner, Beende: stopp,
+		Oeffne: oeffneOrdner, Beende: stopp, LexwareBasis: lexwareAdresse,
 	}
 	// Die Adresse merken, unter der das Programm gerade läuft. Das Setup
 	// findet es darüber, um es vor einer Aktualisierung zu beenden.

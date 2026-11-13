@@ -126,7 +126,7 @@ func (s *Speicher) Einstellungen() (modell.Einstellungen, error) {
 func (s *Speicher) einstellungen() (modell.Einstellungen, error) {
 	e := modell.Einstellungen{
 		Nummernmuster: "RE-{JJJJ}-{NNNN}", NaechsteNummer: 1, JaehrlichNeu: true, Zieltage: 14,
-		StandardSteuer: dec.Int(7), StandardEinheit: "H87", Format: modell.FormatZugferd,
+		StandardSteuer: dec.Int(19), StandardEinheit: "H87", Format: modell.FormatZugferd,
 		Einleitung: "Wir berechnen Ihnen die folgende Lieferung:",
 	}
 	e.Firma.Land = "DE"

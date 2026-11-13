@@ -45,9 +45,9 @@ Pflichtangaben **vor** dem Versand und sagt in einfachen Worten, was fehlt.
   - XRechnung 3.0 als reine XML-Datei (Syntax CII)
 - **Versand per E-Mail** über das eigene Postfach, eine Rechnung je E-Mail,
   mit Vermerk, wann sie an wen ging
-- **Fremde Rechnungen prüfen**: eine abgelehnte Datei aus einem anderen
-  Programm einlesen, die Ursache sehen und sie als Entwurf übernehmen, um die
-  fehlenden Angaben zu ergänzen
+- **Import aus Lexware Office (lexoffice)**: Rechnungen als Datei oder direkt
+  über die Schnittstelle einlesen, prüfen, aus den Stammdaten ergänzen und
+  mit unveränderter Rechnungsnummer als vollständige E-Rechnung versenden
 - **Stornieren** über eine Rechnungskorrektur; fertige Rechnungen sind nicht
   mehr änderbar
 - **Rechnungsliste als CSV** für Buchhaltung und Steuerberatung, **Sicherung**
@@ -114,18 +114,54 @@ ist, was der Kunde mitteilt.
 
 ## Zusammenspiel mit Lexware Office
 
-Lexware Office kann für Buchhaltung, Bank und Steuer weiterlaufen:
+Lexware Office (lexoffice) kann für Buchhaltung, Bank und Steuer weiterlaufen.
+Der empfohlene Weg: **Rechnungen weiter in Lexware Office schreiben, hier
+ergänzen und versenden.** So bleibt es bei einem Nummernkreis, und die
+Rechnung ist in Lexware Office gleich richtig verbucht.
 
-- Rechnungen an den Handel werden in Marktrechnung geschrieben und verschickt.
-- In Lexware Office werden sie als Einnahme-Beleg erfasst (die PDF-Datei aus
-  dem Ordner `Rechnungen` hochladen) oder über die CSV-Liste nachgebucht.
-- Getrennte Nummernkreise verwenden, damit keine Rechnungsnummer doppelt
-  vorkommt (Einstellungen → *Aufbau der Rechnungsnummer*, zum Beispiel
-  `ER-{JJJJ}-{NNNN}`).
+![Import aus Lexoffice](docs/pruefen.png)
 
-Eine bereits in Lexware Office geschriebene, abgelehnte Rechnung lässt sich
-unter *Fremde Rechnung prüfen* einlesen und mit unveränderter Rechnungsnummer
-als vollständige E-Rechnung neu erzeugen.
+Unter *Import aus Lexoffice* gibt es zwei Wege, die Rechnungen zu holen:
+
+- **Dateien hineinziehen.** In Lexware Office die Rechnung herunterladen und
+  die PDF-Datei (ZUGFeRD) oder XML-Datei (XRechnung) ins Programm ziehen –
+  auch viele auf einmal.
+- **Direkt abrufen.** Mit einem Zugangsschlüssel aus Lexware Office
+  (`app.lexware.de/addons/public-api`) holt das Programm Rechnungen, Kunden
+  und Artikel selbst. Es liest nur; in Lexware Office wird nichts verändert.
+  Der Schlüssel liegt geschützt auf dem Rechner, nicht im Datenordner.
+
+Beim Übernehmen bleibt die Rechnungsnummer erhalten. Das Programm ergänzt,
+was es aus seinen Stammdaten kennt:
+
+| Fehlt in der Lexware-Rechnung | Kommt aus |
+|---|---|
+| GLN des Rechnungsempfängers, Lieferantennummer | Kunde |
+| Markt mit GLN, Kostenstelle | Markt des Kunden |
+| GTIN, Artikelnummer beim Kunden | Artikel |
+
+Unbekannte Kunden, Märkte und Artikel legt der Import an; für REWE und EDEKA
+stellt er die passenden Vorgaben ein. Danach genügt es, einmal die GLN,
+Kostenstellen und GTIN nachzutragen – bei den folgenden Rechnungen sind sie
+dann von selbst da. Die erste eingelesene Rechnung kann außerdem die eigenen
+Firmendaten in die Einstellungen eintragen.
+
+Zu beachten:
+
+- Eine übernommene Rechnung wird aus diesem Programm verschickt, nicht mehr
+  aus Lexware Office – sonst bekäme der Kunde sie doppelt.
+- Weicht die hier berechnete Summe von der in Lexware Office ab (etwa durch
+  andere Rundung), warnt das Programm. Beide Fassungen müssen denselben
+  Betrag ausweisen.
+- Der direkte Abruf ist nach der veröffentlichten Beschreibung der
+  Lexware-Schnittstelle gebaut und gegen einen Nachbau getestet, aber noch
+  nicht mit einem echten Lexware-Konto. Der Weg über Dateien hängt davon
+  nicht ab.
+
+Wer Rechnungen lieber direkt hier schreibt, erfasst sie in Lexware Office als
+Einnahme-Beleg (die PDF-Datei aus dem Ordner `Rechnungen` hochladen) und
+verwendet getrennte Nummernkreise (Einstellungen → *Aufbau der
+Rechnungsnummer*, zum Beispiel `ER-{JJJJ}-{NNNN}`).
 
 ## Wo die Daten liegen
 
@@ -183,6 +219,7 @@ internal/beleg       Layout der Rechnung
 internal/zugferd     PDF und XML zusammenfügen, XML aus PDF lesen
 internal/speicher    Datenablage als Dateien, Nummernvergabe
 internal/post        E-Mail-Versand (SMTP)
+internal/lexware     Abruf aus Lexware Office (Belege, Kunden, Artikel)
 internal/server      Schnittstelle zwischen Oberfläche und Programm
 web/dateien          Bedienoberfläche
 setup                Windows-Setup (NSIS-Skript, Symbol)
@@ -207,8 +244,8 @@ MUSTANG_JAR=/pfad/Mustang-CLI-2.26.0.jar go test ./internal/zugferd/ -run Amtlic
 Durchlauf der Oberfläche mit einem echten Browser (Playwright):
 
 ```sh
-go run ./cmd/marktrechnung -daten /tmp/probe -kein-browser   # zeigt die Start-Adresse
-node tests/oberflaeche.js 'http://127.0.0.1:47411/?t=…' /tmp/bilder
+go run ./cmd/marktrechnung -daten /tmp/probe -kein-browser -lexware-adresse http://127.0.0.1:47560
+node tests/oberflaeche.js 'http://127.0.0.1:47411/?t=…' /tmp/bilder '' 47560   # Start-Adresse aus der Ausgabe oben
 ```
 
 Die Schrift im PDF ist Liberation Sans (SIL Open Font License, siehe

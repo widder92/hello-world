@@ -74,6 +74,7 @@ var Einheiten = []EinheitInfo{
 	{"XBE", "Bund", "Bund"},
 	{"XPU", "Schale", "Schale"},
 	{"XBJ", "Eimer", "Eimer"},
+	{"XCI", "Kan.", "Kanister"},
 	{"XBK", "Korb", "Korb"},
 	{"XPX", "Pal.", "Palette"},
 	{"XRO", "Rolle", "Rolle"},
@@ -87,6 +88,43 @@ var Einheiten = []EinheitInfo{
 	{"MON", "Monat", "Monat"},
 	{"LS", "psch.", "Pauschale"},
 	{"C62", "Einh.", "Einheit (allgemein)"},
+}
+
+// einheitNamen ordnet gebräuchliche Bezeichnungen aus anderen Programmen den
+// genormten Codes zu.
+var einheitNamen = map[string]string{
+	"stück": "H87", "stk": "H87", "stck": "H87", "st": "H87", "stueck": "H87", "pcs": "H87", "piece": "H87", "x": "H87",
+	"flasche": "XBO", "flaschen": "XBO", "fl": "XBO", "fla": "XBO",
+	"karton": "XCT", "kartons": "XCT", "ktn": "XCT", "krt": "XCT", "kt": "XCT",
+	"kiste": "XCR", "kisten": "XCR", "steige": "XCR", "steigen": "XCR",
+	"packung": "XPK", "packungen": "XPK", "pack": "XPK", "pck": "XPK", "pkg": "XPK", "paket": "XPK", "pakete": "XPK",
+	"schachtel": "XBX", "box": "XBX",
+	"glas": "XJR", "gläser": "XJR", "dose": "XTN", "dosen": "XTN", "becher": "XCU", "beutel": "XBG", "sack": "XSA",
+	"netz": "XNT", "bund": "XBE", "schale": "XPU", "eimer": "XBJ", "kanister": "XCI", "korb": "XBK",
+	"palette": "XPX", "paletten": "XPX", "pal": "XPX", "rolle": "XRO", "rollen": "XRO",
+	"kg": "KGM", "kilogramm": "KGM", "kilo": "KGM", "g": "GRM", "gramm": "GRM",
+	"l": "LTR", "liter": "LTR", "ltr": "LTR", "ml": "MLT", "milliliter": "MLT",
+	"m": "MTR", "meter": "MTR", "m²": "MTK", "qm": "MTK", "quadratmeter": "MTK",
+	"stunde": "HUR", "stunden": "HUR", "std": "HUR", "h": "HUR", "tag": "DAY", "tage": "DAY", "monat": "MON", "monate": "MON",
+	"pauschal": "LS", "pauschale": "LS", "psch": "LS", "pausch": "LS",
+	"set": "SET", "paar": "PR", "dutzend": "DZN", "dtzd": "DZN",
+}
+
+// EinheitAusName findet zu einer Bezeichnung wie "Stück" oder "Fl." den
+// genormten Code. Kennt das Programm die Bezeichnung nicht, ist das zweite
+// Ergebnis false und der Code der allgemeine "C62".
+func EinheitAusName(name string) (string, bool) {
+	n := strings.ToLower(strings.Trim(strings.TrimSpace(name), "."))
+	if n == "" {
+		return "C62", false
+	}
+	if Gueltig(Einheit, strings.ToUpper(n)) && len(n) >= 2 && strings.ToUpper(n) == strings.TrimSpace(name) {
+		return strings.ToUpper(n), true // schon ein Code, z. B. "H87"
+	}
+	if c, ok := einheitNamen[n]; ok {
+		return c, true
+	}
+	return "C62", false
 }
 
 // EinheitKurz liefert die Abkürzung zu einem Einheitencode.
