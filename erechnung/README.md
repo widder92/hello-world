@@ -81,6 +81,8 @@ Pflichtangaben **vor** dem Versand und sagt in einfachen Worten, was fehlt.
 Wird das Fenster geschlossen, ist das Programm beendet; ein Doppelklick auf
 das Symbol startet es wieder.
 
+![Marktrechnung als eigenes Fenster unter Windows](docs/fenster-windows.png)
+
 **Zum Fenster:** Die Oberfläche ist mit Webtechnik gebaut. Als eigenes
 Programmfenster – ohne Adresszeile und Tabs, mit eigenem Symbol in der
 Taskleiste – zeigt Marktrechnung sie über den Browser, der auf dem Rechner
