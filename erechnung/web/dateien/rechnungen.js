@@ -3,7 +3,7 @@
 import {
   html, useState, useEffect, useRef, api, stamm, zahlDE, geld, datumDE, heute, gehe, zeige, zeigeFehler,
   Feld, Text, Mehrzeilig, Auswahl, Zahl, Dialog, Kasten, Etikett, PdfDialog, Meldungsliste, zaehle, springeZu,
-  setzeIn, STATUS, belegName, ladeDatei, Haken,
+  setzeIn, STATUS, belegName, ladeDatei, Haken, frage,
 } from './basis.js';
 
 // ------------------------------------------------------------- Übersicht
@@ -288,7 +288,7 @@ function Editor({ r: anfang, einst, kunden, artikel }) {
     } catch (e) { zeigeFehler(e); }
   };
   const loesche = async () => {
-    if (!confirm('Diesen Entwurf wirklich löschen?')) return;
+    if (!await frage('Diesen Entwurf wirklich löschen?', { ja: 'Löschen', gefahr: true, titel: 'Entwurf löschen' })) return;
     try {
       clearTimeout(lauf.current.speicherUhr);
       if (r.id) await api('DELETE', '/api/rechnungen/' + r.id);
@@ -314,9 +314,11 @@ function Editor({ r: anfang, einst, kunden, artikel }) {
   const klick = (m) => {
     if (springeZu(m.feld)) return;
     if (m.feld.startsWith('verkaeufer.') || m.feld.startsWith('zahlung.iban') || m.feld.startsWith('zahlung.bic')) {
-      if (confirm('Diese Angabe steht in den Einstellungen (Firmendaten). Jetzt dorthin wechseln? Der Entwurf wird gespeichert.')) speichere().then(() => gehe('#/einstellungen')).catch(zeigeFehler);
+      frage('Diese Angabe steht in den Einstellungen (Firmendaten). Jetzt dorthin wechseln? Der Entwurf wird gespeichert.', { ja: 'Zu den Einstellungen', titel: 'Firmendaten' })
+        .then((ja) => { if (ja) speichere().then(() => gehe('#/einstellungen')).catch(zeigeFehler); });
     } else if ((m.feld.startsWith('kaeufer.') || m.feld.startsWith('lieferort.')) && kunde) {
-      if (confirm('Diese Angabe steht beim Kunden. Jetzt den Kunden bearbeiten? Der Entwurf wird gespeichert.')) speichere().then(() => gehe('#/kunden/' + kunde.id + '?zurueck=' + (aktuell.current.id || ''))).catch(zeigeFehler);
+      frage('Diese Angabe steht beim Kunden. Jetzt den Kunden bearbeiten? Der Entwurf wird gespeichert.', { ja: 'Kunde bearbeiten', titel: 'Angaben des Kunden' })
+        .then((ja) => { if (ja) speichere().then(() => gehe('#/kunden/' + kunde.id + '?zurueck=' + (aktuell.current.id || ''))).catch(zeigeFehler); });
     } else if (m.feld === 'kundeId') springeZu('kundeId');
   };
 
@@ -536,7 +538,8 @@ function Ansicht({ anfang, einst }) {
     try { setR(await api('POST', `/api/rechnungen/${r.id}/status`, { status, ...mehr })); } catch (e) { zeigeFehler(e); }
   };
   const storno = async () => {
-    if (!confirm(`Rechnung ${r.nummer} stornieren?\n\nEs wird eine Rechnungskorrektur (Gutschrift) über den vollen Betrag als Entwurf angelegt. Erst wenn diese fertiggestellt ist, gilt die Rechnung als storniert.`)) return;
+    if (!await frage(`Rechnung ${r.nummer} stornieren?\n\nEs wird eine Rechnungskorrektur (Gutschrift) über den vollen Betrag als Entwurf angelegt. Erst wenn diese fertiggestellt ist, gilt die Rechnung als storniert.`,
+      { ja: 'Rechnungskorrektur anlegen', titel: 'Rechnung stornieren' })) return;
     try { const n = await api('POST', `/api/rechnungen/${r.id}/storno`); gehe('#/rechnung/' + n.id); } catch (e) { zeigeFehler(e); }
   };
   const kopie = async () => {
@@ -614,7 +617,8 @@ function Ansicht({ anfang, einst }) {
         </div>
         <div class="karte">
           <h2>Dateien</h2>
-          ${dateien.map((d, i) => html`<p class="klein" key=${i}><a href=${`/api/rechnungen/${r.id}/datei/${i}`} target="_blank" rel="noopener">${name(d)}</a>
+          ${dateien.map((d, i) => html`<p class="klein" key=${i}><a href="#" title="Mit dem dafür eingerichteten Programm öffnen"
+              onClick=${(e) => { e.preventDefault(); api('POST', `/api/rechnungen/${r.id}/datei/${i}/oeffnen`).catch(zeigeFehler); }}>${name(d)}</a>
             ${' '}<button class="schlicht" onClick=${() => ladeDatei(`/api/rechnungen/${r.id}/datei/${i}?laden=1`)}>Speichern unter …</button>
             ${i === haupt ? html`<br /><span class="leise">Das ist die E-Rechnung, die verschickt wird.</span>` : html`<br /><span class="leise">Ansicht für die eigenen Unterlagen.</span>`}</p>`)}
           <button onClick=${() => api('POST', '/api/ordner', { ziel: 'rechnungen' }).catch(zeigeFehler)}>Ordner „Rechnungen“ öffnen</button>
@@ -631,7 +635,8 @@ function Ansicht({ anfang, einst }) {
       </div>
     </div>
 
-    ${pdf && dateien.length > 0 && html`<${PdfDialog} titel=${belegName(r.art) + ' ' + r.nummer} adresse=${`/api/rechnungen/${r.id}/datei/${ansicht}`} zu=${() => setPdf(false)} />`}
+    ${pdf && dateien.length > 0 && html`<${PdfDialog} titel=${belegName(r.art) + ' ' + r.nummer} adresse=${`/api/rechnungen/${r.id}/datei/${ansicht}`} zu=${() => setPdf(false)}
+      oeffne=${() => api('POST', `/api/rechnungen/${r.id}/datei/${ansicht}/oeffnen`).catch(zeigeFehler)} />`}
     ${senden && html`<${SendeDialog} r=${r} zu=${() => setSenden(false)} fertig=${(neu) => { setR(neu); setSenden(false); }} />`}
   `;
 }

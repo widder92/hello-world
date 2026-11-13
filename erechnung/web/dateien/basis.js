@@ -180,10 +180,32 @@ export function Etikett({ status }) {
   return html`<span class=${'etikett ' + status}>${STATUS_KURZ[status] || status}</span>`;
 }
 
-// PdfDialog zeigt ein PDF in einem Fenster über der Seite.
-export function PdfDialog({ titel, adresse, zu }) {
+// frage stellt eine Rückfrage in einem Fenster des Programms und liefert,
+// ob zugestimmt wurde. Leerzeilen im Text trennen Absätze.
+let frageSetzer = null;
+export function frage(text, { ja = 'Ja', nein = 'Abbrechen', gefahr = false, titel = 'Bitte bestätigen' } = {}) {
+  return new Promise((antwort) => {
+    if (!frageSetzer) { antwort(window.confirm(text)); return; }
+    frageSetzer({ text, ja, nein, gefahr, titel, antwort });
+  });
+}
+export function Fragen() {
+  const [f, setF] = useState(null);
+  frageSetzer = setF;
+  if (!f) return null;
+  const schliesse = (wert) => { setF(null); f.antwort(wert); };
+  return html`<${Dialog} titel=${f.titel} zu=${() => schliesse(false)} aktionen=${html`
+      <button onClick=${() => schliesse(false)}>${f.nein}</button>
+      <button class=${f.gefahr ? 'gefahr' : 'haupt'} data-frage="ja" onClick=${() => schliesse(true)}>${f.ja}</button>`}>
+    ${f.text.split('\n\n').map((absatz, i) => html`<p key=${i}>${absatz}</p>`)}
+  <//>`;
+}
+
+// PdfDialog zeigt ein PDF in einem Fenster über der Seite. Mit "oeffne"
+// lässt es sich zusätzlich im PDF-Programm des Rechners öffnen.
+export function PdfDialog({ titel, adresse, zu, oeffne }) {
   return html`<${Dialog} titel=${titel} zu=${zu} breit aktionen=${html`
-      <a class="knopf" href=${adresse} target="_blank" rel="noopener">In neuem Fenster öffnen</a>
+      ${oeffne ? html`<button onClick=${oeffne}>Im PDF-Programm öffnen</button>` : null}
       <button class="haupt" onClick=${zu}>Schließen</button>`}>
     <iframe src=${adresse} title=${titel}></iframe>
   <//>`;

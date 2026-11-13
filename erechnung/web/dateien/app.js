@@ -1,5 +1,5 @@
 // Marktrechnung - Rahmen der Oberfläche und Wechsel zwischen den Seiten.
-import { html, render, useState, useEffect, api, ladeStamm, stamm, Toasts, zeigeFehler } from './basis.js';
+import { html, render, useState, useEffect, api, ladeStamm, stamm, Toasts, zeigeFehler, frage, Fragen } from './basis.js';
 import { Uebersicht, Rechnungsseite } from './rechnungen.js';
 import { Kundenliste, Kundenseite } from './kunden.js';
 import { Artikelseite } from './artikel.js';
@@ -43,7 +43,7 @@ function App() {
   if (!bereit) return html`<p class="laden">Marktrechnung wird geladen …</p>`;
 
   const beende = async () => {
-    if (!confirm('Marktrechnung beenden?')) return;
+    if (!await frage('Marktrechnung beenden?', { ja: 'Beenden', titel: 'Programm beenden' })) return;
     // Das Programm schließt sein Fenster selbst; in einem Browser-Tab bleibt der Hinweis stehen.
     try { await api('POST', '/api/beenden'); setBeendet(true); setTimeout(() => window.close(), 300); } catch (e) { zeigeFehler(e); }
   };
@@ -64,7 +64,36 @@ function App() {
     </aside>
     <main><${Seite} ort=${ort} /></main>
     <${Toasts} />
+    <${Fragen} />
   </div>`;
 }
+
+// Wie in einem gewöhnlichen Programm: Das Menü der rechten Maustaste gibt es
+// nur dort, wo es etwas zu kopieren oder einzufügen gibt - in Eingabefeldern
+// und auf markiertem Text.
+document.addEventListener('contextmenu', (e) => {
+  const feld = e.target.closest && e.target.closest('input, textarea, [contenteditable="true"]');
+  if (!feld && !String(window.getSelection() || '')) e.preventDefault();
+});
+
+// Strg mit Plus, Minus oder Null vergrößert und verkleinert die Darstellung;
+// die Wahl bleibt erhalten.
+const stufen = [0.8, 0.9, 1, 1.1, 1.25, 1.4, 1.6];
+const setzeGroesse = (faktor) => {
+  document.documentElement.style.zoom = faktor === 1 ? '' : String(faktor);
+  try { localStorage.setItem('groesse', String(faktor)); } catch (e) { /* ohne Speicher gilt die Wahl bis zum Schließen */ }
+};
+let groesse = 1;
+try { groesse = stufen.includes(Number(localStorage.getItem('groesse'))) ? Number(localStorage.getItem('groesse')) : 1; } catch (e) { groesse = 1; }
+if (groesse !== 1) setzeGroesse(groesse);
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+  const schritt = (e.key === '+' || e.key === '=') ? 1 : e.key === '-' ? -1 : e.key === '0' ? 0 : null;
+  if (schritt === null) return;
+  e.preventDefault();
+  const ort = stufen.indexOf(groesse);
+  groesse = schritt === 0 ? 1 : stufen[Math.min(stufen.length - 1, Math.max(0, ort + schritt))];
+  setzeGroesse(groesse);
+});
 
 render(html`<${App} />`, document.getElementById('app'));

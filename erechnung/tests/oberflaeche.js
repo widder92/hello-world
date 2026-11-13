@@ -238,6 +238,7 @@ function pruefe(bedingung, text) {
   // 6. Storno: aus der Rechnung wird der Entwurf einer Rechnungskorrektur.
   await p.goto(`${basis}/#/rechnung/${rechnungsId}`);
   await p.getByRole('button', { name: /Stornieren/ }).click();
+  await p.locator('[data-frage="ja"]').click(); // Rückfrage im Programm bestätigen
   await p.getByRole('heading', { name: /Rechnungskorrektur/ }).waitFor();
   pruefe(await feld('Korrigiert die Rechnung Nr.').inputValue() === 'RE-2026-0001', 'Rechnungskorrektur verweist auf die Rechnung');
   await p.getByText('Alles in Ordnung').or(p.getByText('Bereit, mit Warnungen')).first().waitFor();
@@ -281,6 +282,7 @@ function pruefe(bedingung, text) {
   await p.getByText(`Markt: Markt Waldeck · Hauptstraße 2 · 34101 Waldeck · GLN ${gln(2)}`).waitFor();
   pruefe(true, 'der Markt lässt sich in der Rechnung über die Suche wählen');
   await p.getByRole('button', { name: 'Entwurf löschen' }).click();
+  await p.locator('[data-frage="ja"]').click();
   await p.getByRole('heading', { name: 'Rechnungen', exact: true }).waitFor().catch(() => {});
 
   // 8. Steht in der eingelesenen Rechnung ein Markt als Kunde, bietet der

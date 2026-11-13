@@ -53,7 +53,15 @@ func main() {
 	zeigeVersion := flag.Bool("version", false, "Version anzeigen")
 	beenden := flag.Bool("beenden", false, "ein laufendes Marktrechnung beenden (für das Setup)")
 	flag.StringVar(&lexwareAdresse, "lexware-adresse", "", "andere Adresse der Lexware-Schnittstelle (nur für Tests)")
+	fensterEigen := flag.String("fenster-eigen", "", "nur für den eigenen Gebrauch: das Programmfenster für diese Adresse zeigen")
 	flag.Parse()
+	if *fensterEigen != "" {
+		// Der Fensterprozess: zeigt nur das Fenster. Das Protokoll geht an
+		// das Hauptprogramm, das ihn gestartet hat.
+		log.SetFlags(0)
+		log.SetPrefix("Fenster: ")
+		os.Exit(zeigeEigenesFenster(*fensterEigen, fensterOrdner()+"-eigen"))
+	}
 	if *zeigeVersion {
 		fmt.Println("Marktrechnung", version.Nummer)
 		return
@@ -150,7 +158,8 @@ func lauf(datenFlag string, portFlag int, ohneBrowser bool) error {
 	defer stopp()
 	fenster := &fensterVerwalter{adresse: start, profil: fensterOrdner(), imBrowser: imBrowser, zu: stopp}
 	if !imBrowser && !ohneBrowser {
-		if fenster.browser = findeBrowser(); fenster.browser == "" {
+		fenster.eigen = os.Getenv("MARKTRECHNUNG_FENSTER") != "app" && eigenesFensterVerfuegbar() && !eigenesFensterGesperrt(fenster.profil)
+		if fenster.browser = findeBrowser(); fenster.browser == "" && !fenster.eigen {
 			log.Print("Kein Browser mit App-Fenster gefunden (Edge, Chrome ...); die Oberfläche erscheint im gewohnten Browser.")
 		}
 	}
@@ -263,6 +272,11 @@ func beendeLaufendes() {
 // zeigen. So bleibt das Fenster in der Hand des Programms, das es auch
 // wieder schließen kann.
 func zeigeLaufendes(adresse, token string) bool {
+	// Das eigene Fenster holt dieser Aufruf selbst nach vorn: Windows
+	// erlaubt das dem Programm, das der Benutzer gerade gestartet hat.
+	if holeFensterNachVorn() {
+		return true
+	}
 	anfrage, err := http.NewRequest("POST", "http://"+adresse+"/api/fenster", nil)
 	if err != nil {
 		return false

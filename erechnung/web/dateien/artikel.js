@@ -1,5 +1,5 @@
 // Artikel: Waren und Leistungen, die auf Rechnungen immer wieder vorkommen.
-import { html, useState, useEffect, api, stamm, zahlDE, geld, zeige, zeigeFehler, Feld, Text, Auswahl, Zahl, Dialog, gtinOk } from './basis.js';
+import { html, useState, useEffect, api, stamm, zahlDE, geld, zeige, zeigeFehler, Feld, Text, Auswahl, Zahl, Dialog, gtinOk, frage } from './basis.js';
 
 export function Artikelseite() {
   const [liste, setListe] = useState(null);
@@ -14,7 +14,7 @@ export function Artikelseite() {
     try { await api('POST', '/api/artikel', offen); setOffen(null); zeige('Artikel gespeichert.', 'gut'); lade(); } catch (e) { zeigeFehler(e); }
   };
   const loesche = async () => {
-    if (!confirm(`Artikel „${offen.bezeichnung}“ löschen?`)) return;
+    if (!await frage(`Artikel „${offen.bezeichnung}“ löschen?`, { ja: 'Löschen', gefahr: true, titel: 'Artikel löschen' })) return;
     try { await api('DELETE', '/api/artikel/' + offen.id); setOffen(null); lade(); } catch (e) { zeigeFehler(e); }
   };
   const s = (n) => (w) => setOffen((x) => ({ ...x, [n]: w }));

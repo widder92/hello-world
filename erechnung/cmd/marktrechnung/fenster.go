@@ -7,18 +7,24 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+
+	"marktrechnung/internal/version"
 )
 
 // Das Programmfenster.
 //
-// Die Oberfläche ist mit Webtechnik gebaut. Damit sie trotzdem als eigenes
-// Programm erscheint - ohne Adresszeile, ohne Tabs, mit eigenem Symbol in der
-// Taskleiste -, zeigt Marktrechnung sie in einem "App-Fenster" des auf dem
-// Rechner vorhandenen Browsers (unter Windows Microsoft Edge, das zum System
-// gehört). Das Fenster bekommt ein eigenes Profil, getrennt vom Surfen im
-// Internet: keine Erweiterungen, kein Verlauf, keine fremden Cookies.
+// Die Oberfläche ist mit Webtechnik gebaut. Unter Windows zeigt Marktrechnung
+// sie in einem eigenen Fenster (siehe eigenfenster_windows_amd64.go): Titel,
+// Symbol und Rahmen gehören dem Programm, von einem Browser ist nichts zu
+// sehen.
+//
+// Wo das nicht geht - auf anderen Systemen, oder wenn dem Rechner die nötige
+// Komponente fehlt -, erscheint die Oberfläche in einem "App-Fenster" des
+// vorhandenen Browsers: ohne Adresszeile und Tabs, mit eigenem Profil,
+// getrennt vom Surfen im Internet.
 //
 // Solange das Fenster offen ist, läuft das Programm; wird es geschlossen,
 // beendet sich Marktrechnung.
@@ -29,12 +35,73 @@ type fensterVerwalter struct {
 	profil    string // Ordner für das Profil des Fensters
 	browser   string // Programmdatei des Browsers; leer = keiner gefunden
 	imBrowser bool   // im gewohnten Browser öffnen statt im eigenen Fenster
+	eigen     bool   // das eigene Fenster ist möglich (Windows)
 	zu        func() // wird gerufen, wenn das Fenster geschlossen wurde
 
 	mu        sync.Mutex
 	prozess   *exec.Cmd
 	ende      chan struct{} // geschlossen, sobald prozess beendet ist
 	schliesst bool
+	istEigen  bool // prozess ist das eigene Fenster
+}
+
+// Sperre: Ist das eigene Fenster abgestürzt, versucht es diese Fassung des
+// Programms nicht noch einmal. Eine neue Fassung versucht es wieder.
+func sperrdatei(profil string) string {
+	return filepath.Join(filepath.Dir(profil), "eigenes-fenster-gesperrt.txt")
+}
+
+func eigenesFensterGesperrt(profil string) bool {
+	daten, err := os.ReadFile(sperrdatei(profil))
+	return err == nil && strings.TrimSpace(string(daten)) == version.Nummer
+}
+
+// zeigeEigen startet den Fensterprozess. Endet er ohne Fehler, hat der
+// Benutzer das Fenster geschlossen; sonst zeigt Marktrechnung die Oberfläche
+// auf dem anderen Weg. Der Aufrufer hält f.mu.
+func (f *fensterVerwalter) zeigeEigen() bool {
+	selbst, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	cmd := exec.Command(selbst, "-fenster-eigen", f.adresse)
+	cmd.Stderr = log.Writer()
+	if err := cmd.Start(); err != nil {
+		log.Printf("Das eigene Fenster ließ sich nicht starten: %v", err)
+		return false
+	}
+	ende := make(chan struct{})
+	f.prozess, f.ende, f.istEigen = cmd, ende, true
+	gestartet := time.Now()
+	go func() {
+		cmd.Wait()
+		close(ende)
+		kennzahl := cmd.ProcessState.ExitCode()
+		f.mu.Lock()
+		schliesst := f.schliesst
+		f.mu.Unlock()
+		if schliesst {
+			return
+		}
+		if kennzahl == 0 {
+			log.Print("Das Programmfenster wurde geschlossen; Marktrechnung beendet sich.")
+			f.zu()
+			return
+		}
+		// Das Fenster kam nicht zustande oder ist abgestürzt.
+		log.Printf("Das eigene Fenster endete mit der Kennzahl %d; die Oberfläche erscheint im Fenster des Browsers.", kennzahl)
+		if kennzahl != endeKeinWebView && time.Since(gestartet) < time.Minute {
+			os.MkdirAll(filepath.Dir(sperrdatei(f.profil)), 0o700)
+			os.WriteFile(sperrdatei(f.profil), []byte(version.Nummer), 0o600)
+		}
+		f.mu.Lock()
+		f.eigen, f.prozess, f.istEigen = false, nil, false
+		f.mu.Unlock()
+		if err := f.zeige(); err != nil {
+			log.Printf("Das Fenster ließ sich nicht öffnen: %v", err)
+		}
+	}()
+	return true
 }
 
 // findeBrowser sucht einen Browser, der App-Fenster beherrscht.
@@ -87,7 +154,24 @@ func (f *fensterVerwalter) profilBelegt() bool {
 func (f *fensterVerwalter) zeige() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.imBrowser || f.browser == "" {
+	if f.imBrowser {
+		return oeffneBrowser(f.adresse)
+	}
+	if f.eigen {
+		if f.prozess != nil && f.istEigen {
+			select {
+			case <-f.ende:
+			default:
+				holeFensterNachVorn() // das Fenster ist offen: nur zeigen
+				return nil
+			}
+		}
+		if f.zeigeEigen() {
+			return nil
+		}
+		f.eigen = false
+	}
+	if f.browser == "" {
 		return oeffneBrowser(f.adresse)
 	}
 	f.bereiteProfilVor()
@@ -117,7 +201,7 @@ func (f *fensterVerwalter) zeige() error {
 		}
 	}
 	ende := make(chan struct{})
-	f.prozess, f.ende = cmd, ende
+	f.prozess, f.ende, f.istEigen = cmd, ende, false
 	gestartet := time.Now()
 	go func() {
 		cmd.Wait()

@@ -1,6 +1,6 @@
 // Kunden: Rechnungsempfänger mit ihren Märkten und Versandangaben.
 import {
-  html, useState, useEffect, api, stamm, gehe, zeige, zeigeFehler, Feld, Text, Mehrzeilig, Auswahl, Zahl, Kasten, Dialog, glnOk, setzeIn,
+  html, useState, useEffect, api, stamm, gehe, zeige, zeigeFehler, Feld, Text, Mehrzeilig, Auswahl, Zahl, Kasten, Dialog, glnOk, setzeIn, frage,
 } from './basis.js';
 
 export function Kundenliste() {
@@ -131,7 +131,7 @@ export function Kundenseite({ id, zurueck }) {
     } catch (e) { zeigeFehler(e); } finally { setSpeichert(false); }
   };
   const loesche = async () => {
-    if (!confirm(`Kunde „${k.name}“ löschen?\n\nBestehende Rechnungen bleiben unverändert erhalten.`)) return;
+    if (!await frage(`Kunde „${k.name}“ löschen?\n\nBestehende Rechnungen bleiben unverändert erhalten.`, { ja: 'Löschen', gefahr: true, titel: 'Kunde löschen' })) return;
     try { await api('DELETE', '/api/kunden/' + k.id); gehe('#/kunden'); } catch (e) { zeigeFehler(e); }
   };
   const viele = k.lieferorte.length > 6;

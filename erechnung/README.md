@@ -98,16 +98,21 @@ das Symbol startet es wieder.
 
 ![Marktrechnung als eigenes Fenster unter Windows](docs/fenster-windows.png)
 
-**Zum Fenster:** Die Oberfläche ist mit Webtechnik gebaut. Als eigenes
-Programmfenster – ohne Adresszeile und Tabs, mit eigenem Symbol in der
-Taskleiste – zeigt Marktrechnung sie über den Browser, der auf dem Rechner
-ohnehin vorhanden ist (unter Windows Microsoft Edge, sonst Chrome oder ein
-verwandter Browser). Das Fenster hat ein eigenes Profil, getrennt vom Surfen
-im Internet. Eine Internetseite ist es nicht: Alles läuft auf dem eigenen
-Rechner. Fehlt ein solcher Browser, erscheint die Oberfläche als Tab im
-gewohnten Browser; dann läuft das Programm weiter, bis man unten links
-*Programm beenden* wählt. Mit dem Schalter `-browser` lässt sich dieser Weg
-auch erzwingen.
+**Zum Fenster:** Unter Windows öffnet Marktrechnung ein eigenes Fenster wie
+jedes andere Programm – mit eigenem Titel, Symbol und Rahmen, ohne Adresszeile,
+Browsermenü oder Tastenkürzel eines Browsers. Rückfragen stellt das Programm
+in eigenen Dialogen, Rechnungen öffnet es im PDF-Programm des Rechners, und
+Strg mit Plus oder Minus vergrößert die Darstellung. Die Oberfläche selbst ist
+mit Webtechnik gebaut; gezeichnet wird sie von *WebView2*, der Komponente, die
+Windows dafür mitbringt (Teil von Windows 11, auf Windows 10 praktisch immer
+vorhanden). Alles läuft nur auf dem eigenen Rechner.
+
+Fehlt WebView2 oder kommt das eigene Fenster nicht zustande, zeigt das
+Programm die Oberfläche ersatzweise in einem App-Fenster des vorhandenen
+Browsers (Edge, sonst Chrome) – so auch unter macOS und Linux – und, wenn es
+auch den nicht gibt, als Tab im gewohnten Browser; dann läuft das Programm
+weiter, bis man unten links „Programm beenden“ wählt. Mit dem Schalter `-browser`
+lässt sich der Tab im Browser auch erzwingen.
 
 ### Was vorab mit dem Kunden zu klären ist
 

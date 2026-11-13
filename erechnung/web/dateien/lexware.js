@@ -1,6 +1,6 @@
 // Direkter Abruf aus Lexware Office (lexoffice): Rechnungen, Kunden und
 // Artikel über die Schnittstelle holen, ohne Dateien herunterzuladen.
-import { html, useState, useEffect, api, geld, datumDE, zeige, zeigeFehler, Kasten } from './basis.js';
+import { html, useState, useEffect, api, geld, datumDE, zeige, zeigeFehler, Kasten, frage } from './basis.js';
 
 function vorTagen(n) {
   const d = new Date(Date.now() - n * 86400000);
@@ -31,7 +31,7 @@ export function LexwareAbruf({ profil, nimm }) {
     zeige(`Verbunden mit Lexware Office${a.firma ? ' – ' + a.firma : ''}.`, 'gut');
   });
   const trenne = () => tue('trennen', async () => {
-    if (!confirm('Die Verbindung zu Lexware Office trennen? Der gespeicherte Zugangsschlüssel wird gelöscht.')) return;
+    if (!await frage('Die Verbindung zu Lexware Office trennen? Der gespeicherte Zugangsschlüssel wird gelöscht.', { ja: 'Trennen', titel: 'Verbindung trennen' })) return;
     await api('POST', '/api/lexware/schluessel', { schluessel: '' });
     setVerbunden(false); setBelege(null);
   });

@@ -118,6 +118,7 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/vorschau", s.vorschau)
 	api("POST /api/rechnungen/{id}/fertigstellen", s.fertigstellen)
 	api("GET /api/rechnungen/{id}/datei/{nr}", s.datei)
+	api("POST /api/rechnungen/{id}/datei/{nr}/oeffnen", s.dateiOeffnen)
 	api("GET /api/rechnungen/{id}/versand", s.versandVorschlag)
 	api("POST /api/rechnungen/{id}/senden", s.senden)
 	api("POST /api/rechnungen/{id}/status", s.status)
@@ -1113,6 +1114,37 @@ func (s *Server) kopie(w http.ResponseWriter, r *http.Request) {
 
 // ---------------------------------------------------------------------------
 // Ordner, Sicherung, Export
+
+// dateiOeffnen übergibt eine Rechnungsdatei an das Programm, das auf dem
+// Rechner dafür zuständig ist - für ein PDF also das PDF-Programm.
+func (s *Server) dateiOeffnen(w http.ResponseWriter, r *http.Request) {
+	re, err := s.Speicher.Rechnung(r.PathValue("id"))
+	if err != nil {
+		fehler(w, 404, err)
+		return
+	}
+	var nr int
+	fmt.Sscan(r.PathValue("nr"), &nr)
+	if nr < 0 || nr >= len(re.Dateien) {
+		fehler(w, 404, speicher.ErrNichtGefunden)
+		return
+	}
+	// LiesDatei prüft, dass der Name im Ordner Rechnungen bleibt.
+	if _, err := s.Speicher.LiesDatei(re.Dateien[nr]); err != nil {
+		fehler(w, 404, fmt.Errorf("die Datei %s liegt nicht mehr im Ordner Rechnungen", re.Dateien[nr]))
+		return
+	}
+	pfad := filepath.Join(s.Speicher.AusgangOrdner(), filepath.FromSlash(re.Dateien[nr]))
+	if s.Oeffne == nil {
+		fehler(w, 501, errors.New("Datei: "+pfad))
+		return
+	}
+	if err := s.Oeffne(pfad); err != nil {
+		fehler(w, 500, fmt.Errorf("die Datei %s lässt sich nicht öffnen: %w", pfad, err))
+		return
+	}
+	antworte(w, 200, map[string]string{"pfad": pfad})
+}
 
 func (s *Server) ordner(w http.ResponseWriter, r *http.Request) {
 	var ein struct {

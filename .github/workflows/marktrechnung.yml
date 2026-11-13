@@ -201,39 +201,79 @@ jobs:
           Pruefe (-not (Get-Process Marktrechnung -ErrorAction SilentlyContinue)) 'das laufende Programm wurde vorher beendet'
           Pruefe (Test-Path $programm) 'die Programmdatei wurde ersetzt'
 
-          # 3b. Gewöhnlicher Start: eigenes Fenster; wird es geschlossen, endet das Programm
+          # 3b. Gewöhnlicher Start: ein eigenes Fenster des Programms, ohne Browser davor.
           Add-Type -Namespace Probe -Name Symbol -MemberDefinition '[DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern uint ExtractIconEx(string datei, int nr, IntPtr[] gross, IntPtr[] klein, uint anzahl);'
+          Add-Type -Namespace Probe -Name Fenster -MemberDefinition 'public struct RECT { public int L, T, R, B; } [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);'
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
           Pruefe ([Probe.Symbol]::ExtractIconEx($programm, -1, $null, $null, 0) -ge 1) 'die Programmdatei trägt ihr eigenes Symbol'
+          function Foto($name, $griff) {
+            try {
+              [Probe.Fenster]::SetForegroundWindow($griff) | Out-Null
+              Start-Sleep -Milliseconds 900
+              $r = New-Object 'Probe.Fenster+RECT'
+              [Probe.Fenster]::GetWindowRect($griff, [ref]$r) | Out-Null
+              $bild = New-Object System.Drawing.Bitmap ($r.R - $r.L), ($r.B - $r.T)
+              [System.Drawing.Graphics]::FromImage($bild).CopyFromScreen($r.L, $r.T, 0, 0, $bild.Size)
+              $bild.Save((Join-Path $env:RUNNER_TEMP "$name.png"))
+            } catch { Write-Host "Kein Bildschirmfoto ${name}: $_" }
+          }
+          function Protokoll() { Get-Content (Join-Path $einstellungen 'protokoll.txt') -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('  Protokoll: ' + $_) } }
+          function FensterVon($namen) { Get-Process $namen -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -like '*Marktrechnung*' } | Select-Object -First 1 }
+
+          $webview = Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application\*\EBWebView\x64\EmbeddedBrowserWebView.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+          Write-Host ("WebView2 auf diesem Rechner: " + $(if ($webview) { $webview.FullName } else { 'nicht vorhanden' }))
+          if (-not $webview) {
+            # Auf Windows 11 und üblichen Windows-10-Rechnern ist WebView2 da; dem Testrechner wird es nötigenfalls nachgereicht.
+            Write-Host 'WebView2 wird für den Test eingerichtet ...'
+            Invoke-WebRequest 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile (Join-Path $env:RUNNER_TEMP 'webview2.exe')
+            Start-Process (Join-Path $env:RUNNER_TEMP 'webview2.exe') -ArgumentList '/silent', '/install' -Wait
+            $webview = Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application\*\EBWebView\x64\EmbeddedBrowserWebView.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          Pruefe ($null -ne $webview) 'WebView2 ist vorhanden'
+
           Start-Process $programm -ArgumentList '-daten', $daten, '-port', '47557'
           $script:fenster = $null
-          $da = Warte {
-            $script:fenster = Get-Process msedge, chrome -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -like '*Marktrechnung*' } | Select-Object -First 1
-            $null -ne $script:fenster
-          } 40
+          $da = Warte { $script:fenster = FensterVon 'Marktrechnung'; $null -ne $script:fenster } 60
           if (-not $da) {
             Write-Host 'Fenster auf dem Bildschirm:'
             Get-Process | Where-Object { $_.MainWindowTitle } | ForEach-Object { Write-Host ('  ' + $_.ProcessName + ': ' + $_.MainWindowTitle) }
-            Get-Content (Join-Path $einstellungen 'protokoll.txt') -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('  Protokoll: ' + $_) }
+            Protokoll
           }
-          Start-Sleep -Seconds 3
-          try {
-            Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-            $flaeche = [System.Windows.Forms.SystemInformation]::VirtualScreen
-            $bild = New-Object System.Drawing.Bitmap $flaeche.Width, $flaeche.Height
-            [System.Drawing.Graphics]::FromImage($bild).CopyFromScreen($flaeche.Left, $flaeche.Top, 0, 0, $bild.Size)
-            $bild.Save((Join-Path $env:RUNNER_TEMP 'fenster.png'))
-          } catch { Write-Host "Kein Bildschirmfoto möglich: $_" }
-          Pruefe $da 'das Programm zeigt ein eigenes Fenster mit dem Titel Marktrechnung'
+          Pruefe $da 'das Programm zeigt sein eigenes Fenster (kein Browserfenster)'
+          Pruefe ($script:fenster.MainWindowTitle -eq 'Marktrechnung') 'der Fenstertitel ist Marktrechnung'
+          $geladen = Warte { (Get-Content (Join-Path $einstellungen 'protokoll.txt') -Raw -ErrorAction SilentlyContinue) -match 'Das eigene Fenster zeigt die Oberfl' } 60
+          if (-not $geladen) { Protokoll }
+          Pruefe $geladen 'im eigenen Fenster erscheint die Oberfläche'
+          Pruefe (-not (FensterVon @('msedge', 'chrome'))) 'daneben ist kein Browserfenster offen'
+          Start-Sleep -Seconds 6
+          Foto 'fenster' $script:fenster.MainWindowHandle
           Pruefe ((Invoke-WebRequest 'http://127.0.0.1:47557/' -UseBasicParsing -TimeoutSec 5).Content -match 'Marktrechnung') 'hinter dem Fenster läuft das Programm'
+
+          # Ein zweiter Start öffnet kein zweites Fenster.
+          Start-Process $programm -ArgumentList '-daten', $daten, '-port', '47557' -Wait
+          Start-Sleep -Seconds 2
+          Pruefe (@(Get-Process Marktrechnung | Where-Object { $_.MainWindowTitle -like '*Marktrechnung*' }).Count -eq 1) 'ein zweiter Start zeigt das vorhandene Fenster'
+
           Pruefe ($script:fenster.CloseMainWindow()) 'das Fenster lässt sich schließen'
           Pruefe (Warte { -not (Get-Process Marktrechnung -ErrorAction SilentlyContinue) } 30) 'nach dem Schließen des Fensters hat sich das Programm beendet'
 
           # 3c. "Programm beenden" (wie es auch das Setup auslöst) schließt das Fenster mit
           Start-Process $programm -ArgumentList '-daten', $daten, '-port', '47557'
-          Pruefe (Warte { [bool](Get-Process msedge, chrome -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -like '*Marktrechnung*' }) } 40) 'ein erneuter Start zeigt das Fenster wieder'
+          Pruefe (Warte { [bool](FensterVon 'Marktrechnung') } 60) 'ein erneuter Start zeigt das Fenster wieder'
           Start-Process $programm -ArgumentList '-beenden' -Wait
           Pruefe (Warte { -not (Get-Process Marktrechnung -ErrorAction SilentlyContinue) } 20) 'der Schalter -beenden beendet das Programm'
-          Pruefe (Warte { -not (Get-Process msedge, chrome -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -like '*Marktrechnung*' }) } 20) 'und schließt dessen Fenster'
+          Pruefe (-not (FensterVon 'Marktrechnung')) 'und schließt dessen Fenster'
+
+          # 3d. Ersatzweg, falls das eigene Fenster auf einem Rechner nicht möglich ist: App-Fenster des Browsers
+          $env:MARKTRECHNUNG_FENSTER = 'app'
+          Start-Process $programm -ArgumentList '-daten', $daten, '-port', '47557'
+          $ersatz = Warte { [bool](FensterVon @('msedge', 'chrome')) } 40
+          if (-not $ersatz) { Protokoll }
+          Pruefe $ersatz 'der Ersatzweg zeigt die Oberfläche im App-Fenster des Browsers'
+          Start-Process $programm -ArgumentList '-beenden' -Wait
+          Pruefe (Warte { -not (Get-Process Marktrechnung -ErrorAction SilentlyContinue) } 20) 'auch dort beendet -beenden das Programm'
+          Pruefe (Warte { -not (FensterVon @('msedge', 'chrome')) } 20) 'und schließt das Fenster'
+          Remove-Item Env:MARKTRECHNUNG_FENSTER
 
           # 4. Entfernen: Programm weg, Rechnungen und Daten bleiben
           Start-Process $entferner -ArgumentList '/S'
