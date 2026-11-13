@@ -483,7 +483,7 @@ func (s *setzer) fusszeilen() {
 		nichtLeer(z.Bank, mit("IBAN ", ibanGruppen(z.IBAN)), mit("BIC ", z.BIC)),
 		nichtLeer(mit("USt-IdNr. ", v.UStID), mit("St.-Nr. ", v.Steuernummer), v.Register, e.Geschaeftsleitung, mit("GLN ", v.GLN)),
 	}
-	xs := []float64{links, 66, 103, 151}
+	xs := []float64{links, 72, 110, 152}
 	seiten := s.dok.Seiten()
 	for nr, p := range seiten {
 		p.Linie(links, fussOben, rechts, fussOben, 0.3, hellgrau)

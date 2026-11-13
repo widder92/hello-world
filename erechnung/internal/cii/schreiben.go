@@ -22,7 +22,7 @@ const (
 
 // IstXRechnung meldet, ob ein Ausgabeformat den XRechnung-Regeln folgt.
 func IstXRechnung(format string) bool {
-	return format == modell.FormatZugferdXR || format == modell.FormatXRechnungCII || format == modell.FormatXRechnungUBL
+	return format == modell.FormatZugferdXR || format == modell.FormatXRechnungCII
 }
 
 func datum102(s string) string { return strings.ReplaceAll(strings.TrimSpace(s), "-", "") }

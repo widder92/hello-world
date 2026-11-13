@@ -167,7 +167,7 @@ func (s *Server) schutz(weiter http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; frame-src blob:; object-src blob:")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; frame-src 'self' blob:; object-src 'self' blob:")
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			c, err := r.Cookie(cookieName)
 			if err != nil || subtle.ConstantTimeCompare([]byte(c.Value), []byte(s.Token)) != 1 {
@@ -846,7 +846,11 @@ func (s *Server) versandVorschlag(w http.ResponseWriter, r *http.Request) {
 	if p, ok := partner.Finde(re.Profil); ok {
 		switch re.Profil {
 		case partner.Rewe:
-			hinweise = append(hinweise, "REWE nimmt Rechnungen nur von angemeldeten Absenderadressen und erst ab dem bestätigten Starttermin an. Absender ist "+e.Post.Absender+".")
+			h := "REWE nimmt Rechnungen nur von angemeldeten Absenderadressen und erst ab dem bestätigten Starttermin an."
+			if e.Post.Absender != "" {
+				h += " Absender ist " + e.Post.Absender + "."
+			}
+			hinweise = append(hinweise, h)
 		case partner.Edeka:
 			hinweise = append(hinweise, "EDEKA: eine Rechnung und ein Anhang je E-Mail, die Rechnungsnummer im Betreff.")
 		}

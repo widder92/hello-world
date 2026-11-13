@@ -53,6 +53,20 @@ const quelleVeR = "Verband elektronische Rechnung: Mindeststandard „E-Rechnung
 
 // Profile liefert alle bekannten Profile.
 func Profile() []Profil {
+	l := profile()
+	for i := range l {
+		// Leere Listen statt "nichts", damit die Oberfläche nicht stolpert.
+		if l[i].Vorlagen == nil {
+			l[i].Vorlagen = []Vorlage{}
+		}
+		if l[i].Formate == nil {
+			l[i].Formate = []string{}
+		}
+	}
+	return l
+}
+
+func profile() []Profil {
 	return []Profil{
 		{
 			ID: Rewe, Name: "REWE Group", Kurz: "REWE Markt, PENNY, REWE-Zentralfinanz und weitere Gesellschaften der REWE Group",

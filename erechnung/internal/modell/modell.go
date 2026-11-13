@@ -27,7 +27,6 @@ const (
 	FormatZugferd      = "zugferd"       // PDF mit eingebetteter XML, Profil EN 16931
 	FormatZugferdXR    = "zugferd-xr"    // PDF mit eingebetteter XML, Profil XRechnung
 	FormatXRechnungCII = "xrechnung-cii" // reine XML-Datei, Syntax CII
-	FormatXRechnungUBL = "xrechnung-ubl" // reine XML-Datei, Syntax UBL
 )
 
 // Steuerkategorien (BT-118/BT-151, Codeliste UNCL 5305).
