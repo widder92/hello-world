@@ -52,6 +52,10 @@ sagt in einfachen Worten, was fehlt.
 - **Import aus Lexware Office (lexoffice)**: Rechnungen als Datei oder direkt
   über die Schnittstelle einlesen, prüfen, aus den Stammdaten ergänzen und
   mit unveränderter Rechnungsnummer als vollständige E-Rechnung versenden
+- **Stammdaten prüfen**: ein Klick zeigt, wo bei Firma, Kunden, Märkten und
+  Artikeln etwas fehlt oder nicht stimmen kann – unvollständige Anschriften,
+  falsche Prüfziffern bei GLN, GTIN und IBAN, falsch geschriebene PLZ,
+  USt-IdNr. und E-Mail-Adressen, doppelt vergebene GLN, Test-Postfächer
 - **Stornieren** über eine Rechnungskorrektur; fertige Rechnungen sind nicht
   mehr änderbar
 - **Rechnungsliste als CSV** für Buchhaltung und Steuerberatung, **Sicherung**
@@ -63,10 +67,11 @@ sagt in einfachen Worten, was fehlt.
    liegt nach jedem Build das Paket für Windows, macOS und Linux; nach einer
    Veröffentlichung auch unter *Releases*.
 2. **Einrichten und starten.**
-   - **Windows:** `Marktrechnung-Setup-….exe` ausführen. Das Setup braucht
+   - **Windows:** `Marktrechnung-Setup-….exe` ausführen und auf
+     *Installieren* klicken – mehr fragt der Assistent nicht. Das Setup braucht
      keine Administratorrechte, legt Symbole im Startmenü und auf dem Desktop
      an und trägt das Programm unter *Einstellungen → Apps* ein, wo es sich
-     wieder entfernen lässt. Beim ersten Start warnt Windows vor einem
+     wieder entfernen lässt. (Ein anderer Zielordner: Aufruf mit `/D=Ordner`.) Beim ersten Start warnt Windows vor einem
      unbekannten Herausgeber, weil das Setup nicht signiert ist: *Weitere
      Informationen → Trotzdem ausführen*.
      Eine neue Fassung wird einfach darüber eingerichtet; Rechnungen und
@@ -195,6 +200,9 @@ Einstellungen eintragen.
 nicht einzeln eintippen: Unter *Kunden* übernimmt „Aus Datei einlesen …“ eine
 Stammdaten-Datei (JSON) mit Kunden und ihren Märkten. Vorhandene Einträge
 bleiben erhalten; leere Felder werden ergänzt, Märkte an ihrer GLN erkannt.
+Danach lohnt ein Klick auf „Stammdaten prüfen“: Die Liste nennt je Kunde und
+Markt, was fehlt oder nicht stimmen kann. Ob eine GLN wirklich zu einem Markt
+gehört, kann das Programm nicht wissen – das weiß nur der Handel.
 
 ```json
 {
@@ -287,6 +295,7 @@ internal/lexware     Abruf aus Lexware Office (Belege, Kunden, Artikel)
 internal/server      Schnittstelle zwischen Oberfläche und Programm
 web/dateien          Bedienoberfläche
 setup                Windows-Setup (NSIS-Skript, Symbol)
+setup/bilder         Bilder des Setup-Assistenten (SVG-Vorlagen, Werkzeug, BMP)
 ```
 
 Bauen und testen:

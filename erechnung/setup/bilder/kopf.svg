@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 150 57" width="150" height="57">
+  <!-- Kopfbild der Setup-Seiten: Obst und das Programmsymbol auf Weiß. -->
+  <defs><clipPath id="rahmen"><rect width="150" height="57"/></clipPath></defs>
+  <g clip-path="url(#rahmen)">
+    <rect width="150" height="57" fill="#fff"/>
+    <circle cx="136" cy="6" r="62" fill="#E4F4EB"/>
+    <circle cx="150" cy="60" r="30" fill="#D2ECDD"/>
+    <circle cx="46" cy="36" r="9" fill="#E63946"/>
+    <circle cx="64" cy="33" r="9" fill="#FF9F1C"/>
+    <circle cx="82" cy="36" r="9" fill="#9B5DE5"/>
+    <circle cx="55" cy="22" r="7" fill="#FFD23F"/>
+    <circle cx="73" cy="21" r="7" fill="#8AC926"/>
+    <ellipse cx="42.5" cy="32" rx="3" ry="1.9" fill="#fff" opacity=".4" transform="rotate(-30 42.5 32)"/>
+    <ellipse cx="60.5" cy="29" rx="3" ry="1.9" fill="#fff" opacity=".4" transform="rotate(-30 60.5 29)"/>
+    <ellipse cx="78.5" cy="32" rx="3" ry="1.9" fill="#fff" opacity=".4" transform="rotate(-30 78.5 32)"/>
+    <path d="M46 27.5v-3" stroke="#6B4423" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M46.5 25.5c1-3 3.5-4 6-3.5-1 2.5-3 4-6 3.5z" fill="#2E8B57"/>
+    <rect x="100" y="9" width="40" height="40" rx="10" fill="#1F6F54"/>
+    <path d="M112.5 16.5h11.5l5 5v20h-16.5z" fill="#fff"/>
+    <path d="M124 16.5v5h5z" fill="#CFE5DC"/>
+    <path d="M116 28h9.5M116 32.5h9.5M116 37h6" stroke="#1F6F54" stroke-width="2" stroke-linecap="round"/>
+  </g>
+</svg>

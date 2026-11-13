@@ -17,17 +17,21 @@ export function Kundenliste() {
       lade();
     } catch (e) { zeigeFehler(e); }
   };
+  const [pruefung, setPruefung] = useState(null);
+  const pruefe = () => api('GET', '/api/stammdaten/pruefung').then(setPruefung).catch(zeigeFehler);
   if (!liste) return html`<p class="laden">Kunden werden geladen …</p>`;
   const profil = (id) => (stamm.profile.find((p) => p.id === id) || {}).name || '';
   return html`
     <div class="kopf">
       <div><h1>Kunden</h1><div class="leise">Rechnungsempfänger, ihre Märkte und wohin die Rechnungen gehen</div></div>
       <div class="knoepfe">
+        <button onClick=${pruefe} title="Prüft Anschriften, GLN, USt-IdNr. und E-Mail-Adressen aller Kunden und Märkte">Stammdaten prüfen</button>
         <label class="knopf" title="Kunden und Märkte aus einer Stammdaten-Datei übernehmen. Vorhandenes bleibt erhalten.">Aus Datei einlesen …<input type="file" accept=".json,application/json" hidden
           onChange=${(e) => { liesDatei(e.target.files[0]); e.target.value = ''; }} /></label>
         <button class="haupt" onClick=${() => gehe('#/kunden/neu')}>+ Neuer Kunde</button>
       </div>
     </div>
+    ${pruefung && html`<${Stammpruefung} p=${pruefung} zu=${() => setPruefung(null)} />`}
     <div class="karte">
       ${liste.length === 0 ? html`<div class="leer">Noch kein Kunde angelegt.</div>` : html`<table class="wahl">
         <thead><tr><th>Name</th><th>Ort</th><th>GLN</th><th>Märkte</th><th>Vorgaben</th><th>Rechnungen an</th></tr></thead>
@@ -43,6 +47,54 @@ export function Kundenliste() {
 const leererKunde = () => ({ id: '', name: '', strasse: '', zusatz: '', plz: '', ort: '', land: 'DE', ustId: '', gln: '', kennung: '', alias: '',
   lieferantennummer: '', kaeuferreferenz: '', profil: 'handel', format: 'zugferd', rechnungsEmail: '', emailBetreff: '', emailText: '',
   zieltage: 0, skontoTage: 0, skontoProzent: '0', lieferorte: [], notiz: '' });
+
+// Stammpruefung zeigt, was an Firmendaten, Kunden, Märkten und Artikeln
+// noch nicht stimmt - nach Kunde geordnet, mit dem Weg zur Korrektur.
+function Stammpruefung({ p, zu }) {
+  const fehler = p.befunde.filter((b) => b.schwere === 'fehler').length;
+  const warnungen = p.befunde.length - fehler;
+  const umfang = `${p.kunden} Kunde${p.kunden === 1 ? '' : 'n'}, ${p.maerkte} ${p.maerkte === 1 ? 'Markt' : 'Märkte'}, ${p.artikel} Artikel und die eigenen Firmendaten`;
+  // Gruppen in der Reihenfolge: Firma, Kunden (mit ihren Märkten), Artikel.
+  const gruppen = [];
+  const gruppe = (schluessel, titel, ziel) => {
+    let g = gruppen.find((x) => x.schluessel === schluessel);
+    if (!g) { g = { schluessel, titel, ziel, befunde: [] }; gruppen.push(g); }
+    return g;
+  };
+  for (const b of p.befunde) {
+    if (b.bereich === 'firma') gruppe('firma', 'Eigene Firmendaten', '#/einstellungen').befunde.push(b);
+    else if (b.bereich === 'artikel') gruppe('artikel', 'Artikel', '#/artikel').befunde.push(b);
+    else gruppe('k' + b.kundeId, b.kunde, '#/kunden/' + b.kundeId).befunde.push(b);
+  }
+  return html`<div class="karte">
+    <div style="display:flex;gap:1rem;align-items:flex-start;justify-content:space-between">
+      <div>
+        <div class="urteil"><span class=${'ampel ' + (fehler ? 'fehler' : warnungen ? 'warnung' : 'gut')}></span>
+          ${fehler ? `${fehler} Fehler${warnungen ? ` und ${warnungen} Warnung${warnungen > 1 ? 'en' : ''}` : ''} in den Stammdaten`
+            : warnungen ? `Keine Fehler, ${warnungen} Warnung${warnungen > 1 ? 'en' : ''}` : 'Alles in Ordnung'}</div>
+        <p class="leise klein" style="margin:.3rem 0 0">Geprüft: ${umfang} – auf vollständige Anschriften, gültige Prüfziffern bei GLN, GTIN und IBAN,
+          die Schreibweise von PLZ, USt-IdNr. und E-Mail-Adressen sowie doppelt vergebene Nummern.
+          Ob eine GLN wirklich zu diesem Markt gehört, weiß nur der Handel – im Zweifel dort nachfragen.</p>
+      </div>
+      <button class="schlicht" onClick=${zu}>Schließen</button>
+    </div>
+    ${gruppen.map((g) => html`<${Befundgruppe} key=${g.schluessel} g=${g} />`)}
+  </div>`;
+}
+
+function Befundgruppe({ g }) {
+  const [alle, setAlle] = useState(false);
+  const sicht = alle ? g.befunde : g.befunde.slice(0, 6);
+  return html`<div style="margin-top:1rem">
+    <div style="display:flex;gap:.8rem;align-items:baseline;justify-content:space-between">
+      <h3 style="margin:0">${g.titel} <span class="leise klein" style="font-weight:400">· ${g.befunde.length} ${g.befunde.length === 1 ? 'Befund' : 'Befunde'}</span></h3>
+      <a href=${g.ziel}>${g.schluessel === 'firma' ? 'Zu den Einstellungen' : g.schluessel === 'artikel' ? 'Zu den Artikeln' : 'Kunde öffnen'}</a>
+    </div>
+    ${sicht.map((b, i) => html`<div key=${i} class=${'meldung ' + b.schwere} style="cursor:default;margin-top:.35rem">
+      ${(b.markt || b.artikel) && html`<b>${b.markt || b.artikel}: </b>`}${b.text}</div>`)}
+    ${g.befunde.length > sicht.length && html`<button class="schlicht" style="margin-top:.3rem" onClick=${() => setAlle(true)}>${g.befunde.length - sicht.length} weitere zeigen</button>`}
+  </div>`;
+}
 
 function GlnFeld({ titel, wert, setze, feld, breite = 4, pflicht }) {
   const falsch = wert && !/^\d{13}$/.test(wert) ? 'Eine GLN hat genau 13 Ziffern.'

@@ -262,6 +262,11 @@ function pruefe(bedingung, text) {
   await p.setInputFiles('input[type=file]', { name: 'Stammdaten.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(stammdaten)) });
   await p.getByText('Eingelesen: 1 Kunden neu, 0 ergänzt, 12 Märkte neu.').waitFor();
   pruefe(true, 'Stammdaten-Datei bringt Kunde und Märkte');
+  await p.getByRole('button', { name: 'Stammdaten prüfen' }).click();
+  await p.getByText(/Geprüft: \d+ Kunden, \d+ Märkte/).waitFor();
+  pruefe(true, 'die Stammdaten lassen sich prüfen');
+  await bild('18-stammdaten-pruefen', true);
+  await p.getByRole('button', { name: 'Schließen' }).click();
   await p.locator('tr', { hasText: 'Nordhessen' }).first().click();
   const suche = p.getByPlaceholder(/In 12 Märkten suchen/);
   await suche.waitFor();

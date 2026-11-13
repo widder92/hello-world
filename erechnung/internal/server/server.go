@@ -128,6 +128,7 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/import/uebernehmen", s.importUebernehmen)
 	api("POST /api/import/firma", s.importFirma)
 	api("POST /api/stammdaten", s.stammdatenEinlesen)
+	api("GET /api/stammdaten/pruefung", s.stammdatenPruefen)
 	api("GET /api/lexware", s.lexwareStand)
 	api("POST /api/lexware/schluessel", s.lexwareSchluessel)
 	api("GET /api/lexware/belege", s.lexwareBelege)
@@ -884,7 +885,7 @@ func (s *Server) versandVorschlag(w http.ResponseWriter, r *http.Request) {
 		groesse += len(daten)
 		namen = append(namen, filepath.Base(d))
 	}
-	if n := strings.ToLower(an); strings.Contains(n, "onboarding@") || strings.Contains(n, "-test@") || strings.Contains(n, ".test@") {
+	if testpostfach(an) {
 		hinweise = append(hinweise, "Achtung: "+an+" sieht nach einem Test-Postfach aus. Dorthin gehören nur Testrechnungen. Für echte Rechnungen bitte beim Kunden die Adresse eintragen, die er dafür genannt hat.")
 	}
 	if p, ok := partner.Finde(re.Profil); ok {

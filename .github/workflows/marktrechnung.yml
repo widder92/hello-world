@@ -230,9 +230,87 @@ jobs:
           Pruefe (Test-Path (Join-Path $daten 'Rechnungen')) 'Rechnungen und Daten sind erhalten geblieben'
           $profil = Join-Path $env:LOCALAPPDATA 'Marktrechnung'
           if (Test-Path $profil) { Write-Host "Hinweis: Das Profil des Programmfensters liegt noch unter $profil" } else { Write-Host 'ok  das Profil des Programmfensters ist entfernt' }
+      - name: Setup-Assistent durchklicken und ansehen
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Pruefe($bedingung, $text) {
+            if (-not $bedingung) { throw "FEHLGESCHLAGEN: $text" }
+            Write-Host "ok  $text"
+          }
+          function Warte($bedingung, $sekunden) {
+            for ($i = 0; $i -lt $sekunden * 2; $i++) { if (& $bedingung) { return $true }; Start-Sleep -Milliseconds 500 }
+            return $false
+          }
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          Add-Type -Namespace Probe -Name Fenster -MemberDefinition 'public struct RECT { public int L, T, R, B; } [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r); [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr h, int id); [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);'
+          $setup = (Get-ChildItem paket -Recurse -Filter 'Marktrechnung-Setup-*.exe' | Select-Object -First 1).FullName
+          $ziel = Join-Path $env:LOCALAPPDATA 'Programs\Marktrechnung'
+          $programm = Join-Path $ziel 'Marktrechnung.exe'
+          $entferner = Join-Path $ziel 'Marktrechnung entfernen.exe'
+          $bilder = Join-Path $env:RUNNER_TEMP 'setup-bilder'
+          New-Item -ItemType Directory -Force $bilder | Out-Null
+
+          # Foto des Fensters; Weiter drückt den Knopf "Weiter" / "Installieren" / "Schließen".
+          function Foto($name, $griff) {
+            try {
+              [Probe.Fenster]::SetForegroundWindow($griff) | Out-Null
+              Start-Sleep -Milliseconds 700
+              $r = New-Object 'Probe.Fenster+RECT'
+              [Probe.Fenster]::GetWindowRect($griff, [ref]$r) | Out-Null
+              $bild = New-Object System.Drawing.Bitmap ($r.R - $r.L), ($r.B - $r.T)
+              [System.Drawing.Graphics]::FromImage($bild).CopyFromScreen($r.L, $r.T, 0, 0, $bild.Size)
+              $bild.Save((Join-Path $bilder "$name.png"))
+            } catch { Write-Host "Kein Bildschirmfoto ${name}: $_" }
+          }
+          function Weiter($griff) { [Probe.Fenster]::PostMessage([Probe.Fenster]::GetDlgItem($griff, 1), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null }
+          function Assistent($datei, $argumente, $titel) {
+            if ($argumente) { Start-Process $datei -ArgumentList $argumente } else { Start-Process $datei }
+            $script:lauf = $null
+            $da = Warte { $script:lauf = Get-Process | Where-Object { $_.MainWindowTitle -like "$titel*" } | Select-Object -First 1; $null -ne $script:lauf } 40
+            if (-not $da) { Get-Process | Where-Object { $_.MainWindowTitle } | ForEach-Object { Write-Host ('  Fenster: ' + $_.ProcessName + ': ' + $_.MainWindowTitle) } }
+            Pruefe $da "der Assistent zeigt das Fenster '$titel'"
+            Start-Sleep -Seconds 2
+            return $script:lauf
+          }
+
+          # 1. Erste Einrichtung: Willkommen -> Installieren -> Fertig
+          $p = Assistent $setup $null 'Marktrechnung einrichten'
+          Foto '1-willkommen' $p.MainWindowHandle
+          Weiter $p.MainWindowHandle
+          Pruefe (Warte { Test-Path $programm } 90) 'ein Klick auf Installieren richtet das Programm ein'
+          Start-Sleep -Seconds 4
+          Foto '2-fertig' $p.MainWindowHandle
+          Stop-Process -Id $p.Id -Force   # nicht "Fertigstellen": das würde das Programm starten
+
+          # 2. Erneuter Aufruf: Das Setup begrüßt als Aktualisierung
+          $p = Assistent $setup $null 'Marktrechnung einrichten'
+          Foto '3-wiedersehen' $p.MainWindowHandle
+          Stop-Process -Id $p.Id -Force
+
+          # 3. Bilder für stark vergrößerte Bildschirme (hier erzwungen)
+          $p = Assistent $setup '/BILD=200' 'Marktrechnung einrichten'
+          Foto '4-bilder-200' $p.MainWindowHandle
+          Stop-Process -Id $p.Id -Force
+
+          # 4. Entfernen mit Assistent
+          $p = Assistent $entferner $null 'Marktrechnung entfernen'
+          Foto '5-entfernen' $p.MainWindowHandle
+          Weiter $p.MainWindowHandle
+          Pruefe (Warte { -not (Test-Path $programm) } 60) 'der Assistent entfernt das Programm'
+          Start-Sleep -Seconds 3
+          Foto '6-entfernt' $p.MainWindowHandle
+          Weiter $p.MainWindowHandle
+          Pruefe (Warte { -not (Get-Process | Where-Object { $_.MainWindowTitle -like 'Marktrechnung entfernen*' }) } 20) 'der Assistent schließt sich'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: Programmfenster
           path: ${{ runner.temp }}/fenster.png
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Setup-Assistent
+          path: ${{ runner.temp }}/setup-bilder
           if-no-files-found: ignore
