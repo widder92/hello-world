@@ -92,7 +92,13 @@ function pruefe(bedingung, text) {
   // Bilder einzelner Abschnitte - sie stehen in der gedruckten Anleitung.
   const kartenbild = (name, titel) => p.locator('.karte').filter({ has: p.getByRole('heading', { name: titel, exact: true }) }).first()
     .screenshot({ path: `${bilder}/${name}.png` });
-  const ohneMeldungen = () => p.waitForFunction(() => document.querySelectorAll('.toast').length === 0, null, { timeout: 12000 }).catch(() => {});
+  // Warten, bis keine Meldung mehr eingeblendet ist. Bewusst ohne
+  // waitForFunction: Das verträgt sich nicht in jeder Playwright-Version mit
+  // der strengen Sicherheitsrichtlinie der Oberfläche (kein eval).
+  const ohneMeldungen = async () => {
+    const ende = Date.now() + 12000;
+    while (Date.now() < ende && await p.locator('.toast').count() > 0) await p.waitForTimeout(150);
+  };
 
   await p.goto(start);
   await p.getByRole('heading', { name: 'Erste Schritte' }).waitFor();
@@ -482,7 +488,7 @@ function pruefe(bedingung, text) {
     ki.server.close();
   }
 
-  await p.waitForFunction(() => document.querySelectorAll('.toast').length === 0, null, { timeout: 12000 }).catch(() => {});
+  await ohneMeldungen();
   pruefe(await p.locator('.toast').count() === 0, 'Meldungen verschwinden von selbst');
   pruefe(fehler.length === 0, 'keine Fehler in der Browserkonsole' + (fehler.length ? ': ' + fehler.join(' | ') : ''));
   await browser.close();
