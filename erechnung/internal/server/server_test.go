@@ -262,6 +262,26 @@ func TestGanzerAblauf(t *testing.T) {
 	}
 }
 
+// Eine von Hand gesetzte nächste Nummer muss beim Fertigstellen gelten.
+func TestNummerVonHandGesetzt(t *testing.T) {
+	u := neu(t)
+	k := u.einrichten()
+	var e map[string]any
+	u.ruf("GET", "/api/einstellungen", nil, &e)
+	e["naechsteNummer"] = 50
+	u.ruf("PUT", "/api/einstellungen", e, &e)
+	r := entwurf(k)
+	r.Datum, r.Leistungsdatum = time.Now().Format("2006-01-02"), time.Now().Format("2006-01-02")
+	var gespeichert, fertig modell.Rechnung
+	u.ruf("POST", "/api/rechnungen", r, &gespeichert)
+	if code := u.ruf("POST", "/api/rechnungen/"+gespeichert.ID+"/fertigstellen", map[string]bool{"trotzWarnungen": true}, &fertig); code != 200 {
+		t.Fatalf("fertigstellen: %d", code)
+	}
+	if !strings.HasSuffix(fertig.Nummer, "-0050") {
+		t.Errorf("Nummer %s, erwartet ...-0050", fertig.Nummer)
+	}
+}
+
 func TestFremdeRechnungPruefenUndUebernehmen(t *testing.T) {
 	u := neu(t)
 	u.einrichten()

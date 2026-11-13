@@ -249,6 +249,12 @@ func (s *Server) einstellungenSchreiben(w http.ResponseWriter, r *http.Request) 
 	if e.NaechsteNummer < 1 {
 		e.NaechsteNummer = 1
 	}
+	// Wer die nächste Nummer von Hand setzt, meint das laufende Jahr - sonst
+	// würde die jährliche Zählung sie beim nächsten Fertigstellen verwerfen.
+	e.NummerJahr = alt.NummerJahr
+	if e.NaechsteNummer != alt.NaechsteNummer {
+		e.NummerJahr = time.Now().Year()
+	}
 	if err := s.Speicher.SetzeEinstellungen(e); err != nil {
 		fehler(w, 500, err)
 		return
