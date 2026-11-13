@@ -26,6 +26,18 @@ Erste Schritte
 3. Einstellungen: E-Mail-Versand einrichten, Probe-E-Mail senden
 4. Neue Rechnung schreiben - das Programm sagt, was noch fehlt
 
+Anleitung und Assistent
+-----------------------
+Die Datei Anleitung.pdf führt mit Bildern Schritt für Schritt durch das
+ganze Programm - zum Lesen am Bildschirm oder zum Ausdrucken. Dieselbe
+Anleitung steht im Programm unter "Anleitung".
+
+Der Assistent (Knopf "Assistent" links unten oder die Taste F1) zeigt zu
+jeder Seite, was dort zu tun ist, führt durch die Einrichtung und
+beantwortet Fragen aus der Anleitung - ohne Internet. Wer Fragen frei
+stellen möchte, kann unter Einstellungen zusätzlich eine KI einschalten;
+dafür braucht es einen eigenen Zugangsschlüssel von Anthropic.
+
 Im Programm steht unter "Hilfe", worauf es bei REWE und EDEKA ankommt.
 
 Beenden

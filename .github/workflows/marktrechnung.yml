@@ -101,11 +101,19 @@ jobs:
         run: |
           go build -o "$RUNNER_TEMP/marktrechnung" ./cmd/marktrechnung
           XDG_CONFIG_HOME="$RUNNER_TEMP/konfig" "$RUNNER_TEMP/marktrechnung" -daten "$RUNNER_TEMP/daten" -port 47556 -kein-browser \
-            -lexware-adresse http://127.0.0.1:47560 2> "$RUNNER_TEMP/log.txt" &
+            -lexware-adresse http://127.0.0.1:47560 -ki-adresse http://127.0.0.1:47561 2> "$RUNNER_TEMP/log.txt" &
           sleep 2
           start=$(sed -n 's/.*Aufruf: //p' "$RUNNER_TEMP/log.txt")
           mkdir -p "$RUNNER_TEMP/bilder"
-          NODE_PATH="$RUNNER_TEMP/pw/node_modules" node tests/oberflaeche.js "$start" "$RUNNER_TEMP/bilder" "" 47560
+          NODE_PATH="$RUNNER_TEMP/pw/node_modules" node tests/oberflaeche.js "$start" "$RUNNER_TEMP/bilder" "" 47560 47561
+      - name: Bebilderte Anleitung aus den Bildschirmfotos erzeugen
+        run: NODE_PATH="$RUNNER_TEMP/pw/node_modules" node tests/anleitung-pdf.js "$RUNNER_TEMP/bilder" "$RUNNER_TEMP/anleitung/Anleitung.pdf"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Anleitung
+          path: ${{ runner.temp }}/anleitung
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -183,6 +191,9 @@ jobs:
           Pruefe (Test-Path $programm) 'Programmdatei liegt im Programmordner'
           Pruefe (Test-Path $entferner) 'Programm zum Entfernen ist vorhanden'
           Pruefe (Test-Path $startmenue) 'Symbol im Startmenü'
+          $anleitung = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Marktrechnung Anleitung.lnk'
+          Pruefe ((Test-Path (Join-Path $ziel 'Anleitung.pdf')) -and (Test-Path $anleitung)) 'die Anleitung liegt bei und steht im Startmenü'
+          Pruefe (Test-Path (Join-Path $ziel 'LIZENZEN.txt')) 'die Lizenzen der Bibliotheken liegen bei'
           Pruefe (Test-Path $desktop) 'Symbol auf dem Desktop'
           $verweis = (New-Object -ComObject WScript.Shell).CreateShortcut($desktop)
           Pruefe ($verweis.TargetPath -eq $programm) 'das Desktop-Symbol startet das Programm'
@@ -278,7 +289,7 @@ jobs:
           # 4. Entfernen: Programm weg, Rechnungen und Daten bleiben
           Start-Process $entferner -ArgumentList '/S'
           Pruefe (Warte { -not (Test-Path $ziel) } 30) 'der Programmordner ist entfernt'
-          Pruefe (-not (Test-Path $startmenue) -and -not (Test-Path $desktop)) 'die Symbole sind entfernt'
+          Pruefe (-not (Test-Path $startmenue) -and -not (Test-Path $desktop) -and -not (Test-Path $anleitung)) 'die Symbole sind entfernt'
           Pruefe (-not (Test-Path $eintrag)) 'der Eintrag unter Apps ist entfernt'
           Pruefe (-not (Test-Path $einstellungen)) 'Programmeinstellungen und Passwortablage sind entfernt'
           Pruefe (Test-Path (Join-Path $daten 'Rechnungen')) 'Rechnungen und Daten sind erhalten geblieben'

@@ -2,6 +2,7 @@
 import {
   html, useState, useEffect, api, stamm, zeige, zeigeFehler, Feld, Text, Mehrzeilig, Auswahl, Haken, Kasten, glnOk, setzeIn, ladeDatei, Zahl,
 } from './basis.js';
+import { KiKarte } from './assistent.js';
 
 // Zugangsdaten gängiger Postfächer; der Rest steht beim jeweiligen Anbieter.
 const ANBIETER = [
@@ -213,6 +214,8 @@ export function Einstellungsseite() {
     <${ZusatzKarte} z=${e.zusatz} setze=${setze} />
 
     <${DatevKarte} d=${e.datev} setze=${setze} />
+
+    <${KiKarte} />
 
     <div class="karte">
       <h2>Daten und Sicherung</h2>

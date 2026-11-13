@@ -6,7 +6,8 @@
 ;
 ; Aufruf über bauen.sh:
 ;   makensis -INPUTCHARSET UTF8 -DVERSION=1.0.0 -DEXE=/pfad/Marktrechnung.exe \
-;            -DLIESMICH=/pfad/LIESMICH.txt -DAUSGABE=/pfad/Setup.exe setup/marktrechnung.nsi
+;            -DLIESMICH=/pfad/LIESMICH.txt -DANLEITUNG=/pfad/Anleitung.pdf -DLIZENZEN=/pfad/LIZENZEN.txt \
+;            -DAUSGABE=/pfad/Setup.exe setup/marktrechnung.nsi
 
 Unicode true
 SetCompressor /SOLID lzma
@@ -22,6 +23,12 @@ SetCompressor /SOLID lzma
 !endif
 !ifndef EXE
   !define EXE "..\dist\Marktrechnung.exe"
+!endif
+!ifndef LIZENZEN
+  !error "Bitte über bauen.sh bauen: -DLIZENZEN=/pfad/LIZENZEN.txt fehlt (erzeugt von lizenzen.sh)"
+!endif
+!ifndef ANLEITUNG
+  !define ANLEITUNG "..\docs\Anleitung.pdf"
 !endif
 !ifndef LIESMICH
   !define LIESMICH "..\LIESMICH.txt"
@@ -255,10 +262,13 @@ Section "Marktrechnung"
   File "/oname=${PROGRAMM}" "${EXE}"
   File "marktrechnung.ico"
   File "/oname=LIESMICH.txt" "${LIESMICH}"
+  File "/oname=Anleitung.pdf" "${ANLEITUNG}"
+  File "/oname=LIZENZEN.txt" "${LIZENZEN}"
   WriteUninstaller "$INSTDIR\${ENTFERNER}"
 
   CreateShortcut "$SMPROGRAMS\Marktrechnung.lnk" "$INSTDIR\${PROGRAMM}" "" "$INSTDIR\marktrechnung.ico"
   CreateShortcut "$DESKTOP\Marktrechnung.lnk" "$INSTDIR\${PROGRAMM}" "" "$INSTDIR\marktrechnung.ico"
+  CreateShortcut "$SMPROGRAMS\Marktrechnung Anleitung.lnk" "$INSTDIR\Anleitung.pdf"
 
   ; Eintrag unter Einstellungen > Apps, damit sich das Programm dort
   ; wieder entfernen lässt.
@@ -287,10 +297,13 @@ Section "Uninstall"
   Delete "$INSTDIR\${PROGRAMM}"
   Delete "$INSTDIR\marktrechnung.ico"
   Delete "$INSTDIR\LIESMICH.txt"
+  Delete "$INSTDIR\Anleitung.pdf"
+  Delete "$INSTDIR\LIZENZEN.txt"
   Delete "$INSTDIR\${ENTFERNER}"
   RMDir "$INSTDIR"
 
   Delete "$SMPROGRAMS\Marktrechnung.lnk"
+  Delete "$SMPROGRAMS\Marktrechnung Anleitung.lnk"
   Delete "$DESKTOP\Marktrechnung.lnk"
   DeleteRegKey HKCU "${DEINSTALLATION}"
   DeleteRegKey HKCU "${SCHLUESSEL}"

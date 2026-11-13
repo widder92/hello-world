@@ -8,6 +8,7 @@ import { Einstellungsseite } from './einstellungen.js';
 import { Hilfeseite } from './hilfe.js';
 import { Belegliste, Belegseite } from './belege.js';
 import { OffenePosten, Serienseite, Auswertungsseite } from './zusatz.js';
+import { Assistent, Anleitungsseite } from './assistent.js';
 
 function leseHash() {
   const [pfad, frage = ''] = (location.hash.replace(/^#/, '') || '/').split('?');
@@ -24,6 +25,7 @@ function Seite({ ort }) {
     case 'pruefen': return html`<${Pruefseite} />`;
     case 'einstellungen': return html`<${Einstellungsseite} />`;
     case 'hilfe': return html`<${Hilfeseite} />`;
+    case 'anleitung': return html`<${Anleitungsseite} kapitel=${ort.frage.get('k')} />`;
     case 'angebote': return b ? html`<${Belegseite} key=${'a' + b} art="angebot" id=${b} />` : html`<${Belegliste} art="angebot" />`;
     case 'lieferscheine': return b ? html`<${Belegseite} key=${'l' + b} art="lieferschein" id=${b} />` : html`<${Belegliste} art="lieferschein" />`;
     case 'offen': return html`<${OffenePosten} />`;
@@ -38,6 +40,13 @@ function App() {
   const [bereit, setBereit] = useState(false);
   const [fehler, setFehler] = useState('');
   const [beendet, setBeendet] = useState(false);
+  const [hilft, setHilft] = useState(false); // Assistent aufgeklappt
+  useEffect(() => {
+    // F1 klappt den Assistenten auf und zu - wie die Hilfe in anderen Programmen.
+    const taste = (e) => { if (e.key === 'F1') { e.preventDefault(); setHilft((h) => !h); } };
+    document.addEventListener('keydown', taste);
+    return () => document.removeEventListener('keydown', taste);
+  }, []);
   useEffect(() => {
     const wechsel = () => { setOrt(leseHash()); window.scrollTo(0, 0); };
     window.addEventListener('hashchange', wechsel);
@@ -58,7 +67,7 @@ function App() {
   const aktiv = ort.teile[0] === 'rechnung' ? undefined : ort.teile[0];
   const zusatz = stamm.zusatz || {};
   const punkt = (ziel, name, schluessel) => html`<a href=${ziel} class=${aktiv === schluessel ? 'aktiv' : ''}>${name}</a>`;
-  return html`<div class="rahmen">
+  return html`<div class=${'rahmen' + (hilft ? ' mit-assistent' : '')}>
     <aside class="seitenleiste">
       <div class="marke"><img src="symbol.svg" alt="" />Marktrechnung</div>
       <nav>
@@ -72,11 +81,16 @@ function App() {
         ${zusatz.auswertung ? punkt('#/auswertung', 'Auswertung', 'auswertung') : null}
         ${punkt('#/pruefen', 'Import aus Lexoffice', 'pruefen')}
         ${punkt('#/einstellungen', 'Einstellungen', 'einstellungen')}
+        ${punkt('#/anleitung', 'Anleitung', 'anleitung')}
         ${punkt('#/hilfe', 'Hilfe', 'hilfe')}
       </nav>
+      <button class=${'assistent-knopf' + (hilft ? ' aktiv' : '')} title="Assistent öffnen oder schließen (F1)" aria-expanded=${hilft} onClick=${() => setHilft(!hilft)}>
+        <span class="zeichen">?</span><span><b>Assistent</b><br /><small>Fragen und Hilfe · F1</small></span>
+      </button>
       <div class="fuss">Version ${stamm.version}<br /><button onClick=${beende}>Programm beenden</button></div>
     </aside>
     <main><${Seite} ort=${ort} /></main>
+    <${Assistent} offen=${hilft} zu=${() => setHilft(false)} seite=${ort.teile[0] || ''} />
     <${Toasts} />
     <${Fragen} />
   </div>`;

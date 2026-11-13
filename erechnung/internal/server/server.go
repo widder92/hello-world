@@ -17,8 +17,12 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
+	"marktrechnung/internal/assistent"
 	"marktrechnung/internal/beleg"
 	"marktrechnung/internal/cii"
 	"marktrechnung/internal/codes"
@@ -41,6 +45,13 @@ type Server struct {
 	Lexware *geheim.Ablage
 	// LexwareBasis ersetzt in Tests die Adresse der Lexware-Schnittstelle.
 	LexwareBasis string
+	// KI bewahrt den Zugangsschlüssel für den KI-Assistenten (Claude) auf.
+	KI *geheim.Ablage
+	// KIBasis ersetzt in Tests die Adresse der Claude-Schnittstelle.
+	KIBasis string
+	// AnleitungPDF ist der Pfad der bebilderten Anleitung, wenn sie neben
+	// dem Programm liegt.
+	AnleitungPDF string
 	Web          fs.FS  // Dateien der Oberfläche
 	Token        string // Zugangskennwort für diesen Rechner
 	Version      string
@@ -52,6 +63,9 @@ type Server struct {
 	Zeige func() error
 	// Sende verschickt eine E-Mail; in Tests austauschbar.
 	Sende func(n post.Nachricht, p modell.Postausgang, passwort string) ([]byte, error)
+
+	anleitungEinmal sync.Once
+	anleitungInhalt assistent.Anleitung
 }
 
 const cookieName = "marktrechnung"
@@ -72,7 +86,16 @@ func fehler(w http.ResponseWriter, status int, err error) {
 	if errors.Is(err, speicher.ErrNichtGefunden) {
 		status = http.StatusNotFound
 	}
-	antworte(w, status, fehlerAntwort{Fehler: err.Error()})
+	antworte(w, status, fehlerAntwort{Fehler: satzanfang(err.Error())})
+}
+
+// satzanfang schreibt den ersten Buchstaben groß: Fehler heißen im Programm
+// nach Go-Art klein beginnend, auf dem Bildschirm stehen sie als Satz.
+func satzanfang(text string) string {
+	for i, r := range text {
+		return string(unicode.ToUpper(r)) + text[i+utf8.RuneLen(r):]
+	}
+	return text
 }
 
 func liesJSON(r *http.Request, ziel any) error {
@@ -158,6 +181,10 @@ func (s *Server) Handler() http.Handler {
 	api("DELETE /api/serien/{id}", s.serieLoeschen)
 	api("POST /api/serien/anlegen", s.serienAnlegen)
 	api("GET /api/auswertung", s.auswertung)
+	api("POST /api/anleitung/oeffnen", s.anleitungOeffnen)
+	api("GET /api/assistent", s.assistentStand)
+	api("POST /api/assistent/schluessel", s.assistentSchluessel)
+	api("POST /api/assistent/frage", s.assistentFrage)
 	api("GET /api/datev/uebersicht", s.datevUebersicht)
 	api("GET /api/datev/belege.zip", s.datevBelegpaket)
 	api("GET /api/datev/buchungen", s.datevBuchungen)
@@ -249,6 +276,7 @@ func (s *Server) stamm(w http.ResponseWriter, r *http.Request) {
 		"profile":      partner.Profile(),
 		"eingerichtet": strings.TrimSpace(e.Firma.Name) != "",
 		"zusatz":       e.Zusatz,
+		"anleitungPdf": s.AnleitungPDF != "" && s.Oeffne != nil,
 		"formate": []map[string]string{
 			{"id": modell.FormatZugferd, "name": "ZUGFeRD-PDF (empfohlen)", "text": "PDF zum Lesen mit eingebetteter E-Rechnung, Profil EN 16931. Nehmen REWE und EDEKA an."},
 			{"id": modell.FormatXRechnungCII, "name": "XRechnung (nur XML)", "text": "Reine XML-Datei nach XRechnung 3.0, Syntax CII. Für Empfänger, die kein PDF wollen."},

@@ -39,6 +39,9 @@ type programm struct {
 
 const standardPort = 47411
 
+// kiAdresse ersetzt in Tests die Adresse der Claude-Schnittstelle.
+var kiAdresse string
+
 // lexwareAdresse ersetzt in Tests die Adresse von Lexware Office.
 var lexwareAdresse string
 
@@ -53,6 +56,7 @@ func main() {
 	zeigeVersion := flag.Bool("version", false, "Version anzeigen")
 	beenden := flag.Bool("beenden", false, "ein laufendes Marktrechnung beenden (für das Setup)")
 	flag.StringVar(&lexwareAdresse, "lexware-adresse", "", "andere Adresse der Lexware-Schnittstelle (nur für Tests)")
+	flag.StringVar(&kiAdresse, "ki-adresse", "", "andere Adresse der Claude-Schnittstelle (nur für Tests)")
 	fensterEigen := flag.String("fenster-eigen", "", "nur für den eigenen Gebrauch: das Programmfenster für diese Adresse zeigen")
 	flag.Parse()
 	if *fensterEigen != "" {
@@ -165,8 +169,16 @@ func lauf(datenFlag string, portFlag int, ohneBrowser bool) error {
 	}
 	s := &server.Server{
 		Speicher: sp, Passwort: geheim.Neu(konfig, "postausgang.geheim"), Lexware: geheim.Neu(konfig, "lexware.geheim"),
+		KI: geheim.Neu(konfig, "assistent.geheim"), KIBasis: kiAdresse,
 		Web: web.Dateien(), Token: p.Token, Version: version.Nummer,
 		Oeffne: oeffneOrdner, Beende: stopp, LexwareBasis: lexwareAdresse, Zeige: fenster.zeige,
+	}
+	// Die bebilderte Anleitung liegt neben dem Programm, wenn es über das
+	// Setup oder aus dem Archiv kommt.
+	if selbst, err := os.Executable(); err == nil {
+		if pdf := filepath.Join(filepath.Dir(selbst), "Anleitung.pdf"); istDatei(pdf) {
+			s.AnleitungPDF = pdf
+		}
 	}
 	// Die Adresse merken, unter der das Programm gerade läuft. Das Setup
 	// findet es darüber, um es vor einer Aktualisierung zu beenden.
@@ -297,4 +309,9 @@ func richteProtokollEin(konfig string) {
 	if err == nil && !hatKonsole() {
 		log.SetOutput(f)
 	}
+}
+
+func istDatei(pfad string) bool {
+	info, err := os.Stat(pfad)
+	return err == nil && info.Mode().IsRegular()
 }

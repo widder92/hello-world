@@ -3,4 +3,4 @@ package version
 
 // Nummer wird beim Bauen einer Veröffentlichung überschrieben
 // (-ldflags "-X marktrechnung/internal/version.Nummer=1.2.3").
-var Nummer = "1.7.0"
+var Nummer = "1.8.0"

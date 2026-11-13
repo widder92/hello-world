@@ -3,14 +3,16 @@
 // Versanddialog öffnen, fremde Rechnung prüfen, Stammdaten-Datei einlesen.
 //
 // Aufruf (das Programm muss mit leerem Datenordner laufen):
-//   node tests/oberflaeche.js http://127.0.0.1:47411/?t=KENNWORT [Bilderordner] [fremde-rechnung.xml] [Port]
+//   node tests/oberflaeche.js http://127.0.0.1:47411/?t=KENNWORT [Bilderordner] [fremde-rechnung.xml] [Port] [KI-Port]
 //
 // Mit einem Port als viertem Wert stellt der Test die Schnittstelle von
 // Lexware Office nach und prüft auch den direkten Abruf. Das Programm muss
-// dafür mit -lexware-adresse http://127.0.0.1:PORT gestartet sein.
+// dafür mit -lexware-adresse http://127.0.0.1:PORT gestartet sein. Mit dem
+// fünften Wert stellt er die Claude-Schnittstelle nach und prüft den
+// KI-Teil des Assistenten (Programmstart mit -ki-adresse http://127.0.0.1:KI-PORT).
 const { chromium } = require('playwright');
 
-const [start, bilder = '.', fremd = '', lexwarePort = ''] = process.argv.slice(2);
+const [start, bilder = '.', fremd = '', lexwarePort = '', kiPort = ''] = process.argv.slice(2);
 if (!start) { console.error('Aufruf: node tests/oberflaeche.js START-ADRESSE [Bilderordner] [XML-Datei]'); process.exit(2); }
 const basis = new URL(start).origin;
 
@@ -44,6 +46,35 @@ function lexwareAttrappe(port) {
   });
 }
 
+// Nachbau der Claude-Schnittstelle: nimmt nur den Schlüssel "sk-ant-probe"
+// an und merkt sich, was gefragt wurde.
+function kiAttrappe(port) {
+  const anfragen = [];
+  return new Promise((bereit) => {
+    const server = require('http').createServer((anfrage, antwort) => {
+      let roh = '';
+      anfrage.on('data', (d) => { roh += d; });
+      anfrage.on('end', () => {
+        antwort.setHeader('Content-Type', 'application/json');
+        if (anfrage.headers.authorization !== 'Bearer sk-ant-probe') {
+          antwort.writeHead(401);
+          antwort.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }));
+          return;
+        }
+        if (anfrage.url.startsWith('/v1/models/')) {
+          antwort.end(JSON.stringify({ id: 'claude-opus-5-5', type: 'model', display_name: 'Claude Opus 5.5', created_at: '2026-09-01T00:00:00Z' }));
+          return;
+        }
+        anfragen.push(roh);
+        antwort.end(JSON.stringify({ id: 'msg_01', type: 'message', role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', stop_sequence: null,
+          usage: { input_tokens: 5000, output_tokens: 60 },
+          content: [{ type: 'text', text: 'So verschicken Sie eine fertige Rechnung:\n1. Die Rechnung in der Liste anklicken.\n2. Auf „Per E-Mail senden …“ klicken.\n3. Empfänger prüfen und auf „Jetzt senden“ klicken.\n\nDie Adresse des Rechnungspostfachs steht beim Kunden: [[#/kunden|Kunden öffnen]]' }] }));
+      });
+    });
+    server.listen(Number(port), '127.0.0.1', () => bereit({ server, anfragen }));
+  });
+}
+
 function pruefe(bedingung, text) {
   if (!bedingung) { console.error('FEHLGESCHLAGEN: ' + text); process.exitCode = 1; } else console.log('ok  ' + text);
 }
@@ -58,6 +89,10 @@ function pruefe(bedingung, text) {
   p.on('dialog', (d) => d.accept());
   const bild = (name, ganz = false) => p.screenshot({ path: `${bilder}/${name}.png`, fullPage: ganz });
   const feld = (titel) => p.getByLabel(titel, { exact: false }).first();
+  // Bilder einzelner Abschnitte - sie stehen in der gedruckten Anleitung.
+  const kartenbild = (name, titel) => p.locator('.karte').filter({ has: p.getByRole('heading', { name: titel, exact: true }) }).first()
+    .screenshot({ path: `${bilder}/${name}.png` });
+  const ohneMeldungen = () => p.waitForFunction(() => document.querySelectorAll('.toast').length === 0, null, { timeout: 12000 }).catch(() => {});
 
   await p.goto(start);
   await p.getByRole('heading', { name: 'Erste Schritte' }).waitFor();
@@ -81,6 +116,12 @@ function pruefe(bedingung, text) {
   await p.getByRole('button', { name: 'Speichern' }).click();
   await p.getByText('Einstellungen gespeichert.').waitFor();
   await bild('02-einstellungen', true);
+  await ohneMeldungen();
+  await kartenbild('a-firma', 'Eigene Firma');
+  await kartenbild('a-email', 'E-Mail-Versand');
+  // Im Bild für die Anleitung steht ein üblicher Ordner statt dem des Testlaufs.
+  await p.evaluate(() => { for (const b of document.querySelectorAll('.karte b')) if (/[\\/]/.test(b.textContent) && !/\s/.test(b.textContent.trim())) b.textContent = 'C:\\Users\\Maria\\Documents\\Marktrechnung'; });
+  await kartenbild('a-sicherung', 'Daten und Sicherung');
 
   // 2. Kunde aus der REWE-Vorlage, mit erfundenen Daten überschrieben
   await p.goto(basis + '/#/kunden/neu');
@@ -119,6 +160,8 @@ function pruefe(bedingung, text) {
   await p.getByRole('button', { name: 'Speichern' }).click();
   await p.getByText('Artikel gespeichert.').waitFor();
   pruefe(await p.getByRole('cell', { name: '4,95 €' }).count() === 1, 'Artikel mit Preis in der Liste');
+  await ohneMeldungen();
+  await bild('a-artikel');
 
   // 4. Rechnung
   await p.goto(basis + '/#/rechnung/neu');
@@ -143,6 +186,7 @@ function pruefe(bedingung, text) {
   await feld('Lieferscheinnummer').fill('LS-2026-0815');
   await p.getByText('Alles in Ordnung').waitFor();
   await p.getByText('· gespeichert').waitFor();
+  await ohneMeldungen();
   await bild('05-rechnung', true);
 
   await p.getByRole('button', { name: 'Vorschau' }).click();
@@ -181,6 +225,7 @@ function pruefe(bedingung, text) {
   await p.locator('.urteil').waitFor();
   const urteil = (await p.locator('.urteil').textContent()).trim();
   pruefe(fremd ? urteil.length > 5 : urteil === 'Keine Beanstandung', 'Prüfung einer eingelesenen Rechnung: ' + urteil);
+  await ohneMeldungen();
   await bild('11-pruefen', true);
   pruefe(await p.getByRole('heading', { name: 'Direkt aus Lexware Office abrufen' }).count() === 1, 'die Importseite bietet den direkten Abruf an');
   if (fremd) {
@@ -312,6 +357,7 @@ function pruefe(bedingung, text) {
   pruefe(await p.getByText('Dafür fehlen noch Angaben').count() === 1, 'der DATEV-Export sagt, was für den Buchungsstapel noch fehlt');
   const [paket] = await Promise.all([p.waitForEvent('download'), p.getByRole('button', { name: /Belegpaket herunterladen/ }).click()]);
   pruefe(/^DATEV-Belege_\d{4}-\d{2}\.zip$/.test(paket.suggestedFilename()), 'das Belegpaket für DATEV lässt sich herunterladen');
+  await ohneMeldungen();
   await bild('19-datev-export');
   await p.getByRole('button', { name: 'Schließen' }).click();
 
@@ -325,6 +371,8 @@ function pruefe(bedingung, text) {
   await p.getByText('Einstellungen gespeichert.').waitFor();
   await p.getByRole('link', { name: 'Angebote' }).waitFor();
   await bild('20-zusatzfunktionen', true);
+  await ohneMeldungen();
+  await kartenbild('a-zusatz', 'Zusatzfunktionen');
   await p.getByRole('link', { name: 'Angebote' }).click();
   await p.getByRole('button', { name: '+ Neues Angebot' }).click();
   await p.locator('select').first().selectOption({ label: 'Muster Markt GmbH ZwNl. West' });
@@ -356,9 +404,85 @@ function pruefe(bedingung, text) {
 
   await p.goto(basis + '/#/hilfe');
   await p.getByRole('heading', { name: 'REWE Group' }).waitFor();
+  pruefe(await p.getByRole('cell', { name: 'BR-DE-15' }).count() === 1, 'die Hilfe erklärt die Fehlermeldungen der Empfänger');
   await bild('12-hilfe', true);
+  await ohneMeldungen();
+  await kartenbild('a-rewe', 'REWE Group');
 
-  await p.waitForTimeout(4000);
+  // 11. Assistent: Hilfe zur Seite, Stand der Einrichtung, Suche in der Anleitung.
+  await p.goto(basis + '/#/kunden');
+  await p.getByRole('heading', { name: 'Kunden', exact: true }).waitFor();
+  await ohneMeldungen();
+  pruefe(!await p.locator('.assistent').isVisible(), 'der Assistent ist zunächst zugeklappt');
+  await p.keyboard.press('F1');
+  const helfer = p.locator('.assistent');
+  await helfer.getByText('Zu dieser Seite').waitFor();
+  pruefe(await helfer.locator('[data-kapitel="kunden"] ol li').count() >= 5, 'F1 öffnet den Assistenten mit den Schritten zur geöffneten Seite');
+  await helfer.getByText('Als Nächstes').waitFor();
+  pruefe(await helfer.locator('.naechster').innerText().then((t) => t.includes('E-Mail-Versand einrichten')), 'der Assistent nennt den nächsten offenen Schritt der Einrichtung');
+  await bild('23-assistent');
+  const frageFeld = helfer.getByLabel('Frage an den Assistenten');
+  await frageFeld.fill('Wie sichere ich meine Daten?');
+  await helfer.getByRole('button', { name: 'Suchen' }).click();
+  await helfer.getByText('Das habe ich in der Anleitung gefunden:').waitFor();
+  pruefe(await helfer.locator('[data-kapitel="sicherung"] ol li').count() >= 2, 'eine Frage findet das passende Kapitel der Anleitung');
+  await frageFeld.fill('Was ist eine GLN?');
+  await frageFeld.press('Enter');
+  await helfer.getByText('Global Location Number, 13 Ziffern').waitFor();
+  await frageFeld.fill('Was heißt BR-DE-15?');
+  await frageFeld.press('Enter');
+  await helfer.getByText('Meldung BR-DE-15').waitFor();
+  pruefe(true, 'Begriffe und Fehlermeldungen werden erklärt');
+  await frageFeld.fill('Zebra Quark');
+  await frageFeld.press('Enter');
+  await helfer.getByText('Dazu habe ich in der Anleitung nichts gefunden').waitFor();
+  await helfer.getByRole('button', { name: 'Neu beginnen' }).click();
+  await helfer.locator('[data-kapitel="kunden"]').getByRole('button', { name: 'In der Anleitung zeigen' }).click();
+  await p.getByRole('heading', { name: 'Marktrechnung – Schritt für Schritt' }).waitFor();
+  pruefe(await p.locator('main .kapitel').count() >= 15, 'die Anleitung zeigt alle Kapitel');
+  await helfer.getByRole('button', { name: 'Assistent schließen' }).click();
+  pruefe(!await helfer.isVisible(), 'der Assistent lässt sich schließen');
+  await bild('24-anleitung');
+
+  // 12. KI-Teil des Assistenten gegen die nachgestellte Schnittstelle.
+  if (kiPort) {
+    const ki = await kiAttrappe(kiPort);
+    await p.goto(basis + '/#/einstellungen?zu=assistent');
+    const karte = p.locator('#assistent');
+    await karte.getByRole('heading', { name: 'Assistent mit KI (freiwillig)' }).waitFor();
+    await karte.locator('[data-feld="ki.schluessel"]').fill('sk-ant-falsch');
+    await karte.getByRole('button', { name: 'KI einschalten' }).click();
+    await p.getByText('Zugangsschlüssel wird nicht angenommen').waitFor();
+    pruefe(await karte.getByText('Die KI ist eingeschaltet').count() === 0, 'ein falscher Zugangsschlüssel für die KI wird abgewiesen');
+    // Die Abweisung meldet der Browser auch in seiner Konsole - das ist hier gewollt.
+    for (let i = fehler.length - 1; i >= 0; i--) if (/status of 422/.test(fehler[i])) fehler.splice(i, 1);
+    await karte.locator('[data-feld="ki.schluessel"]').fill('sk-ant-probe');
+    await karte.getByRole('button', { name: 'KI einschalten' }).click();
+    await karte.getByText('Die KI ist eingeschaltet').waitFor();
+    await bild('25-ki-einstellung');
+    await p.getByRole('button', { name: /Assistent/ }).first().click();
+    await helfer.getByRole('button', { name: 'Fragen', exact: true }).waitFor();
+    await frageFeld.fill('Wie verschicke ich eine Rechnung?');
+    await helfer.getByRole('button', { name: 'Fragen', exact: true }).click();
+    await helfer.locator('.antworttext').waitFor();
+    pruefe(await helfer.locator('.antworttext').innerText().then((t) => t.includes('Jetzt senden') && !t.includes('[[')), 'die KI beantwortet eine frei gestellte Frage');
+    await bild('26-assistent-ki');
+    const gesendet = ki.anfragen.join('\n');
+    pruefe(gesendet.includes('Geöffnete Seite: Einstellungen') && gesendet.includes('Kapitel 1:'), 'die Frage geht mit Anleitung und Lage hinaus');
+    pruefe(!/Muster Markt|Sonnenwiese|4000001000005|DE89 ?3704|Blütenhonig/.test(gesendet), 'Kunden, Artikel und Firmendaten bleiben auf dem Rechner');
+    await helfer.getByRole('link', { name: /Kunden öffnen/ }).click();
+    await p.getByRole('heading', { name: 'Kunden', exact: true }).waitFor();
+    pruefe(true, 'Verweise in der Antwort führen auf die Seite im Programm');
+    await p.keyboard.press('F1');
+    await p.goto(basis + '/#/einstellungen?zu=assistent');
+    await karte.getByRole('button', { name: 'KI ausschalten' }).click();
+    await p.locator('[data-frage="ja"]').click();
+    await karte.getByRole('button', { name: 'KI einschalten' }).waitFor();
+    pruefe(true, 'die KI lässt sich wieder ausschalten');
+    ki.server.close();
+  }
+
+  await p.waitForFunction(() => document.querySelectorAll('.toast').length === 0, null, { timeout: 12000 }).catch(() => {});
   pruefe(await p.locator('.toast').count() === 0, 'Meldungen verschwinden von selbst');
   pruefe(fehler.length === 0, 'keine Fehler in der Browserkonsole' + (fehler.length ? ': ' + fehler.join(' | ') : ''));
   await browser.close();

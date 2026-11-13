@@ -1,0 +1,777 @@
+{
+  "titel": "Marktrechnung – Schritt für Schritt",
+  "vorwort": "Diese Anleitung führt einmal durch das ganze Programm: vom Einrichten bis zur verschickten Rechnung. Die ersten sechs Kapitel braucht man nur am Anfang, danach genügen die Kapitel 7 bis 10. Alles Weitere kann man lesen, wenn man es braucht.",
+  "kapitel": [
+    {
+      "id": "start",
+      "titel": "Programm einrichten und starten",
+      "kurz": "Das Setup ausführen, das Programm starten und wieder beenden.",
+      "seiten": [],
+      "ziel": "",
+      "bild": "01-erste-schritte",
+      "stichworte": [
+        "installieren",
+        "setup",
+        "starten",
+        "öffnen",
+        "beenden",
+        "schließen",
+        "symbol",
+        "desktop",
+        "aktualisieren",
+        "neue version",
+        "update"
+      ],
+      "schritte": [
+        "Die Datei „Marktrechnung-Setup“ doppelt anklicken. Meldet Windows einen unbekannten Herausgeber: auf „Weitere Informationen“ und dann auf „Trotzdem ausführen“ klicken.",
+        "Im Setup auf „Installieren“ klicken und am Ende auf „Fertigstellen“. Administratorrechte braucht es nicht.",
+        "Das Programm startet über das Symbol „Marktrechnung“ auf dem Desktop oder im Startmenü. Es öffnet ein eigenes Fenster.",
+        "Beim ersten Start zeigt die Seite „Rechnungen“ die Liste „Erste Schritte“. Sie führt durch die Kapitel 2 bis 6 dieser Anleitung.",
+        "Zum Beenden das Fenster schließen. Gespeichert werden muss nichts – jede Eingabe wird sofort auf dem Rechner abgelegt."
+      ],
+      "hinweise": [
+        "Eine neue Version wird einfach über die alte installiert. Rechnungen, Kunden und Einstellungen bleiben erhalten.",
+        "Alle Daten liegen im Ordner Dokumente\\Marktrechnung auf diesem Rechner – nicht im Internet."
+      ]
+    },
+    {
+      "id": "firma",
+      "titel": "Eigene Firmendaten eintragen",
+      "kurz": "Name, Anschrift, Steuernummer, GLN und Bankverbindung – das steht später auf jeder Rechnung.",
+      "seiten": [
+        "einstellungen"
+      ],
+      "ziel": "#/einstellungen",
+      "bild": "a-firma",
+      "stichworte": [
+        "firma",
+        "firmendaten",
+        "anschrift",
+        "adresse",
+        "steuernummer",
+        "ust-idnr",
+        "umsatzsteuer",
+        "gln",
+        "bank",
+        "iban",
+        "bic",
+        "logo",
+        "kleinunternehmer",
+        "einstellungen",
+        "rechnungsnummer",
+        "nummernkreis"
+      ],
+      "schritte": [
+        "Links im Menü auf „Einstellungen“ klicken.",
+        "Unter „Eigene Firma“ den Namen genau so eintragen, wie er im Handelsregister oder auf dem Gewerbeschein steht, dazu Straße, PLZ und Ort.",
+        "Die Steuernummer oder die USt-IdNr. eintragen – eine von beiden muss auf jede Rechnung.",
+        "Die eigene GLN eintragen (13 Ziffern). REWE und EDEKA verlangen sie. Das Programm prüft die letzte Ziffer und meldet Tippfehler sofort.",
+        "Unter „Bankverbindung“ IBAN, BIC und Bank eintragen.",
+        "Unter „Rechnungen“ festlegen, wie die Rechnungsnummer aufgebaut ist und mit welcher Nummer es weitergeht. Wer bisher in Lexoffice Rechnungen geschrieben hat, wählt einen Aufbau, der sich davon unterscheidet, damit keine Nummer doppelt vorkommt.",
+        "Oben rechts auf „Speichern“ klicken."
+      ],
+      "hinweise": [
+        "Einfacher geht es mit einer Rechnung aus Lexoffice: Wird die erste Rechnung eingelesen (Kapitel 9), bietet das Programm an, die Firmendaten daraus zu übernehmen.",
+        "Ein Logo für den Briefkopf lässt sich im Abschnitt „Rechnungen“ unter „Logo“ hochladen."
+      ]
+    },
+    {
+      "id": "email",
+      "titel": "E-Mail-Versand einrichten",
+      "kurz": "Damit Rechnungen direkt aus dem Programm verschickt werden – über das eigene Postfach.",
+      "seiten": [
+        "einstellungen"
+      ],
+      "ziel": "#/einstellungen",
+      "bild": "a-email",
+      "stichworte": [
+        "e-mail",
+        "email",
+        "mail",
+        "postfach",
+        "versand",
+        "smtp",
+        "passwort",
+        "app-passwort",
+        "absender",
+        "probe",
+        "test",
+        "gmx",
+        "web.de",
+        "t-online",
+        "gmail",
+        "ionos",
+        "strato"
+      ],
+      "schritte": [
+        "Unter „Einstellungen“ zum Abschnitt „E-Mail-Versand“ gehen.",
+        "Den Anbieter des Postfachs aus der Liste wählen (GMX, WEB.DE, T-Online, Gmail …). Server und Anschluss trägt das Programm dann selbst ein. Steht der Anbieter nicht in der Liste, stehen die Angaben in dessen Hilfe unter „SMTP“.",
+        "Die eigene E-Mail-Adresse als Absender und das Passwort des Postfachs eintragen. Manche Anbieter verlangen dafür ein eigenes „App-Passwort“ oder dass der Zugriff für E-Mail-Programme erst freigeschaltet wird – das Programm zeigt den Hinweis zum gewählten Anbieter.",
+        "Auf „Speichern“ klicken und dann auf „Probe-E-Mail an mich senden“. Kommt die Probe im eigenen Postfach an, ist alles richtig.",
+        "Der Haken für die Blindkopie an die eigene Adresse schickt von jeder Rechnung eine Kopie ins eigene Postfach – als Beleg, dass sie hinausgegangen ist."
+      ],
+      "hinweise": [
+        "REWE nimmt Rechnungen nur von der Absenderadresse an, die bei der Anmeldung genannt wurde. Hier also genau diese Adresse verwenden.",
+        "Das Passwort liegt geschützt auf diesem Rechner und nicht bei den Rechnungsdaten."
+      ]
+    },
+    {
+      "id": "kunden",
+      "titel": "Kunden und Märkte anlegen",
+      "kurz": "Der Kunde ist, wer die Rechnung bekommt. Die Märkte sind die Orte, an die geliefert wird.",
+      "seiten": [
+        "kunden"
+      ],
+      "ziel": "#/kunden",
+      "bild": "03-kunde",
+      "stichworte": [
+        "kunde",
+        "kunden",
+        "markt",
+        "märkte",
+        "filiale",
+        "rechnungsempfänger",
+        "warenempfänger",
+        "gln",
+        "rewe",
+        "edeka",
+        "vorlage",
+        "zentrale",
+        "hessenring",
+        "kaufmann",
+        "lieferantennummer",
+        "rechnungspostfach",
+        "stammdaten",
+        "einlesen",
+        "datei"
+      ],
+      "schritte": [
+        "Links auf „Kunden“ klicken, dann auf „+ Neuer Kunde“.",
+        "Für REWE und EDEKA eine Vorlage anklicken – sie füllt aus, was für alle gleich ist.",
+        "Name, Anschrift und GLN des Rechnungsempfängers eintragen. Rechnet der Handel über seine Zentrale ab, ist die Zentrale der Kunde (zum Beispiel die EDEKA-Regionalgesellschaft oder die REWE Markt GmbH) – nicht der einzelne Markt.",
+        "Bei REWE auch die USt-IdNr. des Kunden eintragen; REWE verlangt sie in jeder Rechnung.",
+        "Unter „Belieferte Märkte“ auf „+ Markt hinzufügen“ klicken und Name, GLN und Anschrift des Markts eintragen. Für jeden weiteren Markt wiederholen.",
+        "Unter „Versand und Zahlung“ die E-Mail-Adresse eintragen, an die Rechnungen gehen sollen. Das ist das Rechnungspostfach des Kunden, nicht die Adresse des Ansprechpartners.",
+        "Auf „Speichern“ klicken."
+      ],
+      "hinweise": [
+        "Viele Märkte auf einmal: Auf der Seite „Kunden“ übernimmt „Aus Datei einlesen …“ eine fertige Liste von Kunden und Märkten (Stammdaten-Datei). Vorhandenes bleibt dabei erhalten.",
+        "„Stammdaten prüfen“ auf derselben Seite zeigt, wo eine Anschrift unvollständig ist, eine GLN nicht stimmen kann oder noch ein Test-Postfach eingetragen ist.",
+        "Heißt der Kunde in Lexoffice anders als hier, den Namen aus Lexoffice in das Feld „Name in Lexware Office“ eintragen. Daran erkennt ihn der Import wieder."
+      ]
+    },
+    {
+      "id": "artikel",
+      "titel": "Artikel anlegen",
+      "kurz": "Waren mit Preis, Steuersatz und GTIN – einmal hinterlegt, in der Rechnung nur noch ausgewählt.",
+      "seiten": [
+        "artikel"
+      ],
+      "ziel": "#/artikel",
+      "bild": "a-artikel",
+      "stichworte": [
+        "artikel",
+        "ware",
+        "produkt",
+        "preis",
+        "gtin",
+        "ean",
+        "strichcode",
+        "artikelnummer",
+        "steuersatz",
+        "einheit",
+        "flasche",
+        "karton"
+      ],
+      "schritte": [
+        "Links auf „Artikel“ klicken, dann auf „+ Neuer Artikel“.",
+        "Bezeichnung, Einzelpreis ohne Umsatzsteuer, Einheit und Steuersatz eintragen (Getränke 19 %, die meisten Lebensmittel 7 %).",
+        "Die GTIN eintragen – die Nummer unter dem Strichcode auf der Ware – und, wenn vorhanden, die eigene Artikelnummer. Der Handel verlangt je Position eine von beiden.",
+        "Auf „Speichern“ klicken."
+      ],
+      "hinweise": [
+        "Artikel entstehen auch von selbst: Beim Einlesen einer Rechnung aus Lexoffice kann das Programm neue Artikel in die Liste übernehmen."
+      ]
+    },
+    {
+      "id": "anmeldung",
+      "titel": "Vor der ersten echten Rechnung: Anmeldung beim Handel",
+      "kurz": "REWE und EDEKA nehmen E-Rechnungen erst nach einer Anmeldung an.",
+      "seiten": [
+        "hilfe"
+      ],
+      "ziel": "#/hilfe",
+      "bild": "a-rewe",
+      "stichworte": [
+        "anmeldung",
+        "onboarding",
+        "startpaket",
+        "testrechnung",
+        "testphase",
+        "freigabe",
+        "rewe",
+        "edeka",
+        "abgelehnt",
+        "ablehnung",
+        "zurück",
+        "fehler",
+        "test-postfach"
+      ],
+      "schritte": [
+        "REWE: E-Rechnungen per E-Mail an das Onboarding-Postfach von REWE anmelden und die eigene Lieferantennummer nennen. REWE schickt ein Startpaket mit den genauen Vorgaben.",
+        "In der Testphase eine Testrechnung an das Test-Postfach schicken, das REWE nennt. Erst nach der Freigabe gehen echte Rechnungen an die Adresse für echte Rechnungen.",
+        "Nach der Freigabe beim Kunden im Programm die E-Mail-Adresse von der Test-Adresse auf die echte Adresse ändern.",
+        "EDEKA: Bei der abrechnenden Gesellschaft die E-Mail-Adresse für E-Rechnungen, den Leitfaden und die GLN von Rechnungsempfänger und Märkten erfragen."
+      ],
+      "hinweise": [
+        "Kommt eine Rechnung zurück, liegt es oft nicht am Inhalt: Sie kam von einer nicht angemeldeten Absenderadresse, ging an das falsche Postfach oder vor dem Starttermin hinaus.",
+        "Unter „Hilfe“ steht für REWE und EDEKA, worauf es im Einzelnen ankommt."
+      ]
+    },
+    {
+      "id": "rechnung",
+      "titel": "Eine Rechnung schreiben",
+      "kurz": "Kunde und Markt wählen, Artikel eintragen – das Programm rechnet und prüft mit.",
+      "seiten": [
+        "",
+        "rechnung"
+      ],
+      "ziel": "#/rechnung/neu",
+      "bild": "05-rechnung",
+      "stichworte": [
+        "rechnung",
+        "schreiben",
+        "neue rechnung",
+        "erstellen",
+        "position",
+        "menge",
+        "rabatt",
+        "skonto",
+        "lieferschein",
+        "lieferscheinnummer",
+        "bestellnummer",
+        "lieferdatum",
+        "entwurf",
+        "markt wählen",
+        "zahlungsziel"
+      ],
+      "schritte": [
+        "Auf der Seite „Rechnungen“ auf „+ Neue Rechnung“ klicken.",
+        "Den Kunden wählen und darunter den belieferten Markt. Bei vielen Märkten ein Stück vom Namen, vom Ort oder von der GLN eintippen und aus der Liste wählen.",
+        "Rechnungsdatum und Lieferdatum prüfen, Lieferscheinnummer und – wenn es eine gibt – die Bestellnummer des Kunden eintragen.",
+        "Unter „Positionen“ den Artikel eintippen und aus der Liste wählen; Preis, Steuersatz und GTIN kommen aus den Artikeln. Dann die Menge eintragen. Weitere Artikel mit „+ Position hinzufügen“.",
+        "Ein Rabatt auf eine Position kommt in das Feld „Rabatt %“. Skonto und Zahlungsziel stehen unten unter „Zahlung“.",
+        "Der Entwurf wird laufend gespeichert. Man kann die Seite verlassen und später weitermachen."
+      ],
+      "hinweise": [
+        "REWE und EDEKA möchten je Lieferung und Markt eine eigene Rechnung.",
+        "Den Hinweis auf die Konditionsvereinbarungen, den REWE verlangt, setzt das Programm selbst."
+      ]
+    },
+    {
+      "id": "pruefen",
+      "titel": "Rechnung prüfen und fertigstellen",
+      "kurz": "Rechts steht, was noch fehlt. Erst ohne Fehler lässt sich die Rechnung fertigstellen.",
+      "seiten": [
+        "rechnung"
+      ],
+      "ziel": "",
+      "bild": "07-fertigstellen",
+      "stichworte": [
+        "prüfen",
+        "prüfung",
+        "fehler",
+        "warnung",
+        "meldung",
+        "rot",
+        "gelb",
+        "fertigstellen",
+        "vorschau",
+        "ansehen",
+        "rechnungsnummer",
+        "ändern",
+        "korrigieren",
+        "gesperrt",
+        "grau"
+      ],
+      "schritte": [
+        "Beim Schreiben zeigt der Kasten rechts laufend, was fehlt. Rot sind Fehler, gelb sind Warnungen.",
+        "Auf eine Meldung klicken: Das Programm springt zu dem Feld, um das es geht. Steht die Angabe beim Kunden oder in den Einstellungen, führt es dorthin.",
+        "Mit „Vorschau“ ansehen, wie die Rechnung aussehen wird.",
+        "Sind keine Fehler mehr offen, auf „Fertigstellen …“ klicken. Warnungen kann man bewusst bestätigen.",
+        "Beim Fertigstellen bekommt die Rechnung ihre Nummer, und die E-Rechnung wird als Datei im Ordner Dokumente\\Marktrechnung\\Rechnungen abgelegt."
+      ],
+      "hinweise": [
+        "Eine fertige Rechnung lässt sich nicht mehr ändern – das ist gesetzlich so gewollt. Ein Fehler wird über „Stornieren“ aufgehoben (Kapitel 10) und die Rechnung neu geschrieben.",
+        "Das Programm prüft Pflichtangaben, Rechenwerk, Prüfziffern und die Vorgaben des Kunden. Ob eine gültige GLN wirklich zu diesem Markt gehört, kann es nicht wissen – unter der Auswahl stehen deshalb Name und Anschrift des Markts zur Kontrolle."
+      ]
+    },
+    {
+      "id": "senden",
+      "titel": "Rechnung versenden",
+      "kurz": "Per E-Mail direkt aus dem Programm – eine Rechnung je E-Mail.",
+      "seiten": [
+        "rechnung"
+      ],
+      "ziel": "",
+      "bild": "08-senden",
+      "stichworte": [
+        "senden",
+        "versenden",
+        "verschicken",
+        "e-mail",
+        "email",
+        "abschicken",
+        "anhang",
+        "betreff",
+        "erneut senden",
+        "zugferd",
+        "xrechnung",
+        "pdf",
+        "datei",
+        "portal",
+        "hochladen"
+      ],
+      "schritte": [
+        "Nach dem Fertigstellen auf „Per E-Mail senden …“ klicken.",
+        "Empfänger und Betreff sind vorbelegt – kurz prüfen. Im Anhang liegt die E-Rechnung.",
+        "Auf „Senden“ klicken. Bei der Rechnung steht danach, wann sie an wen ging.",
+        "Wird die Rechnung auf anderem Weg übergeben, zum Beispiel in einem Portal hochgeladen: die Datei unter „Dateien“ mit „Speichern unter …“ holen und bei der Rechnung „Als versendet vermerken“ wählen."
+      ],
+      "hinweise": [
+        "An REWE geht nur die Rechnung, ohne Text und ohne Signatur – so verlangt es REWE. Das Programm macht das von selbst.",
+        "Warnt das Programm vor einem Test-Postfach, ist beim Kunden noch die Adresse aus der Testphase eingetragen."
+      ]
+    },
+    {
+      "id": "lexoffice",
+      "titel": "Rechnung aus Lexoffice übernehmen",
+      "kurz": "Wer weiter in Lexoffice schreibt: Rechnung einlesen, ergänzen lassen, von hier verschicken.",
+      "seiten": [
+        "pruefen"
+      ],
+      "ziel": "#/pruefen",
+      "bild": "11-pruefen",
+      "stichworte": [
+        "lexoffice",
+        "lexware",
+        "import",
+        "importieren",
+        "einlesen",
+        "übernehmen",
+        "herunterladen",
+        "datei",
+        "hineinziehen",
+        "zentrale",
+        "abruf",
+        "verbindung",
+        "zugangsschlüssel",
+        "doppelt"
+      ],
+      "schritte": [
+        "Die Rechnung wie gewohnt in Lexoffice schreiben und dort herunterladen (Rechnung öffnen, dann „Herunterladen“).",
+        "Im Programm links auf „Import aus Lexoffice“ klicken und die Datei in das gestrichelte Feld ziehen – oder auf „Dateien auswählen …“ klicken. Es gehen auch viele auf einmal.",
+        "Das Programm zeigt, was dem Handel an der Rechnung fehlen würde. Was es aus Kunden, Märkten und Artikeln kennt, ergänzt es beim Übernehmen selbst: GLN, Markt mit Anschrift, USt-IdNr., GTIN.",
+        "Steht in Lexoffice der Markt als Kunde, schlägt das Programm vor, die Rechnung an die Zentrale zu stellen und den Markt als Warenempfänger einzutragen. Den Haken stehen lassen, wenn der Handel über die Zentrale abrechnet.",
+        "Auf „Übernehmen“ klicken. Die Rechnung öffnet sich als Entwurf mit ihrer Nummer aus Lexoffice. Weiter wie in Kapitel 8: prüfen, fertigstellen, senden."
+      ],
+      "hinweise": [
+        "Eine übernommene Rechnung wird von hier verschickt, nicht mehr aus Lexoffice – sonst bekäme der Kunde sie doppelt.",
+        "GLN, Lieferschein- und Bestellnummer, die in Lexoffice nur im Text oder in der Anschrift stehen, liest das Programm heraus und setzt sie in die richtigen Felder."
+      ]
+    },
+    {
+      "id": "zahlung",
+      "titel": "Zahlung vermerken und Rechnung stornieren",
+      "kurz": "Bezahlte Rechnungen abhaken; fehlerhafte Rechnungen mit einer Rechnungskorrektur aufheben.",
+      "seiten": [
+        "",
+        "rechnung",
+        "offen"
+      ],
+      "ziel": "#/",
+      "bild": "09-ansicht",
+      "stichworte": [
+        "bezahlt",
+        "zahlung",
+        "zahlungseingang",
+        "offen",
+        "storno",
+        "stornieren",
+        "rechnungskorrektur",
+        "gutschrift",
+        "korrigieren",
+        "kopieren",
+        "aufheben",
+        "rechnung falsch",
+        "falsche rechnung",
+        "geld eingegangen"
+      ],
+      "schritte": [
+        "Die Rechnung in der Liste „Rechnungen“ anklicken.",
+        "Ist das Geld eingegangen: unter „Weitere Schritte“ auf „Als bezahlt vermerken“ klicken.",
+        "War die Rechnung falsch: auf „Stornieren (Rechnungskorrektur) …“ klicken. Das Programm legt eine Rechnungskorrektur über den vollen Betrag als Entwurf an.",
+        "Die Rechnungskorrektur fertigstellen und an den Kunden senden. Erst dann gilt die ursprüngliche Rechnung als storniert.",
+        "Die richtige Rechnung neu schreiben – am schnellsten mit „Als neue Rechnung kopieren“ und der Korrektur des Fehlers."
+      ],
+      "hinweise": []
+    },
+    {
+      "id": "zusatz",
+      "titel": "Zusatzfunktionen einschalten",
+      "kurz": "Angebote, Lieferscheine, Serienrechnungen, Abschlagsrechnungen, Mahnungen, Auswertung – nur wer sie braucht.",
+      "seiten": [
+        "einstellungen",
+        "angebote",
+        "lieferscheine",
+        "serien",
+        "offen",
+        "auswertung"
+      ],
+      "ziel": "#/einstellungen",
+      "bild": "a-zusatz",
+      "stichworte": [
+        "angebot",
+        "angebote",
+        "lieferschein",
+        "lieferscheine",
+        "serie",
+        "serienrechnung",
+        "wiederkehrend",
+        "abschlag",
+        "abschlagsrechnung",
+        "schlussrechnung",
+        "mahnung",
+        "mahnen",
+        "zahlungserinnerung",
+        "offene posten",
+        "überfällig",
+        "auswertung",
+        "umsatz",
+        "zusatzfunktionen",
+        "einschalten"
+      ],
+      "schritte": [
+        "Unter „Einstellungen“ zum Abschnitt „Zusatzfunktionen“ gehen, die gewünschten Funktionen anhaken und auf „Speichern“ klicken. Sie erscheinen danach links im Menü.",
+        "Angebot: unter „Angebote“ ein Angebot schreiben und als PDF drucken oder mailen. „Lieferschein daraus machen“ oder „Rechnung daraus machen“ übernimmt alle Positionen.",
+        "Lieferschein: unter „Lieferscheine“ einen Lieferschein ohne Preise schreiben. „Rechnung daraus machen“ legt die Rechnung mit der Lieferscheinnummer, dem Markt und dem Lieferdatum an.",
+        "Serienrechnung: eine fertige Rechnung öffnen und „Als Serienrechnung speichern …“ wählen. Zum Termin meldet das Programm die fällige Rechnung und legt auf Klick den Entwurf an.",
+        "Mahnung: unter „Offene Posten“ stehen die unbezahlten Rechnungen. Bei einer überfälligen auf „Erinnern …“ klicken – das Programm schlägt Text, Frist und Gebühr vor und erstellt das Schreiben.",
+        "Auswertung: unter „Auswertung“ stehen die Umsätze je Monat und Vierteljahr nach Steuersatz und der Umsatz je Kunde."
+      ],
+      "hinweise": [
+        "Mahnungen gehören nicht an das Rechnungspostfach von REWE oder EDEKA – dort werden sie nicht gelesen. Bitte an den Ansprechpartner schicken.",
+        "Abschlagsrechnungen vor dem ersten Gebrauch mit der Steuerkanzlei abstimmen.",
+        "Eine Buchhaltung ist das Programm nicht: Ausgaben, Bank und die Meldungen an das Finanzamt bleiben bei Lexoffice oder der Steuerkanzlei."
+      ]
+    },
+    {
+      "id": "datev",
+      "titel": "Rechnungen an DATEV übergeben",
+      "kurz": "Zwei Dateien für die Steuerkanzlei: die Belege und die Buchungen.",
+      "seiten": [
+        "",
+        "einstellungen"
+      ],
+      "ziel": "#/",
+      "bild": "19-datev-export",
+      "stichworte": [
+        "datev",
+        "steuerberater",
+        "steuerkanzlei",
+        "kanzlei",
+        "buchhaltung",
+        "buchungsstapel",
+        "belege",
+        "belegtransfer",
+        "export",
+        "beraternummer",
+        "mandantennummer",
+        "kontenrahmen",
+        "skr03",
+        "skr04",
+        "erlöskonto"
+      ],
+      "schritte": [
+        "Zuerst mit der Steuerkanzlei klären, wer bucht. Werden die Rechnungen schon in Lexoffice gebucht und von dort übergeben, braucht es diesen Export nicht – sonst wären die Buchungen doppelt.",
+        "Unter „Einstellungen“ im Abschnitt „DATEV“ die Berater- und die Mandantennummer eintragen und den Kontenrahmen wählen. Die Nummern nennt die Kanzlei.",
+        "Auf der Seite „Rechnungen“ auf „DATEV-Export“ klicken und den Zeitraum wählen.",
+        "„Belegpaket herunterladen“ liefert die E-Rechnungen als eine Datei für das Programm DATEV Belegtransfer.",
+        "„Buchungsstapel herunterladen“ liefert die Buchungen als Datei für die Kanzlei. Die Datei nicht mit Excel öffnen und speichern – das verändert sie."
+      ],
+      "hinweise": [
+        "Die erste Übergabe am besten mit einem einzelnen Monat zusammen mit der Kanzlei ausprobieren."
+      ]
+    },
+    {
+      "id": "sicherung",
+      "titel": "Daten sichern",
+      "kurz": "Rechnungen müssen acht Jahre aufbewahrt werden – deshalb regelmäßig sichern.",
+      "seiten": [
+        "einstellungen"
+      ],
+      "ziel": "#/einstellungen",
+      "bild": "a-sicherung",
+      "stichworte": [
+        "sicherung",
+        "sichern",
+        "backup",
+        "datensicherung",
+        "ordner",
+        "usb",
+        "aufbewahren",
+        "aufbewahrung",
+        "neuer rechner",
+        "umziehen",
+        "wiederherstellen",
+        "csv",
+        "liste"
+      ],
+      "schritte": [
+        "Unter „Einstellungen“ ganz unten zum Abschnitt „Daten und Sicherung“ gehen.",
+        "Auf „Sicherung herunterladen (ZIP)“ klicken und die Datei auf einen USB-Stick oder eine zweite Festplatte legen. Am besten einmal im Monat.",
+        "Auf einen neuen Rechner umziehen: das Programm dort einrichten, einmal starten und beenden, dann den Inhalt der Sicherung in den Ordner Dokumente\\Marktrechnung kopieren."
+      ],
+      "hinweise": [
+        "„Datenordner öffnen“ zeigt, wo die Daten liegen. Im Unterordner „Rechnungen“ liegen die fertigen E-Rechnungen, nach Jahren sortiert.",
+        "„Rechnungsliste für die Buchhaltung (CSV)“ liefert alle Rechnungen eines Jahres als Tabelle."
+      ]
+    },
+    {
+      "id": "probleme",
+      "titel": "Wenn etwas nicht klappt",
+      "kurz": "Die häufigsten Stolpersteine und was dann zu tun ist.",
+      "seiten": [
+        "hilfe"
+      ],
+      "ziel": "#/hilfe",
+      "bild": "23-assistent",
+      "stichworte": [
+        "problem",
+        "geht nicht",
+        "klappt nicht",
+        "fehler",
+        "fehlermeldung",
+        "abgelehnt",
+        "zurück",
+        "gln falsch",
+        "prüfziffer",
+        "e-mail kommt nicht an",
+        "passwort",
+        "grau",
+        "gesperrt",
+        "hilfe",
+        "vergrößern",
+        "schrift",
+        "klein",
+        "zoom"
+      ],
+      "schritte": [
+        "„Fertigstellen“ ist grau: Rechts stehen noch rote Fehler. Jeden anklicken und die Angabe ergänzen.",
+        "„Prüfziffer falsch“ bei einer GLN oder GTIN: Es ist ein Tippfehler in der Nummer. Mit dem Schreiben des Kunden oder dem Strichcode vergleichen.",
+        "Die E-Mail geht nicht hinaus: Unter „Einstellungen“ auf „Probe-E-Mail an mich senden“ klicken. Meist stimmt das Passwort nicht, oder der Anbieter verlangt ein App-Passwort.",
+        "Der Handel schickt die Rechnung zurück: Die Antwort-Mail genau lesen und unter „Hilfe“ bei „Was Fehlermeldungen der Empfänger bedeuten“ nachsehen. Oft liegt es an Absenderadresse, Postfach oder Starttermin.",
+        "Die Schrift ist zu klein: Strg und Plus drücken vergrößert die Darstellung, Strg und Minus verkleinert sie, Strg und Null stellt sie zurück.",
+        "Ein Markt fehlt in der Auswahl: Er ist beim Kunden noch nicht angelegt. In der Rechnung auf „Kunde und Märkte bearbeiten“ klicken."
+      ],
+      "hinweise": [
+        "Der Assistent – Knopf „Assistent“ links unten oder die Taste F1 – erklärt zu jeder Seite, was dort zu tun ist, und beantwortet Fragen."
+      ]
+    }
+  ],
+  "meldungen": [
+    {
+      "regel": "BR-DE-15",
+      "text": "Die Käuferreferenz (BT-10) fehlt. In einer XRechnung ist sie Pflicht. Das Programm trägt ersatzweise die GLN des Kunden ein."
+    },
+    {
+      "regel": "BR-DE-2 bis BR-DE-7",
+      "text": "Kontaktdaten des Rechnungsstellers fehlen: Ansprechpartner, Telefon, E-Mail. Sie stehen unter Einstellungen."
+    },
+    {
+      "regel": "PEPPOL-EN16931-R010 / R020",
+      "text": "Die elektronische Adresse von Käufer (R010) oder Verkäufer (R020) fehlt. Üblich ist die E-Mail-Adresse."
+    },
+    {
+      "regel": "BR-CO-10 bis BR-CO-17",
+      "text": "Rechenfehler: Summen oder Steuerbeträge passen nicht zusammen, oft um einen Cent. Dieses Programm rechnet nach den Regeln der Norm, dort kann das nicht passieren."
+    },
+    {
+      "regel": "BR-CL-23",
+      "text": "Die Mengeneinheit ist kein genormter Code. Erlaubt sind Codes wie H87 (Stück) oder KGM (Kilogramm), nicht „Stk“ oder „kg“."
+    },
+    {
+      "regel": "BR-S-08, BR-S-09",
+      "text": "Die Steueraufschlüsselung je Steuersatz stimmt nicht mit den Positionen überein."
+    },
+    {
+      "regel": "„GLN fehlt“, „BT-46“, „BT-71“",
+      "text": "Der Handel verlangt die GLN des Rechnungsempfängers (BT-46) und des Markts (BT-71) in eigenen Feldern. Im Firmennamen oder Freitext zählt sie nicht."
+    },
+    {
+      "regel": "„entspricht nicht PDF/A-3“",
+      "text": "Das PDF ist kein Archiv-PDF der verlangten Art. Dieses Programm erzeugt gültiges PDF/A-3."
+    }
+  ],
+  "begriffe": [
+    {
+      "wort": "E-Rechnung",
+      "auch": [
+        "erechnung",
+        "elektronische rechnung"
+      ],
+      "text": "Eine Rechnung als Datei in einem genormten Format (EN 16931), die ein Computer ohne Abtippen lesen kann. Ein gewöhnliches PDF oder ein Scan ist keine E-Rechnung."
+    },
+    {
+      "wort": "ZUGFeRD",
+      "auch": [
+        "zugferd",
+        "factur-x"
+      ],
+      "text": "Ein PDF, in dem die Rechnung zusätzlich als XML-Datei steckt – lesbar für Mensch und Maschine. Das Programm erzeugt es, wenn nichts anderes eingestellt ist; REWE und EDEKA nehmen es an."
+    },
+    {
+      "wort": "XRechnung",
+      "auch": [
+        "xrechnung"
+      ],
+      "text": "Die E-Rechnung als reine XML-Datei ohne PDF. Nur wählen, wenn der Empfänger es ausdrücklich verlangt."
+    },
+    {
+      "wort": "GLN",
+      "auch": [
+        "gln",
+        "iln",
+        "global location number"
+      ],
+      "text": "Global Location Number, 13 Ziffern. Sie bezeichnet eine Firma oder einen Ort – zum Beispiel einen Markt – eindeutig. Vergeben wird sie von GS1 Germany; die GLN des Kunden und seiner Märkte nennt der Kunde. Die letzte Ziffer ist eine Prüfziffer, deshalb bemerkt das Programm die meisten Tippfehler."
+    },
+    {
+      "wort": "GTIN",
+      "auch": [
+        "gtin",
+        "ean",
+        "strichcode",
+        "barcode"
+      ],
+      "text": "Die Nummer unter dem Strichcode eines Artikels, früher EAN genannt (meist 13 Ziffern). Der Handel erkennt daran die Ware."
+    },
+    {
+      "wort": "USt-IdNr. und Steuernummer",
+      "auch": [
+        "ust-idnr",
+        "ustid",
+        "ust-id",
+        "umsatzsteuer-id",
+        "umsatzsteuer-identifikationsnummer",
+        "steuernummer"
+      ],
+      "text": "Die Umsatzsteuer-Identifikationsnummer beginnt in Deutschland mit „DE“ und hat neun Ziffern. Die Steuernummer vergibt das Finanzamt; sie enthält Schrägstriche. Auf der Rechnung muss eine von beiden stehen; der Handel verlangt meist die USt-IdNr."
+    },
+    {
+      "wort": "Rechnungsempfänger",
+      "auch": [
+        "rechnungsempfaenger",
+        "regulierer"
+      ],
+      "text": "Wer die Rechnung bekommt und bezahlt – im Handel oft die Zentrale oder Regionalgesellschaft, nicht der einzelne Markt. Im Programm ist das der Kunde."
+    },
+    {
+      "wort": "Markt (Warenempfänger)",
+      "auch": [
+        "warenempfaenger",
+        "lieferort"
+      ],
+      "text": "Der Ort, an den geliefert wurde. Der Handel will ihn in jeder Rechnung mit eigener GLN und Anschrift sehen. Im Programm stehen die Märkte beim Kunden unter „Belieferte Märkte“."
+    },
+    {
+      "wort": "Rechnungspostfach",
+      "auch": [
+        "rechnungspostfach",
+        "rechnungseingang",
+        "rechnungsadresse"
+      ],
+      "text": "Die E-Mail-Adresse, an die der Kunde Rechnungen geschickt haben will. Dort liest eine Maschine mit; Rechnungen an die Adresse eines Ansprechpartners gehen oft verloren."
+    },
+    {
+      "wort": "Lieferantennummer",
+      "auch": [
+        "lieferantennummer",
+        "kreditorennummer"
+      ],
+      "text": "Die Nummer, unter der der Kunde den eigenen Betrieb führt. Sie steht auf Bestellungen oder im Lieferantenvertrag."
+    },
+    {
+      "wort": "Bestell- und Lieferscheinnummer",
+      "auch": [
+        "bestellnummer",
+        "lieferscheinnummer",
+        "auftragsnummer"
+      ],
+      "text": "Die Nummer der Bestellung des Kunden und die Nummer des Lieferscheins, mit dem die Ware übergeben wurde. Der Handel ordnet die Rechnung darüber der Lieferung zu; fehlen sie, kommt die Rechnung oft zurück."
+    },
+    {
+      "wort": "Entwurf",
+      "auch": [
+        "entwurf"
+      ],
+      "text": "Eine Rechnung, die noch geändert werden kann. Sie hat noch keine Rechnungsnummer und ist noch nicht verschickt."
+    },
+    {
+      "wort": "Fertigstellen",
+      "auch": [
+        "fertigstellen",
+        "abschliessen",
+        "festschreiben"
+      ],
+      "text": "Macht aus dem Entwurf die endgültige Rechnung: Sie bekommt ihre Nummer und wird als Datei abgelegt. Danach lässt sie sich nicht mehr ändern."
+    },
+    {
+      "wort": "Stornieren und Rechnungskorrektur",
+      "auch": [
+        "storno",
+        "stornieren",
+        "rechnungskorrektur",
+        "gutschrift"
+      ],
+      "text": "Eine fertige Rechnung wird nicht gelöscht oder überschrieben. „Stornieren“ erzeugt eine Rechnungskorrektur (früher oft Gutschrift genannt), die die Rechnung aufhebt; danach wird sie neu geschrieben."
+    },
+    {
+      "wort": "Zahlungsziel und Skonto",
+      "auch": [
+        "zahlungsziel",
+        "skonto",
+        "faelligkeit"
+      ],
+      "text": "Das Zahlungsziel ist die Frist, bis wann die Rechnung zu bezahlen ist, zum Beispiel 30 Tage. Skonto ist ein Nachlass für schnelle Zahlung, zum Beispiel 2 % bei Zahlung innerhalb von 10 Tagen."
+    },
+    {
+      "wort": "App-Passwort",
+      "auch": [
+        "app-passwort",
+        "apppasswort",
+        "anwendungspasswort"
+      ],
+      "text": "Ein eigenes Kennwort nur für Programme, das manche E-Mail-Anbieter anstelle des gewöhnlichen Passworts verlangen. Man erzeugt es in den Einstellungen des Postfachs beim Anbieter."
+    },
+    {
+      "wort": "DATEV",
+      "auch": [
+        "datev",
+        "belegpaket",
+        "buchungsstapel"
+      ],
+      "text": "Die Software der meisten Steuerkanzleien. Das Programm erzeugt dafür zwei Dateien: das Belegpaket (die Rechnungen selbst) und den Buchungsstapel (die Buchungen dazu)."
+    },
+    {
+      "wort": "Zugangsschlüssel",
+      "auch": [
+        "zugangsschluessel",
+        "api-key",
+        "apikey",
+        "api key"
+      ],
+      "text": "Eine lange Zeichenfolge, mit der sich das Programm bei einem anderen Dienst ausweist – bei Lexware Office oder beim KI-Assistenten. Sie ist wie ein Kennwort zu behandeln."
+    }
+  ]
+}

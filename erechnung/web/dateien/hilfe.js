@@ -1,21 +1,16 @@
 // Hilfe: der Ablauf in Kürze, die Besonderheiten von REWE und EDEKA und was
 // die häufigsten Fehlermeldungen bedeuten.
 import { html, stamm } from './basis.js';
-
-const REGELN = [
-  ['BR-DE-15', 'Die Käuferreferenz (BT-10) fehlt. In einer XRechnung ist sie Pflicht. Das Programm trägt ersatzweise die GLN des Kunden ein.'],
-  ['BR-DE-2 bis BR-DE-7', 'Kontaktdaten des Rechnungsstellers fehlen: Ansprechpartner, Telefon, E-Mail. Sie stehen unter Einstellungen.'],
-  ['PEPPOL-EN16931-R010 / R020', 'Die elektronische Adresse von Käufer (R010) oder Verkäufer (R020) fehlt. Üblich ist die E-Mail-Adresse.'],
-  ['BR-CO-10 bis BR-CO-17', 'Rechenfehler: Summen oder Steuerbeträge passen nicht zusammen, oft um einen Cent. Dieses Programm rechnet nach den Regeln der Norm, dort kann das nicht passieren.'],
-  ['BR-CL-23', 'Die Mengeneinheit ist kein genormter Code. Erlaubt sind Codes wie H87 (Stück) oder KGM (Kilogramm), nicht „Stk“ oder „kg“.'],
-  ['BR-S-08, BR-S-09', 'Die Steueraufschlüsselung je Steuersatz stimmt nicht mit den Positionen überein.'],
-  ['„GLN fehlt“, „BT-46“, „BT-71“', 'Der Handel verlangt die GLN des Rechnungsempfängers (BT-46) und des Markts (BT-71) in eigenen Feldern. Im Firmennamen oder Freitext zählt sie nicht.'],
-  ['„entspricht nicht PDF/A-3“', 'Das PDF ist kein Archiv-PDF der verlangten Art. Dieses Programm erzeugt gültiges PDF/A-3.'],
-];
+import { useAnleitung } from './assistent.js';
 
 export function Hilfeseite() {
+  const anleitung = useAnleitung();
+  const regeln = anleitung ? anleitung.meldungen || [] : [];
   return html`
-    <div class="kopf"><div><h1>Hilfe</h1></div></div>
+    <div class="kopf"><div><h1>Hilfe</h1></div>
+      <div class="knoepfe"><a class="knopf haupt" href="#/anleitung">Anleitung Schritt für Schritt</a></div></div>
+
+    <div class="karte schmal">Neu hier? Die <a href="#/anleitung">Anleitung</a> führt Schritt für Schritt durch das ganze Programm. Der <b>Assistent</b> – Knopf links unten oder Taste F1 – zeigt zu jeder Seite, was dort zu tun ist, und beantwortet Fragen.</div>
 
     <div class="karte">
       <h2>So geht eine Rechnung hinaus</h2>
@@ -48,7 +43,7 @@ export function Hilfeseite() {
 
     <div class="karte">
       <h2>Was Fehlermeldungen der Empfänger bedeuten</h2>
-      <table><tbody>${REGELN.map(([r, t]) => html`<tr><td class="nowrap"><b>${r}</b></td><td>${t}</td></tr>`)}</tbody></table>
+      <table><tbody>${regeln.map((m) => html`<tr key=${m.regel}><td class="nowrap"><b>${m.regel}</b></td><td>${m.text}</td></tr>`)}</tbody></table>
     </div>
 
     <div class="karte">
@@ -59,6 +54,7 @@ export function Hilfeseite() {
         <li><b>Was das Programm prüft:</b> Jede Rechnung wird vor dem Fertigstellen geprüft – Pflichtangaben, Rechenwerk, Prüfziffern und die Vorgaben des Kunden; mit Fehlern lässt sie sich nicht fertigstellen. Unter <a href="#/kunden">Kunden</a> prüft „Stammdaten prüfen“ außerdem alle Kunden und Märkte auf einmal: unvollständige Anschriften, falsche Prüfziffern bei GLN, GTIN und IBAN, falsch geschriebene PLZ, USt-IdNr. und E-Mail-Adressen, doppelt vergebene GLN. <b>Nicht</b> prüfen kann das Programm, ob eine GLN wirklich zu diesem Markt gehört – ein Zahlendreher ergibt fast immer eine ungültige Prüfziffer und fällt auf, eine vertauschte, aber gültige GLN nicht. Im Zweifel beim Kunden nachfragen.</li>
         <li><b>Zusatzfunktionen:</b> Angebote, Lieferscheine, Serienrechnungen, Abschlagsrechnungen, offene Posten mit Mahnungen und eine Auswertung der Umsätze lassen sich unter <a href="#/einstellungen">Einstellungen</a>, Abschnitt Zusatzfunktionen, einzeln einschalten. Ausgeschaltet sind sie nicht zu sehen; zum Schreiben von Rechnungen braucht es keine davon. Eine Buchhaltung ist das Programm nicht: Ausgaben, Bank und die Meldungen an das Finanzamt bleiben bei der Buchhaltungssoftware oder der Steuerkanzlei.</li>
         <li><b>DATEV:</b> Unter <a href="#/">Rechnungen</a> erzeugt „DATEV-Export“ zwei Dateien: das <b>Belegpaket</b> mit den E-Rechnungen für DATEV Unternehmen online (Übertragung mit dem Programm DATEV Belegtransfer) und den <b>Buchungsstapel</b> im DATEV-Format für die Steuerkanzlei. Berater- und Mandantennummer sowie die Konten stehen unter <a href="#/einstellungen">Einstellungen</a>, Abschnitt DATEV. Vorher mit der Kanzlei klären, wer bucht: Kommen die Buchungen schon aus Lexware Office, dürfen sie nicht zusätzlich von hier kommen.</li>
+        <li><b>Assistent:</b> Der Knopf „Assistent“ links unten oder die Taste F1 öffnet eine Hilfe neben der Seite: Sie zeigt, was auf der geöffneten Seite zu tun ist, führt durch die Einrichtung und findet zu einer Frage das passende Kapitel der Anleitung – ohne Internet. Unter <a href="#/einstellungen?zu=assistent">Einstellungen</a> lässt sich zusätzlich eine KI einschalten, die frei gestellte Fragen beantwortet; dafür braucht es einen eigenen Zugangsschlüssel von Anthropic, und nur dann geht etwas ins Internet (die Frage und die Anleitung, keine Kunden oder Rechnungen).</li>
         <li><b>Fehler nach dem Versand:</b> Eine fertige Rechnung wird nicht geändert, sondern mit „Stornieren“ durch eine Rechnungskorrektur aufgehoben und neu geschrieben.</li>
         <li><b>Aufbewahrung:</b> Rechnungen müssen acht Jahre unverändert aufbewahrt werden. Bei E-Rechnungen zählt die Datei selbst, nicht ein Ausdruck.</li>
         <li><b>Beenden:</b> Wird das Fenster geschlossen, ist das Programm beendet. Die Daten sind dann längst gespeichert – jede Änderung wird sofort auf dem Rechner abgelegt.</li>
