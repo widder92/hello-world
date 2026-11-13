@@ -97,7 +97,32 @@ func MitRabatt() modell.Rechnung {
 	return r
 }
 
+// Abschlag ist eine Abschlagsrechnung über einen Teilbetrag vorab.
+func Abschlag() modell.Rechnung {
+	r := Handel()
+	r.ID, r.Nummer, r.Art = "probe-abschlag", "RE-2026-0046", modell.ArtAbschlag
+	r.Positionen = []modell.Position{position("", "", "Abschlag auf die Herbstlieferung laut Vereinbarung", "1", "C62", "200", "7")}
+	r.Positionen[0].GTIN, r.Positionen[0].Artikelnummer = "", "ABSCHLAG"
+	r.Zahlung.SkontoTage, r.Zahlung.SkontoProzent = 0, 0
+	r.Zahlung.Verwendungszweck = r.Nummer
+	return r
+}
+
+// Schluss ist die Schlussrechnung dazu: die ganze Lieferung, abzüglich des
+// Abschlags als Position mit der Menge -1, mit Verweis auf die
+// Abschlagsrechnung.
+func Schluss() modell.Rechnung {
+	r := Handel()
+	r.ID, r.Nummer = "probe-schluss", "RE-2026-0047"
+	abzug := position("", "", "abzüglich Abschlagsrechnung RE-2026-0046 vom 02.11.2026", "-1", "C62", "200", "7")
+	abzug.GTIN, abzug.Artikelnummer = "", "ABSCHLAG"
+	r.Positionen = append(r.Positionen, abzug)
+	r.Vorgaenger = []modell.Vorgaenger{{Nummer: "RE-2026-0046", Datum: "2026-11-02"}}
+	r.Zahlung.Verwendungszweck = r.Nummer
+	return r
+}
+
 // Alle liefert alle Beispielrechnungen.
 func Alle() []modell.Rechnung {
-	return []modell.Rechnung{Handel(), Klein(), Gutschrift(), MitRabatt()}
+	return []modell.Rechnung{Handel(), Klein(), Gutschrift(), MitRabatt(), Abschlag(), Schluss()}
 }

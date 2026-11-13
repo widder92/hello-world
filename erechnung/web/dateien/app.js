@@ -6,6 +6,8 @@ import { Artikelseite } from './artikel.js';
 import { Pruefseite } from './pruefen.js';
 import { Einstellungsseite } from './einstellungen.js';
 import { Hilfeseite } from './hilfe.js';
+import { Belegliste, Belegseite } from './belege.js';
+import { OffenePosten, Serienseite, Auswertungsseite } from './zusatz.js';
 
 function leseHash() {
   const [pfad, frage = ''] = (location.hash.replace(/^#/, '') || '/').split('?');
@@ -22,6 +24,11 @@ function Seite({ ort }) {
     case 'pruefen': return html`<${Pruefseite} />`;
     case 'einstellungen': return html`<${Einstellungsseite} />`;
     case 'hilfe': return html`<${Hilfeseite} />`;
+    case 'angebote': return b ? html`<${Belegseite} key=${'a' + b} art="angebot" id=${b} />` : html`<${Belegliste} art="angebot" />`;
+    case 'lieferscheine': return b ? html`<${Belegseite} key=${'l' + b} art="lieferschein" id=${b} />` : html`<${Belegliste} art="lieferschein" />`;
+    case 'offen': return html`<${OffenePosten} />`;
+    case 'serien': return html`<${Serienseite} />`;
+    case 'auswertung': return html`<${Auswertungsseite} />`;
     default: return html`<p class="laden">Diese Seite gibt es nicht. <a href="#/">Zur Übersicht</a></p>`;
   }
 }
@@ -34,6 +41,7 @@ function App() {
   useEffect(() => {
     const wechsel = () => { setOrt(leseHash()); window.scrollTo(0, 0); };
     window.addEventListener('hashchange', wechsel);
+    window.addEventListener('stammneu', wechsel); // Einstellungen geändert: Menü neu zeichnen
     ladeStamm().then(() => setBereit(true)).catch((e) => setFehler(e.message));
     return () => window.removeEventListener('hashchange', wechsel);
   }, []);
@@ -48,6 +56,7 @@ function App() {
     try { await api('POST', '/api/beenden'); setBeendet(true); setTimeout(() => window.close(), 300); } catch (e) { zeigeFehler(e); }
   };
   const aktiv = ort.teile[0] === 'rechnung' ? undefined : ort.teile[0];
+  const zusatz = stamm.zusatz || {};
   const punkt = (ziel, name, schluessel) => html`<a href=${ziel} class=${aktiv === schluessel ? 'aktiv' : ''}>${name}</a>`;
   return html`<div class="rahmen">
     <aside class="seitenleiste">
@@ -56,6 +65,11 @@ function App() {
         ${punkt('#/', 'Rechnungen', undefined)}
         ${punkt('#/kunden', 'Kunden', 'kunden')}
         ${punkt('#/artikel', 'Artikel', 'artikel')}
+        ${zusatz.angebote ? punkt('#/angebote', 'Angebote', 'angebote') : null}
+        ${zusatz.lieferscheine ? punkt('#/lieferscheine', 'Lieferscheine', 'lieferscheine') : null}
+        ${zusatz.serien ? punkt('#/serien', 'Serienrechnungen', 'serien') : null}
+        ${zusatz.mahnungen ? punkt('#/offen', 'Offene Posten', 'offen') : null}
+        ${zusatz.auswertung ? punkt('#/auswertung', 'Auswertung', 'auswertung') : null}
         ${punkt('#/pruefen', 'Import aus Lexoffice', 'pruefen')}
         ${punkt('#/einstellungen', 'Einstellungen', 'einstellungen')}
         ${punkt('#/hilfe', 'Hilfe', 'hilfe')}

@@ -52,6 +52,9 @@ sagt in einfachen Worten, was fehlt.
 - **Import aus Lexware Office (lexoffice)**: Rechnungen als Datei oder direkt
   über die Schnittstelle einlesen, prüfen, aus den Stammdaten ergänzen und
   mit unveränderter Rechnungsnummer als vollständige E-Rechnung versenden
+- **Zusatzfunktionen, einzeln einschaltbar**: Angebote, Lieferscheine,
+  Serienrechnungen, Abschlagsrechnungen, offene Posten mit Mahnungen und eine
+  Auswertung der Umsätze
 - **Übergabe an DATEV**: Buchungsstapel im DATEV-Format für die Steuerkanzlei
   und Belegpaket für DATEV Unternehmen online (DATEV XML-Schnittstelle online)
 - **Stammdaten prüfen**: ein Klick zeigt, wo bei Firma, Kunden, Märkten und
@@ -245,6 +248,30 @@ Wer Rechnungen lieber direkt hier schreibt, erfasst sie in Lexware Office als
 Einnahme-Beleg (die PDF-Datei aus dem Ordner `Rechnungen` hochladen) und
 verwendet getrennte Nummernkreise (Einstellungen → *Aufbau der
 Rechnungsnummer*, zum Beispiel `ER-{JJJJ}-{NNNN}`).
+
+## Zusatzfunktionen
+
+Neben dem Schreiben von Rechnungen kann das Programm mehr – aber nichts davon
+ist nötig, und nichts davon ist zu sehen, solange es unter *Einstellungen →
+Zusatzfunktionen* nicht angehakt ist.
+
+| Funktion | Was sie tut |
+|---|---|
+| **Angebote** | Angebot mit eigener Nummer (`AN-…`) und Gültigkeit, als PDF drucken oder mailen. Ein Klick macht daraus einen Lieferschein oder den Entwurf der Rechnung. |
+| **Lieferscheine** | Lieferschein ohne Preise mit eigener Nummer (`LS-…`) und Feld für die Empfangsbestätigung. Die Rechnung dazu übernimmt Nummer, Markt, Lieferdatum und Positionen – so stimmt die Lieferscheinnummer, die REWE und EDEKA verlangen. |
+| **Serienrechnungen** | Eine fertige Rechnung wird zur Vorlage, die sich wöchentlich bis jährlich wiederholt. Zum Termin schlägt das Programm den Entwurf vor; verschickt wird nichts von allein. |
+| **Abschlagsrechnungen** | Rechnung über einen Teilbetrag vorab (Art 326). Die Schlussrechnung nennt die ganze Leistung und zieht die Abschläge je Steuersatz als Position mit der Menge −1 wieder ab, mit Verweis auf die Abschlagsrechnung. Vor dem ersten Gebrauch mit der Steuerkanzlei abstimmen. |
+| **Offene Posten und Mahnungen** | Liste der unbezahlten Rechnungen mit Fälligkeit. Zahlungserinnerung und Mahnung als Schreiben mit neuer Frist und wählbarer Gebühr, zum Drucken oder Mailen. An das Rechnungspostfach von REWE und EDEKA gehören keine Mahnungen – das Programm weist darauf hin. |
+| **Auswertung** | Umsätze je Monat und Vierteljahr nach Steuersatz, Umsatz je Kunde, offene Rechnungen. |
+
+Angebote und Lieferscheine sind keine E-Rechnungen: Sie entstehen als
+gewöhnliches PDF, bleiben änderbar und liegen getrennt von den Rechnungen
+(eigener Nummernkreis, nicht in der Übergabe an DATEV).
+
+Was das Programm bewusst nicht ist: eine Buchhaltung. Ausgaben,
+Bankbewegungen, die Gewinnermittlung und die Meldungen an das Finanzamt
+bleiben bei der Buchhaltungssoftware oder der Steuerkanzlei. Die Auswertung
+hilft beim Abgleich, ersetzt sie aber nicht.
 
 ## Übergabe an DATEV
 

@@ -19,6 +19,7 @@ const (
 const (
 	ArtRechnung   = "380"
 	ArtGutschrift = "381" // Rechnungskorrektur / Stornorechnung
+	ArtAbschlag   = "326" // Abschlagsrechnung (Teilrechnung)
 	ArtKorrektur  = "384"
 )
 
@@ -278,6 +279,13 @@ type Rechnung struct {
 	// berechnete Summe davon ab, warnt das Programm.
 	Herkunftsbetrag dec.D `json:"herkunftsbetrag,omitempty"`
 
+	// Zusatzbelege (Angebot, Lieferschein) haben denselben Aufbau wie eine
+	// Rechnung, liegen aber getrennt von den Rechnungen.
+	Belegart   string    `json:"belegart,omitempty"`   // leer: Rechnung; sonst BelegAngebot oder BelegLieferschein
+	GueltigBis string    `json:"gueltigBis,omitempty"` // Angebot: gültig bis
+	Folgebeleg string    `json:"folgebeleg,omitempty"` // was aus dem Beleg wurde, z. B. "Rechnung RE-2026-0007"
+	Mahnungen  []Mahnung `json:"mahnungen,omitempty"`  // Zahlungserinnerungen und Mahnungen zu dieser Rechnung
+
 	Dateien        []string  `json:"dateien,omitempty"` // erzeugte Dateien im Ausgangsordner
 	Versand        []Versand `json:"versand,omitempty"`
 	StornoVon      string    `json:"stornoVon,omitempty"`   // ID der aufgehobenen Rechnung
@@ -376,7 +384,62 @@ type Einstellungen struct {
 
 	Post Postausgang `json:"post"`
 
-	Datev Datev `json:"datev"`
+	Datev  Datev  `json:"datev"`
+	Zusatz Zusatz `json:"zusatz"`
+}
+
+// Zusatzbelege neben der Rechnung.
+const (
+	BelegAngebot      = "angebot"
+	BelegLieferschein = "lieferschein"
+
+	StatusOffen      = "offen"      // Angebot abgegeben, Lieferschein geschrieben
+	StatusAngenommen = "angenommen" // Angebot angenommen
+	StatusAbgelehnt  = "abgelehnt"  // Angebot abgelehnt
+	StatusBerechnet  = "berechnet"  // aus dem Beleg ist eine Rechnung entstanden
+)
+
+// Zusatz: Funktionen neben dem Schreiben von Rechnungen. Jede lässt sich
+// einzeln einschalten; ausgeschaltet erscheint sie im Programm nicht.
+type Zusatz struct {
+	Angebote      bool `json:"angebote"`
+	Lieferscheine bool `json:"lieferscheine"`
+	Mahnungen     bool `json:"mahnungen"`
+	Serien        bool `json:"serien"`
+	Auswertung    bool `json:"auswertung"`
+	Abschlaege    bool `json:"abschlaege"`
+
+	AngebotMuster        string `json:"angebotMuster"`        // z. B. "AN-{JJJJ}-{NNNN}"
+	AngebotNaechste      int    `json:"angebotNaechste"`      // nächste laufende Nummer
+	AngebotTage          int    `json:"angebotTage"`          // Gültigkeit eines Angebots in Tagen
+	LieferscheinMuster   string `json:"lieferscheinMuster"`   // z. B. "LS-{JJJJ}-{NNNN}"
+	LieferscheinNaechste int    `json:"lieferscheinNaechste"` // nächste laufende Nummer
+	Mahnfrist            int    `json:"mahnfrist"`            // neue Zahlungsfrist in Tagen
+	Mahngebuehr          dec.D  `json:"mahngebuehr"`          // Gebühr ab der ersten Mahnung
+}
+
+// Mahnung: eine Zahlungserinnerung (Stufe 0) oder Mahnung (Stufe 1, 2 ...)
+// zu einer Rechnung.
+type Mahnung struct {
+	Stufe       int    `json:"stufe"`
+	Datum       string `json:"datum"`
+	Frist       string `json:"frist"` // zahlbar bis
+	Gebuehr     dec.D  `json:"gebuehr"`
+	Datei       string `json:"datei"` // im Ordner Rechnungen
+	VersendetAn string `json:"versendetAn,omitempty"`
+	VersendetAm string `json:"versendetAm,omitempty"`
+}
+
+// Serie: eine Rechnung, die sich in festem Abstand wiederholt. Ist sie
+// fällig, legt das Programm aus der Vorlage einen Entwurf an.
+type Serie struct {
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Vorlage  Rechnung `json:"vorlage"`
+	Abstand  string   `json:"abstand"`  // "woche", "monat", "quartal", "halbjahr", "jahr"
+	Naechste string   `json:"naechste"` // Datum der nächsten Rechnung
+	Aktiv    bool     `json:"aktiv"`
+	Letzte   string   `json:"letzte,omitempty"` // Datum der zuletzt angelegten Rechnung
 }
 
 // Datev: Angaben für die Übergabe an DATEV. Ohne Kontenrahmen gibt das

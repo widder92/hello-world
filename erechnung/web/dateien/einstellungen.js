@@ -1,6 +1,6 @@
 // Einstellungen: eigene Firma, Bank, Nummernkreis, Logo, E-Mail-Versand, Daten.
 import {
-  html, useState, useEffect, api, stamm, zeige, zeigeFehler, Feld, Text, Mehrzeilig, Auswahl, Haken, Kasten, glnOk, setzeIn, ladeDatei,
+  html, useState, useEffect, api, stamm, zeige, zeigeFehler, Feld, Text, Mehrzeilig, Auswahl, Haken, Kasten, glnOk, setzeIn, ladeDatei, Zahl,
 } from './basis.js';
 
 // Zugangsdaten gängiger Postfächer; der Rest steht beim jeweiligen Anbieter.
@@ -15,6 +15,34 @@ const ANBIETER = [
   ['icloud', 'iCloud (Apple)', 'smtp.mail.me.com', 587, 'starttls', 'Apple verlangt ein „anwendungsspezifisches Passwort“ (account.apple.com → Anmeldung und Sicherheit).'],
   ['outlook', 'Outlook.com / Hotmail', 'smtp-mail.outlook.com', 587, 'starttls', 'Microsoft lässt die Anmeldung mit Passwort für private Outlook-Postfächer meist nicht mehr zu. Falls der Test scheitert, bitte ein anderes Postfach verwenden.'],
 ];
+
+// Zusatzfunktionen: alles, was über das Schreiben und Versenden von
+// Rechnungen hinausgeht. Ausgeschaltet erscheint es im Programm nicht.
+function ZusatzKarte({ z, setze }) {
+  const schalter = (name, titel, text) => html`<div style="margin-bottom:.55rem">
+    <${Haken} wert=${z[name]} setze=${setze('zusatz.' + name)}><b>${titel}</b><//>
+    <div class="leise klein" style="margin-left:1.65rem">${text}</div></div>`;
+  return html`<div class="karte">
+    <h2>Zusatzfunktionen</h2>
+    <p class="leise klein" style="margin-top:-.3rem">Nichts davon ist nötig, um Rechnungen zu schreiben. Was hier angehakt ist, erscheint links im Menü oder bei der Rechnung – nach dem Speichern.</p>
+    ${schalter('angebote', 'Angebote', 'Angebote schreiben, als PDF drucken oder mailen; aus einem Angebot wird mit einem Klick ein Lieferschein oder eine Rechnung.')}
+    ${schalter('lieferscheine', 'Lieferscheine', 'Lieferscheine ohne Preise mit eigener Nummer; die Rechnung dazu übernimmt Nummer, Markt, Lieferdatum und Positionen.')}
+    ${schalter('serien', 'Serienrechnungen', 'Rechnungen, die sich regelmäßig wiederholen: Zum Termin schlägt das Programm den Entwurf vor.')}
+    ${schalter('mahnungen', 'Offene Posten und Mahnungen', 'Liste der unbezahlten Rechnungen; Zahlungserinnerung und Mahnung als Schreiben zum Drucken oder Mailen.')}
+    ${schalter('abschlaege', 'Abschlagsrechnungen', 'Rechnungen über einen Teilbetrag vorab; die Schlussrechnung zieht sie mit ihrer Umsatzsteuer wieder ab. Vor dem ersten Gebrauch mit der Steuerkanzlei abstimmen.')}
+    ${schalter('auswertung', 'Auswertung', 'Umsätze je Monat und Vierteljahr nach Steuersatz, Umsatz je Kunde, offene Rechnungen.')}
+    ${(z.angebote || z.lieferscheine || z.mahnungen) && html`<div class="raster" style="margin-top:.8rem">
+      ${z.angebote && html`
+        <${Feld} titel="Aufbau der Angebotsnummer" breite="4" hilfe="leer = AN-{JJJJ}-{NNNN}"><${Text} wert=${z.angebotMuster} setze=${setze('zusatz.angebotMuster')} placeholder="AN-{JJJJ}-{NNNN}" /><//>
+        <${Feld} titel="Angebot gültig für (Tage)" breite="2"><${Text} typ="number" min="1" wert=${String(z.angebotTage || 30)} setze=${setze('zusatz.angebotTage')} /><//>`}
+      ${z.lieferscheine && html`
+        <${Feld} titel="Aufbau der Lieferscheinnummer" breite="4" hilfe="leer = LS-{JJJJ}-{NNNN}"><${Text} wert=${z.lieferscheinMuster} setze=${setze('zusatz.lieferscheinMuster')} placeholder="LS-{JJJJ}-{NNNN}" /><//>`}
+      ${z.mahnungen && html`
+        <${Feld} titel="Neue Zahlungsfrist beim Mahnen (Tage)" breite="3"><${Text} typ="number" min="1" wert=${String(z.mahnfrist || 10)} setze=${setze('zusatz.mahnfrist')} /><//>
+        <${Feld} titel="Mahngebühr in €" breite="3" hilfe="ab der ersten Mahnung; leer = keine"><${Zahl} wert=${z.mahngebuehr} min="2" max="2" leerBeiNull setze=${setze('zusatz.mahngebuehr')} /><//>`}
+    </div>`}
+  </div>`;
+}
 
 // Angaben für die Übergabe an DATEV. Alles freiwillig: Ohne sie gibt es
 // trotzdem das Belegpaket, nur ohne Konten.
@@ -63,9 +91,11 @@ export function Einstellungsseite() {
   const speichere = async () => {
     const neu = await api('PUT', '/api/einstellungen', { ...e, passwort, naechsteNummer: Number(e.naechsteNummer) || 1, zieltage: Number(e.zieltage) || 0,
       post: { ...e.post, port: Number(e.post.port) || 465 },
-      datev: { ...e.datev, kontenlaenge: Number(e.datev.kontenlaenge) || 4, wjBeginn: Number(e.datev.wjBeginn) || 1 } });
+      datev: { ...e.datev, kontenlaenge: Number(e.datev.kontenlaenge) || 4, wjBeginn: Number(e.datev.wjBeginn) || 1 },
+      zusatz: { ...e.zusatz, angebotTage: Number(e.zusatz.angebotTage) || 30, mahnfrist: Number(e.zusatz.mahnfrist) || 10, mahngebuehr: e.zusatz.mahngebuehr || '0' } });
     setE(neu); setPasswort(''); setGeaendert(false);
     await api('GET', '/api/stamm').then((s) => Object.assign(stamm, s));
+    window.dispatchEvent(new Event('stammneu'));
     return neu;
   };
   const sichere = () => speichere().then(() => zeige('Einstellungen gespeichert.', 'gut')).catch(zeigeFehler);
@@ -179,6 +209,8 @@ export function Einstellungsseite() {
         <button disabled=${!!testet} onClick=${() => teste(true)}>${testet === 'mail' ? 'Wird gesendet …' : 'Probe-E-Mail an mich senden'}</button>
       </p>
     </div>
+
+    <${ZusatzKarte} z=${e.zusatz} setze=${setze} />
 
     <${DatevKarte} d=${e.datev} setze=${setze} />
 

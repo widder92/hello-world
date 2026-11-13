@@ -139,6 +139,25 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/ordner", s.ordner)
 	api("GET /api/sicherung.zip", s.sicherung)
 	api("GET /api/export.csv", s.export)
+	api("GET /api/belege", s.belegeListe)
+	api("POST /api/belege", s.belegSpeichern)
+	api("GET /api/belege/{id}", s.belegLesen)
+	api("DELETE /api/belege/{id}", s.belegLoeschen)
+	api("GET /api/belege/{id}/pdf", s.belegPDF)
+	api("POST /api/belege/{id}/senden", s.belegSenden)
+	api("POST /api/belege/{id}/weiter/{ziel}", s.belegWeiter)
+	api("GET /api/abschlaege", s.abschlaegeListe)
+	api("GET /api/offene-posten", s.offenePostenListe)
+	api("GET /api/rechnungen/{id}/mahnung", s.mahnVorschlag)
+	api("POST /api/rechnungen/{id}/mahnung", s.mahnungAnlegen)
+	api("GET /api/rechnungen/{id}/mahnung/{nr}", s.mahnungPDF)
+	api("POST /api/rechnungen/{id}/mahnung/{nr}/oeffnen", s.mahnungOeffnen)
+	api("POST /api/rechnungen/{id}/mahnung/{nr}/senden", s.mahnungSenden)
+	api("GET /api/serien", s.serienListe)
+	api("POST /api/serien", s.serieSpeichern)
+	api("DELETE /api/serien/{id}", s.serieLoeschen)
+	api("POST /api/serien/anlegen", s.serienAnlegen)
+	api("GET /api/auswertung", s.auswertung)
 	api("GET /api/datev/uebersicht", s.datevUebersicht)
 	api("GET /api/datev/belege.zip", s.datevBelegpaket)
 	api("GET /api/datev/buchungen", s.datevBuchungen)
@@ -229,6 +248,7 @@ func (s *Server) stamm(w http.ResponseWriter, r *http.Request) {
 		"laender":      codes.Laender,
 		"profile":      partner.Profile(),
 		"eingerichtet": strings.TrimSpace(e.Firma.Name) != "",
+		"zusatz":       e.Zusatz,
 		"formate": []map[string]string{
 			{"id": modell.FormatZugferd, "name": "ZUGFeRD-PDF (empfohlen)", "text": "PDF zum Lesen mit eingebetteter E-Rechnung, Profil EN 16931. Nehmen REWE und EDEKA an."},
 			{"id": modell.FormatXRechnungCII, "name": "XRechnung (nur XML)", "text": "Reine XML-Datei nach XRechnung 3.0, Syntax CII. Für Empfänger, die kein PDF wollen."},
@@ -279,6 +299,12 @@ func (s *Server) einstellungenSchreiben(w http.ResponseWriter, r *http.Request) 
 		*feld = strings.ReplaceAll(strings.TrimSpace(*feld), " ", "")
 	}
 	e.Datev.Ordner = strings.TrimSpace(e.Datev.Ordner)
+	// Die Zähler der Zusatzbelege stehen nicht in der Oberfläche; sie
+	// bleiben, wie das Programm sie zuletzt hochgezählt hat.
+	e.Zusatz.AngebotNaechste, e.Zusatz.LieferscheinNaechste = alt.Zusatz.AngebotNaechste, alt.Zusatz.LieferscheinNaechste
+	if e.Zusatz.Mahngebuehr < 0 {
+		e.Zusatz.Mahngebuehr = 0
+	}
 	if e.NaechsteNummer < 1 {
 		e.NaechsteNummer = 1
 	}
@@ -808,6 +834,7 @@ func (s *Server) fertigstellen(w http.ResponseWriter, r *http.Request) {
 			return nil
 		})
 	}
+	s.vermerkeAbschlaege(fertig)
 	antworte(w, 200, fertig)
 }
 

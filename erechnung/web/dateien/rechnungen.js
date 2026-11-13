@@ -5,6 +5,7 @@ import {
   Feld, Text, Mehrzeilig, Auswahl, Zahl, Dialog, Kasten, Etikett, PdfDialog, Meldungsliste, zaehle, springeZu,
   setzeIn, STATUS, belegName, ladeDatei, Haken, frage,
 } from './basis.js';
+import { MahnDialog, Mahnliste, SerieDialog } from './zusatz.js';
 
 // ------------------------------------------------------------- Übersicht
 
@@ -15,6 +16,10 @@ export function Uebersicht() {
   const [filter, setFilter] = useState('alle');
   const [suche, setSuche] = useState('');
   const [datev, setDatev] = useState(false);
+  const [faelligeSerien, setFaelligeSerien] = useState(0);
+  useEffect(() => {
+    if (stamm.zusatz && stamm.zusatz.serien) api('GET', '/api/serien').then((l) => setFaelligeSerien(l.filter((s) => s.faellig).length)).catch(() => {});
+  }, []);
   useEffect(() => {
     Promise.all([api('GET', '/api/rechnungen'), api('GET', '/api/einstellungen'), api('GET', '/api/kunden')])
       .then(([l, e, k]) => { setListe(l); setEinst(e); setKunden(k); }).catch(zeigeFehler);
@@ -44,6 +49,8 @@ export function Uebersicht() {
       </div>
     </div>
     ${datev && html`<${DatevDialog} zu=${() => setDatev(false)} />`}
+    ${faelligeSerien > 0 && html`<${Kasten} art="hinweis"><b>${faelligeSerien === 1 ? 'Eine Serienrechnung ist fällig.' : `${faelligeSerien} Serienrechnungen sind fällig.`}</b>
+      ${' '}<a href="#/serien">Zu den Serienrechnungen</a><//>`}
 
     ${!fertigEingerichtet && html`<div class="karte">
       <h2>Erste Schritte</h2>
@@ -115,6 +122,24 @@ export function Rechnungsseite({ id }) {
   if (!zustand) return html`<p class="laden">Rechnung wird geladen …</p>`;
   if (zustand.r.status === 'entwurf') return html`<${Editor} ...${zustand} />`;
   return html`<${Ansicht} anfang=${zustand.r} einst=${zustand.einst} />`;
+}
+
+// AbschlagDialog: die noch nicht abgezogenen Abschlagsrechnungen des Kunden.
+function AbschlagDialog({ kunde, schon, zu, fertig }) {
+  const [l, setL] = useState(null);
+  const [wahl, setWahl] = useState({});
+  useEffect(() => {
+    api('GET', '/api/abschlaege?kunde=' + encodeURIComponent(kunde.id)).then((x) => setL(x.filter((a) => !schon.includes(a.nummer)))).catch((e) => { zeigeFehler(e); zu(); });
+  }, []);
+  if (!l) return null;
+  const gewaehlt = l.filter((a) => wahl[a.id]);
+  return html`<${Dialog} titel="Abschlagsrechnungen abziehen" zu=${zu} aktionen=${html`
+      <button onClick=${zu}>Abbrechen</button><button class="haupt" disabled=${gewaehlt.length === 0} onClick=${() => fertig(gewaehlt)}>Abziehen</button>`}>
+    ${l.length === 0 ? html`<p>Für ${kunde.name} gibt es keine fertige Abschlagsrechnung, die noch abzuziehen wäre.</p>` : html`
+      <p class="leise" style="margin-top:-.4rem">Die Schlussrechnung nennt die ganze Leistung. Jede gewählte Abschlagsrechnung wird je Steuersatz als Position mit der Menge −1 abgezogen und in der Rechnung genannt.</p>
+      ${l.map((a) => html`<div key=${a.id} style="margin-bottom:.4rem"><${Haken} wert=${wahl[a.id]} setze=${(v) => setWahl({ ...wahl, [a.id]: v })}>
+        <b>${a.nummer}</b> vom ${datumDE(a.datum)} · ${geld(a.brutto)} brutto<//></div>`)}`}
+  <//>`;
 }
 
 // ------------------------------------------------------------ DATEV-Export
@@ -279,6 +304,23 @@ function Editor({ r: anfang, einst, kunden, artikel }) {
     setGespeichert(false);
   };
   const neuePosition = () => { aendere('positionen', [...r.positionen, leerePosition(einst)]); };
+  const [abschlaege, setAbschlaege] = useState(false);
+  // Abschläge abziehen: je Steuersatz eine Position mit der Menge -1 und der
+  // Verweis auf die Abschlagsrechnung.
+  const zieheAb = (gewaehlt) => {
+    const neu = [];
+    for (const a of gewaehlt) {
+      for (const st of a.steuern) {
+        neu.push({ ...leerePosition(einst), bezeichnung: `abzüglich Abschlagsrechnung ${a.nummer} vom ${datumDE(a.datum)}`, menge: '-1', einheit: 'C62',
+          einzelpreis: st.basis, steuerKat: st.kat || 'S', steuerSatz: st.satz, rabattProzent: '0' });
+      }
+    }
+    const leer = r.positionen.length === 1 && !r.positionen[0].bezeichnung;
+    setR((x) => ({ ...x, positionen: [...(leer ? [] : x.positionen), ...neu],
+      vorgaenger: [...(x.vorgaenger || []), ...gewaehlt.map((a) => ({ nummer: a.nummer, datum: a.datum }))] }));
+    setGespeichert(false);
+    setAbschlaege(false);
+  };
   const entfernePosition = (i) => aendere('positionen', r.positionen.filter((_, j) => j !== i));
 
   const zeigeVorschau = async () => {
@@ -394,6 +436,10 @@ function Editor({ r: anfang, einst, kunden, artikel }) {
             <${Feld} titel="Format" breite="3">
               <${Auswahl} feld="format" wert=${r.format || ''} setze=${(v) => aendere('format', v)}
                 optionen=${[['', 'wie beim Kunden hinterlegt'], ...stamm.formate.map((f) => [f.id, f.name])]} /><//>
+            ${stamm.zusatz && stamm.zusatz.abschlaege && !gutschrift && html`
+              <${Feld} titel="Art der Rechnung" breite="3" hilfe=${r.art === '326' ? 'Teilbetrag vorab; wird in der Schlussrechnung abgezogen' : ''}>
+                <${Auswahl} wert=${r.art === '326' ? '326' : '380'} setze=${(v) => aendere('art', v)} optionen=${[['380', 'Rechnung'], ['326', 'Abschlagsrechnung']]} /><//>
+              ${r.art !== '326' && kunde && html`<div class="feld b3" style="justify-content:flex-end"><button onClick=${() => setAbschlaege(true)}>Abschlagsrechnungen abziehen …</button></div>`}`}
             ${gutschrift && html`
               <${Feld} titel="Korrigiert die Rechnung Nr." breite="3"><${Text} feld="vorgaenger.0.nummer" wert=${r.vorgaenger && r.vorgaenger[0] ? r.vorgaenger[0].nummer : ''}
                 setze=${(v) => aendere('vorgaenger', [{ ...(r.vorgaenger && r.vorgaenger[0]), nummer: v }])} /><//>
@@ -403,6 +449,7 @@ function Editor({ r: anfang, einst, kunden, artikel }) {
           </div>
         </div>
 
+        ${abschlaege && html`<${AbschlagDialog} kunde=${kunde} schon=${(r.vorgaenger || []).map((v) => v.nummer)} zu=${() => setAbschlaege(false)} fertig=${zieheAb} />`}
         <div class="karte">
           <h2>Positionen</h2>
           <datalist id="artikelliste">${artikel.map((a) => html`<option value=${a.bezeichnung}>${[a.artikelnummer, a.gtin].filter(Boolean).join(' · ')}</option>`)}</datalist>
@@ -524,6 +571,9 @@ function Ansicht({ anfang, einst }) {
   const [aus, setAus] = useState(null);
   const [pdf, setPdf] = useState(false);
   const [senden, setSenden] = useState(false);
+  const [mahnen, setMahnen] = useState(false);
+  const [serie, setSerie] = useState(false);
+  const zusatz = stamm.zusatz || {};
   useEffect(() => {
     api('POST', '/api/pruefen', anfang).then((e) => setAus(e.rechnung)).catch(() => {});
     if (sessionStorage.getItem('senden') === anfang.id) { sessionStorage.removeItem('senden'); setSenden(true); }
@@ -615,6 +665,7 @@ function Ansicht({ anfang, einst }) {
             ${r.bezahltAm && html`<dt>Bezahlt am</dt><dd>${datumDE(r.bezahltAm)}</dd>`}
           </dl>
         </div>
+        ${zusatz.mahnungen && html`<${Mahnliste} rechnung=${r} setRechnung=${setR} firma=${einst && einst.firma ? einst.firma.name : ''} />`}
         <div class="karte">
           <h2>Dateien</h2>
           ${dateien.map((d, i) => html`<p class="klein" key=${i}><a href="#" title="Mit dem dafür eingerichteten Programm öffnen"
@@ -628,7 +679,9 @@ function Ansicht({ anfang, einst }) {
           <div style="display:flex;flex-direction:column;gap:.5rem;align-items:flex-start">
             ${(r.status === 'fertig' || r.status === 'versendet') && !gutschrift && html`<button onClick=${() => setzeStatus('bezahlt')}>Als bezahlt vermerken</button>`}
             ${r.status === 'bezahlt' && html`<button onClick=${() => setzeStatus('offen')}>Zahlung zurücknehmen</button>`}
+            ${zusatz.mahnungen && (r.status === 'fertig' || r.status === 'versendet') && !gutschrift && html`<button onClick=${() => setMahnen(true)}>${(r.mahnungen || []).length ? 'Mahnen …' : 'Zahlungserinnerung …'}</button>`}
             <button onClick=${kopie}>Als neue Rechnung kopieren</button>
+            ${zusatz.serien && !gutschrift && html`<button onClick=${() => setSerie(true)}>Als Serienrechnung speichern …</button>`}
             ${r.status !== 'storniert' && !gutschrift && html`<button class="gefahr" onClick=${storno}>Stornieren (Rechnungskorrektur) …</button>`}
           </div>
         </div>
@@ -638,6 +691,8 @@ function Ansicht({ anfang, einst }) {
     ${pdf && dateien.length > 0 && html`<${PdfDialog} titel=${belegName(r.art) + ' ' + r.nummer} adresse=${`/api/rechnungen/${r.id}/datei/${ansicht}`} zu=${() => setPdf(false)}
       oeffne=${() => api('POST', `/api/rechnungen/${r.id}/datei/${ansicht}/oeffnen`).catch(zeigeFehler)} />`}
     ${senden && html`<${SendeDialog} r=${r} zu=${() => setSenden(false)} fertig=${(neu) => { setR(neu); setSenden(false); }} />`}
+    ${mahnen && html`<${MahnDialog} rechnung=${r} zu=${() => setMahnen(false)} fertig=${(neu) => { setR(neu); setMahnen(false); }} />`}
+    ${serie && html`<${SerieDialog} ausRechnung=${r.id} zu=${() => setSerie(false)} fertig=${() => { setSerie(false); gehe('#/serien'); }} />`}
   `;
 }
 

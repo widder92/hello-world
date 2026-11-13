@@ -56,6 +56,97 @@ type setzer struct {
 	titel string
 	// inTabelle: Bei einem Seitenwechsel wird der Tabellenkopf wiederholt.
 	inTabelle bool
+	// briefDatum: Datum eines Schreibens zu einer Rechnung (Mahnung).
+	briefDatum string
+}
+
+// belegMahnung kennzeichnet intern das Schreiben zu einer Rechnung.
+const belegMahnung = "mahnung"
+
+// Mahnschreiben: Angaben für eine Zahlungserinnerung oder Mahnung.
+type Mahnschreiben struct {
+	Stufe   int    // 0 Zahlungserinnerung, 1 erste Mahnung, 2 zweite Mahnung ...
+	Datum   string // Datum des Schreibens
+	Frist   string // zahlbar bis
+	Gebuehr dec.D  // Mahngebühr, darf 0 sein
+	Text    string // Anschreiben
+}
+
+// MahnTitel nennt die Überschrift zur Stufe.
+func MahnTitel(stufe int) string {
+	switch {
+	case stufe <= 0:
+		return "Zahlungserinnerung"
+	case stufe == 1:
+		return "Mahnung"
+	}
+	return fmt.Sprintf("%d. Mahnung", stufe)
+}
+
+// Mahnung erzeugt das Schreiben zu einer Rechnung: Anschrift, Text, der
+// offene Betrag mit Gebühr, die neue Frist und die Bankverbindung.
+func Mahnung(r modell.Rechnung, m Mahnschreiben, o Optionen) ([]byte, error) {
+	if r.Summen == nil {
+		r = rechnen.Ausrechnen(r)
+	}
+	if o.Zeit.IsZero() {
+		o.Zeit = time.Now()
+	}
+	brief := r
+	brief.Belegart = belegMahnung
+	brief.Leistungsdatum, brief.ZeitraumVon, brief.ZeitraumBis = "", "", ""
+	brief.Bestellnummer, brief.Lieferscheinnummer, brief.Auftragsnummer, brief.Vertragsnummer = "", "", "", ""
+	brief.Kostenstelle, brief.Kaeuferreferenz = "", ""
+	brief.Lieferort, brief.Vorgaenger, brief.Hinweise = nil, nil, nil
+	brief.Einleitung, brief.Schluss = m.Text, "Sollte sich Ihre Zahlung mit diesem Schreiben überschnitten haben, betrachten Sie es bitte als gegenstandslos."
+	brief.Zahlung.Bedingungen, brief.Zahlung.SkontoTage = "", 0
+
+	s := &setzer{r: brief, o: o, dok: pdf.Neu(), briefDatum: m.Datum}
+	s.n, s.f = pdf.Standardschriften()
+	s.dok.Schrift(s.n)
+	s.dok.Schrift(s.f)
+	s.dok.Zeit = o.Zeit
+	s.titel = MahnTitel(m.Stufe) + " zur Rechnung"
+	s.dok.Titel = s.titel + " " + r.Nummer
+	s.dok.Autor = r.Verkaeufer.Name
+	s.dok.Thema = s.dok.Titel + " an " + r.Kaeufer.Name
+	s.dok.Ersteller = strings.TrimSpace("Marktrechnung " + o.Version)
+	s.neueSeite()
+	if err := s.kopf(); err != nil {
+		return nil, err
+	}
+	s.platz(34)
+	s.y += 2
+	zeile := func(titel string, betrag dec.D, fett bool) {
+		f, gr := s.n, 10.0
+		if fett {
+			f, gr = s.f, 10.5
+		}
+		s.seite.Text(links, s.y+3.8, titel, f, gr, pdf.Schwarz)
+		s.seite.TextRechts(rechts-1.5, s.y+3.8, Euro(betrag, r.Waehrung), f, gr, pdf.Schwarz)
+		s.y += 5.6
+	}
+	offen := r.Summen.Zahlbetrag
+	text := "Rechnung " + r.Nummer + " vom " + rechnen.DatumDeutsch(r.Datum)
+	if r.Faellig != "" {
+		text += ", fällig am " + rechnen.DatumDeutsch(r.Faellig)
+	}
+	zeile(text, offen, false)
+	if !m.Gebuehr.IstNull() {
+		zeile("Mahngebühr", m.Gebuehr, false)
+	}
+	s.seite.Linie(links, s.y+0.6, rechts, s.y+0.6, 0.4, pdf.Schwarz)
+	s.y += 1.6
+	gesamt := "Offener Betrag"
+	if m.Frist != "" {
+		gesamt = "Bitte überweisen Sie bis zum " + rechnen.DatumDeutsch(m.Frist)
+	}
+	zeile(gesamt, offen+m.Gebuehr, true)
+	s.y += 4
+	s.zahlung()
+	s.schlusstexte()
+	s.fusszeilen()
+	return s.dok.Bytes(), nil
 }
 
 // Euro formatiert einen Geldbetrag: "1.234,56 €".
@@ -69,11 +160,19 @@ func Euro(d dec.D, waehrung string) string {
 
 // Titel liefert die Überschrift des Belegs, z. B. "Rechnung".
 func Titel(r modell.Rechnung) string {
+	switch r.Belegart {
+	case modell.BelegAngebot:
+		return "Angebot"
+	case modell.BelegLieferschein:
+		return "Lieferschein"
+	}
 	switch r.Art {
 	case modell.ArtGutschrift:
 		return "Rechnungskorrektur (Gutschrift)"
 	case modell.ArtKorrektur:
 		return "Korrigierte Rechnung"
+	case modell.ArtAbschlag:
+		return "Abschlagsrechnung"
 	}
 	return "Rechnung"
 }
@@ -116,9 +215,31 @@ func PDF(r modell.Rechnung, o Optionen) ([]byte, error) {
 		return nil, err
 	}
 	s.tabelle()
-	s.summen()
-	s.zahlung()
-	s.schlusstexte()
+	switch r.Belegart {
+	case modell.BelegLieferschein:
+		// Ohne Preise und Summen; dafür Platz für die Empfangsbestätigung.
+		s.platz(12)
+		s.y += 6
+		s.schlusstexte()
+		s.platz(30)
+		s.y += 20
+		s.seite.Linie(links, s.y, links+70, s.y, 0.4, pdf.Schwarz)
+		s.seite.Linie(links+90, s.y, rechts, s.y, 0.4, pdf.Schwarz)
+		s.seite.Text(links, s.y+4, "Ort, Datum", s.n, 8, grau)
+		s.seite.Text(links+90, s.y+4, "Ware vollständig erhalten – Unterschrift, Stempel", s.n, 8, grau)
+	case modell.BelegAngebot:
+		s.summen()
+		if t, ok := rechnen.Datum(r.GueltigBis); ok {
+			s.platz(10)
+			s.absatz(links, rechts-links, "Dieses Angebot ist gültig bis zum "+t.Format("02.01.2006")+".", s.n, 9.5, pdf.Schwarz)
+			s.y += 2
+		}
+		s.schlusstexte()
+	default:
+		s.summen()
+		s.zahlung()
+		s.schlusstexte()
+	}
 	s.fusszeilen()
 	return s.dok.Bytes(), nil
 }
@@ -228,11 +349,29 @@ func (s *setzer) kopf() error {
 	if nummer == "" {
 		nummer = "wird vergeben"
 	}
-	info("Rechnungsnummer", nummer, true)
-	info("Rechnungsdatum", rechnen.DatumDeutsch(r.Datum), false)
+	switch r.Belegart {
+	case modell.BelegAngebot:
+		info("Angebotsnummer", nummer, true)
+		info("Angebotsdatum", rechnen.DatumDeutsch(r.Datum), false)
+		info("Gültig bis", rechnen.DatumDeutsch(r.GueltigBis), false)
+	case modell.BelegLieferschein:
+		info("Lieferscheinnummer", nummer, true)
+		info("Datum", rechnen.DatumDeutsch(r.Datum), false)
+	case belegMahnung:
+		info("Datum", rechnen.DatumDeutsch(s.briefDatum), false)
+		info("Rechnungsnummer", nummer, true)
+		info("Rechnungsdatum", rechnen.DatumDeutsch(r.Datum), false)
+	default:
+		info("Rechnungsnummer", nummer, true)
+		info("Rechnungsdatum", rechnen.DatumDeutsch(r.Datum), false)
+	}
 	switch {
 	case r.Leistungsdatum != "":
-		info("Liefer-/Leistungsdatum", rechnen.DatumDeutsch(r.Leistungsdatum), false)
+		if r.Belegart == modell.BelegLieferschein {
+			info("Lieferdatum", rechnen.DatumDeutsch(r.Leistungsdatum), false)
+		} else {
+			info("Liefer-/Leistungsdatum", rechnen.DatumDeutsch(r.Leistungsdatum), false)
+		}
 	case r.ZeitraumVon != "" || r.ZeitraumBis != "":
 		info("Leistungszeitraum", rechnen.DatumDeutsch(r.ZeitraumVon)+" – "+rechnen.DatumDeutsch(r.ZeitraumBis), false)
 	}
@@ -294,9 +433,11 @@ func (s *setzer) tabellenkopf() {
 	p.Text(links+11, ty, "Bezeichnung", s.f, 8, pdf.Schwarz)
 	p.TextRechts(spMenge, ty, "Menge", s.f, 8, pdf.Schwarz)
 	p.Text(spEinheit, ty, "Einheit", s.f, 8, pdf.Schwarz)
-	p.TextRechts(spPreis, ty, "Einzelpreis", s.f, 8, pdf.Schwarz)
-	p.TextRechts(spSteuer, ty, "USt", s.f, 8, pdf.Schwarz)
-	p.TextRechts(rechts-1.5, ty, "Netto", s.f, 8, pdf.Schwarz)
+	if s.r.Belegart != modell.BelegLieferschein {
+		p.TextRechts(spPreis, ty, "Einzelpreis", s.f, 8, pdf.Schwarz)
+		p.TextRechts(spSteuer, ty, "USt", s.f, 8, pdf.Schwarz)
+		p.TextRechts(rechts-1.5, ty, "Netto", s.f, 8, pdf.Schwarz)
+	}
 	s.y += 6.5
 }
 
@@ -315,6 +456,28 @@ func (s *setzer) tabelle() {
 		}
 		for _, t := range nichtLeer(pos.Beschreibung, pos.Hinweis) {
 			klein = append(klein, pdf.Umbruch(s.n, 7.5, t, breiteText+25)...)
+		}
+		if r.Belegart == modell.BelegLieferschein {
+			// Der Lieferschein nennt Ware und Menge, keine Preise.
+			hoehe := 2.2 + float64(len(titel))*4.2 + float64(len(klein))*3.3 + 1.6
+			s.platz(hoehe)
+			p := s.seite
+			y := s.y + 4.6
+			p.Text(links+1.5, y, pos.Nr, s.n, 9.5, pdf.Schwarz)
+			p.TextRechts(spMenge, y, pos.Menge.Deutsch(0, 3), s.n, 9.5, pdf.Schwarz)
+			p.Text(spEinheit, y, codes.EinheitKurz(pos.Einheit), s.n, 9.5, pdf.Schwarz)
+			for _, z := range titel {
+				p.Text(links+11, y, z, s.n, 9.5, pdf.Schwarz)
+				y += 4.2
+			}
+			y -= 0.6
+			for _, z := range klein {
+				p.Text(links+11, y, z, s.n, 7.5, grau)
+				y += 3.3
+			}
+			s.y += hoehe
+			p.Linie(links, s.y, rechts, s.y, 0.3, hellgrau)
+			continue
 		}
 		hoehe := 2.2 + float64(len(titel))*4.2 + float64(len(klein))*3.3 + float64(len(pos.ZuAbschlaege))*3.8 + 1.6
 		s.platz(hoehe)
@@ -409,6 +572,9 @@ func (s *setzer) summen() {
 	s.seite.Linie(x, s.y+0.6, rechts, s.y+0.6, 0.8, pdf.Schwarz)
 	s.y += 1.6
 	gesamt := "Rechnungsbetrag"
+	if r.Belegart == modell.BelegAngebot {
+		gesamt = "Angebotsbetrag"
+	}
 	if r.Art == modell.ArtGutschrift {
 		gesamt = "Gutschriftsbetrag"
 	}

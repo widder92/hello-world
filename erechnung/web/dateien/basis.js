@@ -93,7 +93,7 @@ export const STATUS = { entwurf: 'Entwurf', fertig: 'Fertig, noch nicht versende
 export const STATUS_KURZ = { entwurf: 'Entwurf', fertig: 'Nicht versendet', versendet: 'Versendet', bezahlt: 'Bezahlt', storniert: 'Storniert' };
 
 export function belegName(art) {
-  return art === '381' ? 'Rechnungskorrektur' : art === '384' ? 'Korrigierte Rechnung' : 'Rechnung';
+  return art === '381' ? 'Rechnungskorrektur' : art === '384' ? 'Korrigierte Rechnung' : art === '326' ? 'Abschlagsrechnung' : 'Rechnung';
 }
 
 // ------------------------------------------------------------- Navigation

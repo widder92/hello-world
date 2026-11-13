@@ -120,9 +120,14 @@ func (s *Server) datevUebersicht(w http.ResponseWriter, r *http.Request) {
 	if erg.Angaben == nil {
 		erg.Angaben = []string{}
 	}
+	abschlagGemeldet := false
 	for _, b := range belege {
 		buchungen, hinweise := datev.Buchungen(b.Rechnung, b.Kunde, e.Datev)
 		erg.Hinweise = append(erg.Hinweise, hinweise...)
+		if b.Rechnung.Art == modell.ArtAbschlag && !abschlagGemeldet {
+			abschlagGemeldet = true
+			erg.Hinweise = append(erg.Hinweise, "Im Zeitraum liegen Abschlagsrechnungen. Sie werden wie Rechnungen auf das Erlöskonto gebucht; ob stattdessen „erhaltene Anzahlungen“ zu buchen sind, bitte mit der Steuerkanzlei klären.")
+		}
 		if len(b.Rechnung.Dateien) == 0 {
 			erg.Hinweise = append(erg.Hinweise, "Zu Rechnung "+b.Rechnung.Nummer+" liegt keine Datei vor; ins Belegpaket kommen nur die Rechnungsdaten.")
 		}

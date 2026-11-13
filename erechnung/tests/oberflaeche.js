@@ -315,6 +315,45 @@ function pruefe(bedingung, text) {
   await bild('19-datev-export');
   await p.getByRole('button', { name: 'Schließen' }).click();
 
+  // 10. Zusatzfunktionen: erst unsichtbar, nach dem Einschalten im Menü.
+  //     Angebot -> Lieferschein -> Rechnung, offene Posten, Serie, Auswertung.
+  pruefe(await p.getByRole('link', { name: 'Angebote' }).count() === 0, 'Zusatzfunktionen sind ausgeschaltet nicht zu sehen');
+  await p.goto(basis + '/#/einstellungen');
+  await p.getByRole('heading', { name: 'Zusatzfunktionen' }).waitFor();
+  for (const name of ['Angebote', 'Lieferscheine', 'Serienrechnungen', 'Offene Posten und Mahnungen', 'Abschlagsrechnungen', 'Auswertung']) await p.getByLabel(name, { exact: true }).check();
+  await p.getByRole('button', { name: 'Speichern' }).click();
+  await p.getByText('Einstellungen gespeichert.').waitFor();
+  await p.getByRole('link', { name: 'Angebote' }).waitFor();
+  await bild('20-zusatzfunktionen', true);
+  await p.getByRole('link', { name: 'Angebote' }).click();
+  await p.getByRole('button', { name: '+ Neues Angebot' }).click();
+  await p.locator('select').first().selectOption({ label: 'Muster Markt GmbH ZwNl. West' });
+  await p.getByPlaceholder('Artikel eintippen').fill('Blütenhonig 500 g');
+  await p.getByRole('button', { name: 'Speichern' }).click();
+  await p.getByText(/Angebot AN-\d{4}-0001 gespeichert/).waitFor();
+  pruefe(true, 'ein Angebot bekommt seine eigene Nummer');
+  await bild('21-angebot', true);
+  await p.getByRole('button', { name: 'Ansehen und drucken' }).click();
+  await p.locator('iframe').waitFor();
+  await p.getByRole('button', { name: 'Schließen' }).click();
+  await p.getByRole('button', { name: 'Lieferschein daraus machen' }).click();
+  await p.getByRole('heading', { name: /Lieferschein/ }).first().waitFor();
+  await p.getByText(/LS-\d{4}-0001/).first().waitFor();
+  await p.getByRole('button', { name: 'Rechnung daraus machen' }).click();
+  await p.locator('[data-feld="lieferscheinnummer"]').waitFor();
+  pruefe(/^LS-\d{4}-0001$/.test(await p.locator('[data-feld="lieferscheinnummer"]').inputValue()), 'die Rechnung zum Lieferschein übernimmt dessen Nummer');
+  pruefe(await p.getByLabel('Art der Rechnung').count() === 1, 'die Abschlagsrechnung lässt sich wählen');
+  await p.getByRole('button', { name: 'Entwurf löschen' }).click();
+  await p.locator('[data-frage="ja"]').click();
+  await p.getByRole('link', { name: 'Offene Posten' }).click();
+  await p.getByRole('heading', { name: 'Offene Posten' }).waitFor();
+  await p.getByRole('link', { name: 'Serienrechnungen' }).click();
+  await p.getByText('Noch keine Serie angelegt.').waitFor();
+  await p.getByRole('link', { name: 'Auswertung' }).click();
+  await p.getByRole('heading', { name: /Umsätze \d{4} nach Steuersatz/ }).waitFor();
+  pruefe(await p.getByText('Muster Markt GmbH ZwNl. West').count() >= 1, 'die Auswertung zeigt den Umsatz je Kunde');
+  await bild('22-auswertung', true);
+
   await p.goto(basis + '/#/hilfe');
   await p.getByRole('heading', { name: 'REWE Group' }).waitFor();
   await bild('12-hilfe', true);
