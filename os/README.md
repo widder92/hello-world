@@ -22,9 +22,9 @@ fremde Bibliothek: rund 24 000 Zeilen C und etwas Assembler.
   Dateiübertragung, Systemmonitor, Malprogramm, Info- und Ausschalten-Dialog
 - **Browser**: zeigt Webseiten in echter Schrift mit Überschriften, Links,
   Formularen und Bildern (PNG, JPEG, GIF), wertet die Stylesheets der Seite
-  aus (Farben, Hintergründe, Schriftgrößen, Ausrichtung, Ausgeblendetes),
-  meldet sich an (Cookies) und prüft bei https den Server – ohne JavaScript
-  und ohne mehrspaltige Anordnung
+  aus (Farben, Hintergründe, Schriftgrößen, Ausrichtung, Ausgeblendetes,
+  Bilder und Kästen neben dem Text), meldet sich an (Cookies) und prüft bei
+  https den Server – ohne JavaScript
 - **Echte Schriften**: ein eigener TrueType-Renderer zeichnet Text in jeder
   Größe aus den eingebauten Schriftdateien (DejaVu Sans) – in Fenstertiteln,
   Menüs, Dialogen und im Browser
@@ -339,9 +339,12 @@ Was dabei zu wissen ist:
 
 Startmenü → „Browser", F8 oder `browse adresse` im Terminal. Es ist ein
 **einfacher Browser**: Er holt eine Seite samt ihren Stylesheets, lässt ihre
-Skripte weg und setzt sie selbst – in einer Spalte, in echter Schrift:
-Überschriften, fett, kursiv, Listen, Tabellen mit Spalten, Links, Formulare
-und Bilder, mit den Farben, Hintergründen und Schriftgrößen der Seite.
+Skripte weg und setzt sie selbst, in echter Schrift: Überschriften, fett,
+kursiv, Listen, Tabellen mit Spalten, Links, Formulare und Bilder, mit den
+Farben, Hintergründen und Schriftgrößen der Seite. Bilder und Kästen, die
+laut Seite neben dem Text stehen sollen, stehen dort.
+
+![Bilder neben dem Text: Der Text fließt an den Kästen vorbei](docs/screenshot-daneben.png)
 
 ![Eine gestaltete Seite: dunkler Kopf mit Menü, Seitenhintergrund, farbige Überschriften, hinterlegter Kasten](docs/screenshot-gestaltung.png)
 
@@ -362,8 +365,9 @@ Was er kann:
 - Dateien, die keine Webseiten sind, landen bei den eigenen Dateien
 - **Bilder** in den Formaten PNG, JPEG (auch „progressiv") und GIF (das erste
   Einzelbild). Die Seite ist sofort lesbar; die Bilder lädt ein Helfer im
-  Hintergrund nach, die Statuszeile zählt mit. Jedes Bild steht als Block für
-  sich, große werden auf die Fensterbreite verkleinert. Ein Klick auf ein
+  Hintergrund nach, die Statuszeile zählt mit. Ein Bild steht als Block für
+  sich oder – wenn die Seite es so will – neben dem Text; große werden auf
+  die Fensterbreite verkleinert. Ein Klick auf ein
   verlinktes Bild folgt dem Link. Was nicht geladen werden kann, erscheint
   als Ersatztext („[Bild: …]").
 - Das Mausrad blättert.
@@ -384,19 +388,43 @@ Was er kann:
   Unterstreichung, ausgeblendete Elemente (`display: none`), Listen ohne
   Punkte und Einträge nebeneinander. Er versteht Auswahlen nach Element,
   Klasse und Kennung samt Verschachtelung, Rangfolge und `!important`,
+  Bedingungen an Attribute (`a[href^="http"]`, `figure[typeof~="x"]`),
   Variablen (`var(--name)`) und `@media` nach Fensterbreite. Regeln, die er
-  nicht prüfen kann (`:hover`, Attribute, Nachbarn), lässt er aus. Wäre Text
-  auf seinem Hintergrund kaum zu lesen – etwa helle Schrift auf einem
-  Hintergrundbild, das nicht gezeigt wird –, nimmt er die übliche Farbe.
+  nicht prüfen kann (`:hover`, Nachbarn), lässt er aus. Wäre Text auf seinem
+  Hintergrund kaum zu lesen – etwa helle Schrift auf einem Hintergrundbild,
+  das nicht gezeigt wird –, nimmt er die übliche Farbe.
+- **Kästen neben dem Text** (`float`, auch `align=` bei Bildern und
+  Tabellen): Der Browser setzt so ein Element für sich und stellt es an den
+  linken oder rechten Rand; der Text fließt daran vorbei und wird darunter
+  wieder breit. Platziert wird wie in anderen Browsern – in der laufenden
+  Zeile, wenn daneben Platz ist (mehrere Kästen einer Seite stehen dann
+  nebeneinander), sonst in der ersten Zeile darunter, in der es passt;
+  `clear` beginnt unter den Kästen. Die Breite kommt aus dem Stylesheet
+  (`width` in Pixeln oder Prozent), sonst vom Bild oder vom Inhalt. Kästen
+  dürfen selbst Kästen enthalten (zwei Stufen), schmale Tabellen stehen
+  neben einem Kasten, breite beginnen darunter. So stehen bei Wikipedia der
+  Infokasten und die Fotos rechts neben dem Artikel, und die
+  WordPress-Verwaltung zeigt ihr Menü links und den Inhalt rechts daneben.
+  Weil es Außenabstände hier nicht gibt, wird ein Kasten, dem nur wenig
+  Platz fehlt, schmaler gemacht statt nach unten geschoben. Ein Kasten in
+  voller Breite ohne Nachbarn ist ein gewöhnlicher Block. Schrift in Kästen
+  ist höchstens 18 Pixel groß; in Fenstern unter 280 Pixeln Breite steht
+  alles untereinander.
+- Was eine Seite nur für Vorleseprogramme bereithält (auf nichts beschnitten
+  oder weit nach oben aus dem Bild geschoben, etwa „Zum Inhalt springen"
+  oder zugeklappte Untermenüs), zeigt der Browser nicht. Nach links
+  Weggeschobenes bleibt sichtbar: So verstecken Seiten Bedienelemente, die
+  erst unter dem Mauszeiger erscheinen – hier wären sie sonst unerreichbar.
 
 Was er **nicht** kann – und das ist bei heutigen Webseiten viel:
 
 - **kein JavaScript.** Seiten und Funktionen, die darauf beruhen, bleiben leer,
   reagieren nicht oder sagen selbst, dass sie JavaScript brauchen.
-- keine Anordnung nach der Gestaltung: keine Spalten, Raster, schwebenden
-  Kästen, Abstände, Rahmen, Breiten oder Hintergrundbilder – alles steht
-  untereinander in der eingebauten Schrift (die Schriftarten der Seite werden
-  nicht geladen). Sie kennt lateinische, griechische und kyrillische Zeichen;
+- nur einen Teil der Anordnung: Kästen neben dem Text ja, aber keine
+  Spalten und Raster moderner Seiten (flex, grid), keine frei platzierten
+  Elemente, Abstände, Rahmen oder Hintergrundbilder. Was so angeordnet wäre,
+  steht untereinander. Gesetzt wird in der eingebauten Schrift (die
+  Schriftarten der Seite werden nicht geladen). Sie kennt lateinische, griechische und kyrillische Zeichen;
   andere (etwa chinesische) erscheinen als leeres Kästchen. Schrift von
   rechts nach links wird nicht gesetzt.
 - keine Bilder in den Formaten WebP, AVIF und SVG, keine Hintergrundbilder
@@ -810,11 +838,11 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `tools/mkroots.py` | erzeugt `tls_roots.bin` aus einer Liste von Wurzelzertifikaten |
 | `tools/smoke-test.sh` | automatischer Boot-Test in QEMU |
 | `tests/crypto_test.py` | Kryptografie gegen `hashlib` und `cryptography` prüfen |
-| `tests/web_test.c` | Web-Adressen und HTML-Umsetzung prüfen, auch mit beschädigten Seiten |
+| `tests/web_test.c` | Web-Adressen und Seitenaufbau prüfen (Text, Tabellen, Kästen neben dem Text), auch mit beschädigten Seiten |
 | `tests/block_test.c` | Schreibsperre für interne Platten prüfen |
 | `tests/hid_test.c` | Auswertung der HID-Berichte prüfen (Mäuse, Tastaturen, Funkempfänger) |
 | `tests/image_test.c`, `tests/image_test.py` | Bild-Dekoder gegen eine Referenz prüfen, auch mit beschädigten Dateien |
-| `tests/css_test.c` | Stylesheets prüfen: Auswahlen, Rangfolge, Farben, Variablen, `@media`, beschädigte Eingaben |
+| `tests/css_test.c` | Stylesheets prüfen: Auswahlen (auch nach Attributen), Rangfolge, Farben, Variablen, `@media`, Breiten, beschädigte Eingaben |
 | `tests/font_test.c`, `tests/font_test.py` | Schriftrenderer Zeichen für Zeichen gegen FreeType prüfen, auch mit beschädigten Schriftdateien |
 
 ## Grenzen und Ideen zum Weiterbauen
@@ -832,7 +860,7 @@ gehalten. Naheliegende nächste Schritte:
 - User-Modus (Ring 3) mit Systemaufrufen und getrennten Adressräumen
 - Programme aus Dateien laden (ELF), mehrere Prozessorkerne
 - Symbole auf dem Desktop, ein Dateimanager, Fenster an den Kanten ziehen und minimieren
-- im Browser: Bilder neben dem Text, Abstände und Rahmen (auch Tabellenlinien), WebP-Bilder, Lesezeichen (JavaScript bleibt außer Reichweite)
+- im Browser: Spalten und Raster (flex, grid), Abstände und Rahmen (auch Tabellenlinien), WebP-Bilder, Lesezeichen (JavaScript bleibt außer Reichweite)
 - echte Schrift auch in Terminal, Editor und Eingabefeldern; Hinting für schärfere kleine Schrift
 
 ## Die ältere 32-Bit-Version

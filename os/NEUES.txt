@@ -1,4 +1,4 @@
-HelloOS 0.17
-- Browser: Tabellen stehen jetzt in Spalten - mit umbrechendem Text in den Zellen, farbigen Kopfzeilen und rechtsbündigen Zahlen. Listen wie die Beiträge in der WordPress-Verwaltung oder der Infokasten bei Wikipedia sind damit so angeordnet, wie man sie kennt.
-- Aus 0.16: Seiten erscheinen mit ihren Farben, Hintergründen und Schriftgrößen.
-- Weiterhin nicht möglich: Spalten und Raster der Seite, Bilder neben dem Text, JavaScript.
+HelloOS 0.18
+- Browser: Bilder und Kästen stehen jetzt neben dem Text, wenn die Seite das so vorsieht. Bei Wikipedia sind der Infokasten und die Fotos rechts neben dem Artikel, die WordPress-Verwaltung zeigt ihr Menü links und den Inhalt rechts daneben.
+- Der Browser versteht dafür mehr von der Gestaltung der Seiten: Regeln nach Attributen, Breitenangaben, und was nur für Vorleseprogramme gedacht ist, bleibt weg.
+- Weiterhin nicht möglich: Spalten und Raster moderner Seiten, Rahmen und Abstände, JavaScript.

@@ -28,7 +28,16 @@ static css_node_t node(const char *tag, const char *id, const char *classes,
                        const css_node_t *parent)
 {
     css_node_t n = { tag, strlen(tag), id, id ? strlen(id) : 0, classes,
-                     classes ? strlen(classes) : 0, parent };
+                     classes ? strlen(classes) : 0, NULL, 0, parent };
+    return n;
+}
+
+/* Wie node(), dazu der Text der Attribute, wie er im Start-Tag steht */
+static css_node_t node_with(const char *tag, const char *attrs, const css_node_t *parent)
+{
+    css_node_t n = node(tag, NULL, NULL, parent);
+    n.attrs = attrs;
+    n.attrs_len = strlen(attrs);
     return n;
 }
 
@@ -78,8 +87,8 @@ static void test_selectors(void)
         "span { color: #111 } span.x { color: #222 } div span.x { color: #333 }\n";
     css_sheet_t *sheet = css_create(1000);
     CHECK(sheet && css_add(sheet, text, sizeof(text) - 1));
-    /* die fünf Regeln mit Zuständen, Attributen, Nachbarn fallen weg */
-    CHECK(css_rule_count(sheet) == 17);
+    /* die vier Regeln mit Zuständen und Nachbarn fallen weg */
+    CHECK(css_rule_count(sheet) == 18);
 
     css_node_t html = node("html", NULL, NULL, NULL);
     css_node_t body = node("BODY", NULL, NULL, &html);
@@ -191,6 +200,147 @@ static void test_cascade_and_values(void)
     css_free(sheet);
 }
 
+/* Bedingungen an Attribute: [name], [name=wert] und die Teilvergleiche */
+static void test_attributes(void)
+{
+    static const char text[] =
+        "figure[typeof~='mw:File/Thumb'] { float: right; clear: right }\n"
+        ".inhalt figure[typeof~=\"mw:File\"].links { float: left }\n"
+        "[hidden] { display: none }\n"
+        "a[href^=\"http\"] { color: #010101 }\n"
+        "a[href$='.pdf'] { color: #020202 }\n"
+        "a[href*=beispiel] { font-weight: bold }\n"
+        "p[lang|=de] { font-style: italic }\n"
+        "input[type=CHECKBOX i] { visibility: hidden }\n"
+        "input[type=radio] { color: #030303 }\n"
+        "td[data-x=\"a,b]\"], th[ title ] { color: #040404 }\n"
+        "div[class=\"\\41\"] { color: #f00 }\n"       /* maskiert: entfällt */
+        "div[x { color: #f00 } div[x=] { color: #f00 } div[=x] { color: #f00 }\n"
+        "span[a][b=c] { color: #050505 }\n";
+    css_sheet_t *sheet = css_create(1000);
+    CHECK(sheet && css_add(sheet, text, sizeof(text) - 1));
+    CHECK(css_rule_count(sheet) == 12);
+
+    css_node_t body = node("body", NULL, "inhalt", NULL);
+    css_node_t thumb = node_with("figure", "class=\"mw-default-size\" typeof=\"mw:File/Thumb\" id=x",
+                                 &body);
+    css_style_t s = match(sheet, &thumb, NULL);
+    CHECK((s.has & CSS_FLOAT) && s.float_side == CSS_SIDE_RIGHT && s.clear == CSS_SIDE_RIGHT);
+    css_node_t frameless = node_with("figure", "typeof=\"mw:File/Frameless\"", &body);
+    CHECK(!(match(sheet, &frameless, NULL).has & CSS_FLOAT));   /* ganzes Wort gefragt */
+    css_node_t two = node_with("figure", "TYPEOF='x  mw:File mw:File/Thumb'", &body);
+    two.classes = "links";
+    two.classes_len = 5;
+    CHECK(match(sheet, &two, NULL).float_side == CSS_SIDE_LEFT); /* genauere Regel gewinnt */
+    css_node_t bare = node("figure", NULL, NULL, &body);
+    CHECK(!(match(sheet, &bare, NULL).has & CSS_FLOAT));
+
+    css_node_t hidden = node_with("div", "id=a hidden", &body);
+    CHECK(match(sheet, &hidden, NULL).display == CSS_NONE);
+    css_node_t hidden2 = node_with("div", "hidden=\"\" class=b", &body);
+    CHECK(match(sheet, &hidden2, NULL).display == CSS_NONE);
+    css_node_t shown = node_with("div", "title=\"hidden\" data-hidden=1", &body);
+    CHECK(!(match(sheet, &shown, NULL).has & CSS_DISPLAY));     /* Wert oder Namensteil zählt nicht */
+
+    css_node_t a1 = node_with("a", "href=\"https://www.beispiel.de/x.pdf\"", &body);
+    s = match(sheet, &a1, NULL);
+    CHECK(s.color == 0x020202 && s.bold);                       /* spätere Regel bei Gleichstand */
+    css_node_t a2 = node_with("a", "href=/lokal.html", &body);
+    CHECK(!(match(sheet, &a2, NULL).has & CSS_COLOR));
+    css_node_t a3 = node_with("a", "href='http://x/'", &body);
+    CHECK(match(sheet, &a3, NULL).color == 0x010101);
+
+    css_node_t de = node_with("p", "lang=de-AT", &body), den = node_with("p", "lang=den", &body);
+    CHECK(match(sheet, &de, NULL).italic && !(match(sheet, &den, NULL).has & CSS_SLANT));
+    css_node_t box = node_with("input", "type=\"checkbox\" name=n", &body);
+    CHECK(match(sheet, &box, NULL).hidden);
+    css_node_t radio = node_with("input", "type=Radio", &body);
+    CHECK(!(match(sheet, &radio, NULL).has & CSS_COLOR));       /* ohne \"i\" zählt die Schreibweise */
+    css_node_t td = node_with("td", "data-x=\"a,b]\"", &body), th = node_with("th", "title", &body);
+    CHECK(match(sheet, &td, NULL).color == 0x040404 && match(sheet, &th, NULL).color == 0x040404);
+    css_node_t span = node_with("span", "b=c a", &body), half = node_with("span", "b=c", &body);
+    CHECK(match(sheet, &span, NULL).color == 0x050505);
+    CHECK(!(match(sheet, &half, NULL).has & CSS_COLOR));
+    css_node_t div = node_with("div", "x class=A", &body);
+    CHECK(!(match(sheet, &div, NULL).has & CSS_COLOR));         /* kaputte Regeln gelten nicht */
+
+    /* beschädigte Attributtexte dürfen nichts kaputt machen */
+    static const char *const broken[] = { "", "=", "a=", "a='", "a=\"b", "= = =", "a = 'b' c",
+                                          "/ / a", "a=b=c", "'", "\"\"\"" };
+    for (size_t i = 0; i < sizeof(broken) / sizeof(broken[0]); i++) {
+        css_node_t n = node_with("span", broken[i], &body);
+        (void)match(sheet, &n, NULL);
+    }
+    css_free(sheet);
+}
+
+/* Breite, und was Seiten nur scheinbar zeigen: beschnitten oder aus dem Bild geschoben */
+static void test_boxes(void)
+{
+    static const char text[] =
+        "#menue { float: left; width: 160px }\n"
+        ".inhalt { float: left; width: 100% }\n"
+        ".halb { width: 50.4% } .em { width: 10em } .vw { width: 25vw } .null { width: 0 }\n"
+        ".auto { width: 300px } div.auto { width: auto }\n"
+        ".rechnung { width: calc(100% - 20px) } .wort { width: fit-content } .minus { width: -5px }\n"
+        ".vorleser { position: absolute; clip: rect(1px, 1px, 1px, 1px); clip-path: inset(50%) }\n"
+        ".alt { clip: rect(0 0 0 0) } .sichtbar { clip: rect(0, 100px, 50px, 0) }\n"
+        ".doch { clip: rect(0 0 0 0) } p.doch { clip: auto }\n"
+        ".pfad { clip-path: inset(10%) } .kreis { clip-path: circle(0) }\n"
+        ".oben { position: absolute; top: -1000em } .oben.offen { top: auto }\n"
+        ".links { position: relative; left: -9999em } .knapp { top: -40px } .px { top: -9999px }\n"
+        ".sprung:not(:focus) { clip: rect(1px,1px,1px,1px) } a.sprung:not( :hover ):not(:active) { color: #010203 }\n"
+        ".sprung:not(.x) { color: #f00 } .sprung:not(:focus { color: #f00 } .sprung:not(:checked) { color: #f00 }\n";
+    css_sheet_t *sheet = css_create(1200);
+    CHECK(sheet && css_add(sheet, text, sizeof(text) - 1));
+    css_node_t body = node("body", NULL, NULL, NULL);
+
+    css_node_t menu = node("div", "menue", NULL, &body);
+    css_style_t s = match(sheet, &menu, NULL);
+    CHECK((s.has & CSS_WIDTH) && s.width_px == 160 && s.width_percent == 0 &&
+          s.float_side == CSS_SIDE_LEFT);
+    css_node_t content = node("div", NULL, "inhalt", &body);
+    s = match(sheet, &content, NULL);
+    CHECK((s.has & CSS_WIDTH) && s.width_px == 0 && s.width_percent == 100);
+    css_node_t half = node("div", NULL, "halb", &body), em = node("div", NULL, "em", &body);
+    css_node_t vw = node("div", NULL, "vw", &body), zero = node("div", NULL, "null", &body);
+    CHECK(match(sheet, &half, NULL).width_percent == 50 && match(sheet, &em, NULL).width_px == 160);
+    CHECK(match(sheet, &vw, NULL).width_px == 300);             /* ein Viertel von 1200 */
+    s = match(sheet, &zero, NULL);
+    CHECK((s.has & CSS_WIDTH) && s.width_px == 0 && s.width_percent == 0);
+    css_node_t automatic = node("div", NULL, "auto", &body), fixed = node("p", NULL, "auto", &body);
+    CHECK(!(match(sheet, &automatic, NULL).has & CSS_WIDTH));   /* genauere Regel nimmt sie zurück */
+    CHECK(match(sheet, &fixed, NULL).width_px == 300);
+    css_node_t calc = node("div", NULL, "rechnung", &body), word = node("div", NULL, "wort", &body);
+    css_node_t minus = node("div", NULL, "minus", &body);
+    CHECK(!(match(sheet, &calc, NULL).has & CSS_WIDTH) && !(match(sheet, &word, NULL).has & CSS_WIDTH) &&
+          !(match(sheet, &minus, NULL).has & CSS_WIDTH));
+    s = match(sheet, &menu, "width: 75%");
+    CHECK(s.width_px == 0 && s.width_percent == 75);            /* style-Attribut geht vor */
+
+    css_node_t reader = node("span", NULL, "vorleser", &body), old = node("span", NULL, "alt", &body);
+    css_node_t seen = node("span", NULL, "sichtbar", &body), back = node("p", NULL, "doch", &body);
+    css_node_t path = node("span", NULL, "pfad", &body), circle = node("span", NULL, "kreis", &body);
+    s = match(sheet, &reader, NULL);
+    CHECK((s.has & CSS_CLIP) && s.clipped);
+    CHECK(match(sheet, &old, NULL).clipped && !match(sheet, &seen, NULL).clipped);
+    CHECK(!match(sheet, &back, NULL).clipped && !match(sheet, &path, NULL).clipped &&
+          !match(sheet, &circle, NULL).clipped);
+
+    css_node_t up = node("ul", NULL, "oben", &body), open = node("ul", NULL, "oben offen", &body);
+    css_node_t left = node("div", NULL, "links", &body), near = node("div", NULL, "knapp", &body);
+    css_node_t px = node("div", NULL, "px", &body);
+    CHECK(match(sheet, &up, NULL).off_top && !match(sheet, &open, NULL).off_top);
+    CHECK(!match(sheet, &left, NULL).off_top && !match(sheet, &near, NULL).off_top &&
+          match(sheet, &px, NULL).off_top);
+
+    /* ":not(:focus)" gilt immer; andere Verneinungen entfallen */
+    css_node_t jump = node("a", NULL, "sprung", &body);
+    s = match(sheet, &jump, NULL);
+    CHECK(s.clipped && s.color == 0x010203);
+    css_free(sheet);
+}
+
 static void test_media(void)
 {
     static const char text[] =
@@ -231,23 +381,27 @@ static void test_fuzz(void)
 {
     static const char sample[] =
         ":root{--a:#123;--b:var(--a)}@media screen and (min-width:10px){a.b#c > d e,f{color:var(--b,red)!important;"
-        "background:url('x;y}') rgb(1 2 3 / 4%);font-size:1.2em}}g:hover{x:y}h[i=\"j\"]{k:l}"
+        "background:url('x;y}') rgb(1 2 3 / 4%);font-size:1.2em}}g:hover{x:y}e[i=\"j\"]{color:red}"
+        "[a~=b],e[c|='d' i][e^=f],d[g$=h] e[i*=j]{float:left;width:12.5em;clip:rect(0 0 0 0);top:-99em}"
+        "e{width:50%;clip-path:inset(50%);clear:both}"
         "/* m */ n{display:none;visibility:hidden;list-style:none;text-align:center}";
     css_node_t root = node("html", NULL, NULL, NULL);
     css_node_t mid = node("d", "c", "b x y", &root);
     css_node_t leaf = node("e", "c", "b", &mid);
+    mid.attrs = "g=\"xh\" a='c b'";
+    mid.attrs_len = strlen(mid.attrs);
     srand(777);
     for (int round = 0; round < 30000; round++) {
-        char text[400];
+        char text[700];
         size_t length = sizeof(sample) - 1;
         memcpy(text, sample, length);
         if (round % 3 == 0) {
             length = (size_t)rand() % sizeof(text);
             for (size_t i = 0; i < length; i++)
-                text[i] = "{}:;,.#>()@!-_ abc019\"'/*\\%"[rand() % 28];
+                text[i] = "{}:;,.#>()@!-_ abc019\"'/*\\%[]=~^$|"[rand() % 35];
         } else {
             for (int i = 0; i < 1 + rand() % 6; i++)
-                text[(size_t)rand() % length] = "{}:;,.#>()@!- a1\"'/*"[rand() % 20];
+                text[(size_t)rand() % length] = "{}:;,.#>()@!- a1\"'/*[]=~^$|"[rand() % 27];
             if (rand() % 4 == 0)
                 length = (size_t)rand() % length;
         }
@@ -256,6 +410,8 @@ static void test_fuzz(void)
         css_sheet_t *sheet = css_create(rand() % 2000);
         css_add(sheet, copy, length);
         css_style_t out;
+        leaf.attrs = copy;                              /* derselbe Unsinn auch als Attributtext */
+        leaf.attrs_len = length;
         css_match(sheet, &leaf, copy, length, &out);
         css_match(sheet, &root, NULL, 0, &out);
         uint32_t color;
@@ -270,6 +426,8 @@ int main(void)
 {
     test_colors();
     test_selectors();
+    test_attributes();
+    test_boxes();
     test_cascade_and_values();
     test_media();
     test_fuzz();

@@ -12,8 +12,9 @@
 #define CAPTURE_MAX  512
 #define LINES_MAX    120000
 #define LISTS_MAX    8
-#define FLOATS_MAX   6
+#define FLOATS_MAX   12
 #define FLOAT_GAP    14              /* Abstand zwischen Text und Kasten daneben */
+#define FLOAT_DEPTH  2               /* Kästen in Kästen: so tief wird das mitgemacht */
 
 typedef enum {
     T_UNKNOWN, T_A, T_BOLD, T_BLOCK, T_BLOCKQUOTE, T_BR, T_BUTTON, T_DD, T_DL, T_DT,
@@ -85,6 +86,15 @@ typedef struct {
     style_t saved;                      /* was vor dem Element galt */
 } element_t;
 
+/* Ein Kasten neben dem Text: fertig gesetzt, wartet auf die Zeilen, neben denen er steht */
+typedef struct {
+    int side;                           /* CSS_SIDE_LEFT oder CSS_SIDE_RIGHT */
+    int start, count;                   /* erste Zeile der Seite und Anzahl Zeilen */
+    int x, width;
+    line_t *lines;
+    span_t *spans;
+} float_box_t;
+
 typedef struct {
     page_t *page;
     const char *base;
@@ -104,16 +114,12 @@ typedef struct {
     int cell_line;                      /* erste Zeile der laufenden Zelle; davor ist nichts */
 
     /* Kästen neben dem Text ("float"): fertig gesetzt, warten auf ihre Zeilen */
-    struct {
-        int side;                       /* CSS_SIDE_LEFT oder CSS_SIDE_RIGHT */
-        int start, count;               /* erste Zeile der Seite und Anzahl Zeilen */
-        int x, width;
-        line_t *lines;
-        span_t *spans;
-    } floats[FLOATS_MAX];
+    float_box_t floats[FLOATS_MAX];
     int float_count;
     int in_float;                       /* wir setzen gerade den Inhalt eines solchen Kastens */
     int pending_float;                  /* das eben begonnene Element gehört neben den Text */
+    int pending_clear;                  /* ... und erst unter die Kästen dieser Seiten */
+    int pending_width, pending_percent; /* ... mit dieser Breite laut Gestaltung (0: nach Inhalt) */
     bool no_float;                      /* ... passt aber nicht: wie gewöhnlich setzen */
     int widest_image;                   /* beim Ausmessen: breitestes Bild */
 
@@ -468,30 +474,61 @@ static int indent(const parser_t *ps)
     return n > ps->columns / 2 ? ps->columns / 2 : n;
 }
 
-/* Platz, den Kästen neben dem Text der laufenden Zeile an einer Seite wegnehmen */
-static int float_inset(const parser_t *ps, int side)
+/*
+ * Kästen neben dem Text lassen in einer Zeile nur den Platz zwischen sich
+ * frei. Die linke Kante: wo der Text frühestens beginnt (0 ohne Kasten).
+ */
+static int float_left_edge(const parser_t *ps, int line)
 {
-    int line = ps->page->line_count - 1, inset = 0;
-    if (ps->in_float > 0 || ps->table_depth > 0)
+    int edge = 0;
+    if (ps->table_depth > 0)
         return 0;
     for (int i = 0; i < ps->float_count; i++) {
-        if (ps->floats[i].side == side && line >= ps->floats[i].start &&
-            line < ps->floats[i].start + ps->floats[i].count &&
-            ps->floats[i].width + FLOAT_GAP > inset)
-            inset = ps->floats[i].width + FLOAT_GAP;
+        const float_box_t *f = &ps->floats[i];
+        if (f->side == CSS_SIDE_LEFT && line >= f->start && line < f->start + f->count &&
+            f->x + f->width + FLOAT_GAP > edge)
+            edge = f->x + f->width + FLOAT_GAP;
     }
-    return inset;
+    return edge;
+}
+
+/* ... und die rechte: wo er spätestens endet (die ganze Breite ohne Kasten) */
+static int float_right_edge(const parser_t *ps, int line)
+{
+    int edge = ps->columns;
+    if (ps->table_depth > 0)
+        return edge;
+    for (int i = 0; i < ps->float_count; i++) {
+        const float_box_t *f = &ps->floats[i];
+        if (f->side == CSS_SIDE_RIGHT && line >= f->start && line < f->start + f->count &&
+            f->x - FLOAT_GAP < edge)
+            edge = f->x - FLOAT_GAP;
+    }
+    return edge < 0 ? 0 : edge;
+}
+
+/* Steht in dieser Zeile überhaupt ein Kasten? */
+static bool float_in_line(const parser_t *ps, int line)
+{
+    if (ps->table_depth > 0)
+        return false;
+    for (int i = 0; i < ps->float_count; i++) {
+        if (line >= ps->floats[i].start && line < ps->floats[i].start + ps->floats[i].count)
+            return true;
+    }
+    return false;
 }
 
 /* Wo der Text der laufenden Zeile beginnt und wo er spätestens endet */
 static int line_left(const parser_t *ps)
 {
-    return indent(ps) + float_inset(ps, CSS_SIDE_LEFT);
+    int left = indent(ps), edge = float_left_edge(ps, ps->page->line_count - 1);
+    return edge > left ? edge : left;
 }
 
 static int line_right(const parser_t *ps)
 {
-    int right = ps->columns - float_inset(ps, CSS_SIDE_RIGHT);
+    int right = float_right_edge(ps, ps->page->line_count - 1);
     int least = line_left(ps) + 8 * ps->unit;
     return right > least ? right : least;
 }
@@ -520,7 +557,7 @@ static bool raw_line(parser_t *ps)
 static void attach_floats(parser_t *ps)
 {
     page_t *page = ps->page;
-    if (ps->in_float > 0 || ps->table_depth > 0 || ps->float_count == 0)
+    if (ps->table_depth > 0 || ps->float_count == 0 || page->line_count == 0)
         return;
     int target = page->line_count - 1;
     line_t *line = &page->lines[target];
@@ -629,6 +666,22 @@ static void sync_line(parser_t *ps)
     }
 }
 
+/*
+ * Lassen die Kästen neben der laufenden, noch leeren Zeile kaum Platz für
+ * Text, geht es erst darunter weiter - dort, wo wieder Platz ist.
+ */
+static void skip_narrow(parser_t *ps)
+{
+    page_t *page = ps->page;
+    while (ps->float_count > 0 && ps->table_depth == 0 && !page->failed &&
+           float_in_line(ps, page->line_count - 1) &&
+           float_right_edge(ps, page->line_count - 1) - line_left(ps) < 12 * ps->unit) {
+        attach_floats(ps);              /* die Zeile gehört ganz den Kästen */
+        if (!raw_line(ps))
+            return;
+    }
+}
+
 static void push_line(parser_t *ps)
 {
     page_t *page = ps->page;
@@ -647,6 +700,7 @@ static void push_line(parser_t *ps)
     ps->has_content = false;
     ps->space_pending = false;
     ps->column = 0;
+    skip_narrow(ps);
 }
 
 static void flush_word(parser_t *ps);
@@ -664,6 +718,22 @@ static void new_line(parser_t *ps, bool forced)
     ps->only_bullet = false;
 }
 
+/*
+ * Steht in der Zeile etwas Eigenes? Was nur von einem Kasten neben dem Text
+ * hineinragt, zählt nicht: Für den Textfluss ist die Zeile dann leer.
+ */
+static bool line_has_content(const page_t *page, int index)
+{
+    const line_t *line = &page->lines[index];
+    if (line->image >= 0)
+        return true;
+    for (uint32_t i = 0; i < line->count; i++) {
+        if (!(page->spans[line->first + i].style & STYLE_ASIDE))
+            return true;
+    }
+    return false;
+}
+
 /* Sorgt für eine Leerzeile vor dem, was kommt (aber nie für zwei). */
 static void paragraph(parser_t *ps)
 {
@@ -676,7 +746,7 @@ static void paragraph(parser_t *ps)
     /* Am Anfang einer Tabellenzelle steht nichts darüber, wovon Abstand zu halten wäre. */
     if (ps->table_depth > 0 && page->line_count - 1 <= ps->cell_line)
         return;
-    if (page->line_count >= 2 && page->lines[page->line_count - 2].count > 0)
+    if (page->line_count >= 2 && line_has_content(page, page->line_count - 2))
         push_line(ps);
 }
 
@@ -687,7 +757,7 @@ static void paragraph(parser_t *ps)
 static void clear_floats(parser_t *ps, int sides)
 {
     page_t *page = ps->page;
-    if (ps->float_count == 0 || ps->in_float > 0 || ps->table_depth > 0)
+    if (ps->float_count == 0 || ps->table_depth > 0)
         return;
     new_line(ps, false);
     int until = 0;
@@ -844,8 +914,8 @@ static void place(parser_t *ps, const char *bytes, size_t n, int width, int widg
     ps->column += space + width;
     if (width > ps->widest_piece)
         ps->widest_piece = width;
-    if (ps->column - indent(ps) > ps->widest_line)
-        ps->widest_line = ps->column - indent(ps);
+    if (ps->column > ps->widest_line)
+        ps->widest_line = ps->column;   /* samt Einzug: So breit muss der Platz sein */
     ps->has_content = true;
     ps->space_pending = false;
     ps->only_bullet = false;
@@ -1375,6 +1445,8 @@ static void remember_anchor(parser_t *ps, const attr_t *attrs, int count)
 {
     page_t *page = ps->page;
     const attr_t *id = find_attr(attrs, count, "id");
+    if (!id && same_word(ps->name, ps->name_len, "a"))
+        id = find_attr(attrs, count, "name");       /* ältere Schreibweise: <a name="...") */
     if (!id || id->value_len == 0 || id->value_len > 80 || page->anchor_count >= 4000 ||
         !ENSURE(page, page->anchors, page->anchor_count, page->anchor_cap))
         return;
@@ -1457,7 +1529,16 @@ static void apply_style(parser_t *ps, tag_t tag, const css_style_t *cs)
         cur->italic = cs->italic;
     if (cs->has & CSS_UNDERLINE)
         cur->underline = cs->underline;
-    if (cs->has & CSS_ALIGN)
+    /*
+     * Ausrichtung gilt für Blöcke und Tabellenzellen. Bei Stücken im
+     * Textfluss und bei Formularfeldern meint sie nur deren Inneres - die
+     * Zeile, in der sie stehen, bleibt, wie sie ist.
+     */
+    bool control = tag == T_INPUT || tag == T_SELECT || tag == T_BUTTON || tag == T_TEXTAREA ||
+                   tag == T_IMG || tag == T_BR || tag == T_HR;
+    bool in_flow = (cs->has & CSS_DISPLAY) ? cs->display == CSS_INLINE
+                                           : inline_tag(tag) && tag != T_TD && tag != T_TH;
+    if ((cs->has & CSS_ALIGN) && !control && !in_flow)
         cur->align = cs->align;
     if (cs->has & CSS_LIST)
         cur->list_plain = cs->list_plain;
@@ -1510,6 +1591,14 @@ static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
             node.classes = class->value;
             node.classes_len = class->value_len;
         }
+        if (count > 0) {
+            /* alle Attribute, wie sie im Quelltext stehen - für Regeln wie a[href^="http"] */
+            const attr_t *last = &attrs[count - 1];
+            const char *stop = last->value_len ? last->value + last->value_len
+                                               : last->name + last->name_len;
+            node.attrs = attrs[0].name;
+            node.attrs_len = (size_t)(stop - attrs[0].name);
+        }
         node.parent = ps->depth > 0 ? &ps->stack[ps->depth - 1].node : NULL;
 
         css_style_t cs;
@@ -1520,9 +1609,9 @@ static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
         if (cs.has & CSS_DISPLAY)
             display = cs.display;
 
-        /* Erst unterhalb von Kästen neben dem Text beginnen? */
-        if ((cs.has & CSS_CLEAR) && cs.clear && ps->hidden == 0 && !css_hidden)
-            clear_floats(ps, cs.clear);
+        /* Auf nichts beschnitten oder weit aus dem Bild geschoben: nicht zu sehen */
+        if (((cs.has & CSS_CLIP) && cs.clipped) || cs.off_top)
+            css_hidden = true;
 
         /*
          * Gehört das Element selbst neben den Text (float, oder align= bei
@@ -1539,10 +1628,20 @@ static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
         bool can_float = tag == T_IMG || tag == T_TABLE || tag == T_BLOCK || tag == T_UNKNOWN ||
                          tag == T_A || tag == T_UL || tag == T_OL || tag == T_P;
         if (side && can_float && !ps->no_float && !css_hidden && ps->hidden == 0 &&
-            ps->in_float == 0 && ps->table_depth == 0) {
+            ps->in_float < FLOAT_DEPTH && ps->table_depth == 0) {
             ps->pending_float = side;
+            ps->pending_clear = (cs.has & CSS_CLEAR) ? cs.clear : 0;
+            ps->pending_width = (cs.has & CSS_WIDTH) ? cs.width_px : 0;
+            ps->pending_percent = (cs.has & CSS_WIDTH) ? cs.width_percent : 0;
             return;
         }
+        /* Listenpunkte nebeneinander (Menüleisten): hier einfach im Textfluss */
+        if (side && tag == T_LI && display != CSS_NONE)
+            display = CSS_INLINE;
+
+        /* Erst unterhalb von Kästen neben dem Text beginnen? */
+        if ((cs.has & CSS_CLEAR) && cs.clear && ps->hidden == 0 && !css_hidden)
+            clear_floats(ps, cs.clear);
         apply_style(ps, tag, &cs);
     }
 
@@ -2072,15 +2171,17 @@ static void parse_range(parser_t *ps, const char *html, size_t len)
         }
 
         /* In echter Schrift werden Tabellen als Ganzes gesetzt: Zellen in Spalten. */
-        if (tag == T_TABLE && ps->text && ps->float_count > 0 && ps->in_float == 0)
-            clear_floats(ps, CSS_SIDE_BOTH);    /* Tabellen stehen nicht neben Kästen */
         if (tag == T_TABLE && ps->text && ps->hidden == 0 && ps->table_depth < 3 &&
             ps->depth > 0 && ps->stack[ps->depth - 1].tag == T_TABLE) {
             const char *after = layout_table(ps, p, end);
             if (after) {
                 p = after;
                 end_tag(ps, T_TABLE);
+            } else if (ps->float_count > 0) {
+                clear_floats(ps, CSS_SIDE_BOTH);    /* zeilenweise gesetzt: erst unter den Kästen */
             }
+        } else if (tag == T_TABLE && ps->text && ps->float_count > 0) {
+            clear_floats(ps, CSS_SIDE_BOTH);
         }
     }
 }
@@ -2114,6 +2215,8 @@ typedef struct {
     table_row_t *rows;
     int cell_count, row_count, column_count;
     int widths[TABLE_COLUMNS_MAX];
+    int natural;                        /* Breite, bei der keine Zelle umbrechen müsste */
+    int least;                          /* Breite, unter der Wörter nicht mehr passen */
     const char *end;                    /* Ende des Tabellen-Quelltexts */
 } table_t;
 
@@ -2414,6 +2517,8 @@ static bool table_columns(table_t *t, int available)
         total_min += min[k];
         total_max += max[k];
     }
+    t->natural = total_max + (t->column_count - 1) * TABLE_GAP;
+    t->least = total_min + (t->column_count - 1) * TABLE_GAP;
     available -= (t->column_count - 1) * TABLE_GAP;
     if (available < t->column_count * 16)
         return false;                   /* kein Platz für Spalten */
@@ -2536,9 +2641,35 @@ static const char *layout_table(parser_t *ps, const char *p, const char *end)
      */
     int line0 = page->line_count - 1;
     bool cell_start = ps->table_depth > 0 && line0 <= ps->cell_line;
-    if (line0 > 0 && !cell_start &&
-        (page->lines[line0 - 1].count > 0 || page->lines[line0 - 1].image >= 0))
+    if (line0 > 0 && !cell_start && line_has_content(page, line0 - 1))
         line0++;
+
+    /*
+     * Stehen dort Kästen neben dem Text? Eine Tabelle, die ohne Umbruch
+     * daneben passt, steht daneben - so breit, wie in ihrer ersten Zeile
+     * Platz ist. Jede andere beginnt erst unter den Kästen.
+     */
+    bool beside = false;
+    bool spacer = line0 == page->line_count;        /* die laufende Zeile bleibt als Abstand */
+    if (ps->float_count > 0 && ps->table_depth == 0) {
+        int edge = float_left_edge(ps, line0);
+        int from = edge > left ? edge : left;
+        int room = float_right_edge(ps, line0) - from;
+        /* ... oder mit Umbruch, wenn daneben reichlich Platz bleibt */
+        bool fits = table.natural <= room ||
+                    (table.least <= room && room >= (ps->columns - left) * 3 / 5);
+        if (fits && table_columns(&table, room)) {
+            left = from;
+            beside = true;
+        } else {
+            clear_floats(ps, CSS_SIDE_BOTH);
+            line0 = page->line_count - 1;
+            if (line0 > 0 && line_has_content(page, line0 - 1))
+                line0++;
+            if (!table_columns(&table, ps->columns - left))
+                goto done;
+        }
+    }
     int span0 = page->span_count;
     int anchor0 = page->anchor_count;
     int outer_widest_line = ps->widest_line, outer_widest_piece = ps->widest_piece;
@@ -2565,6 +2696,12 @@ static const char *layout_table(parser_t *ps, const char *p, const char *end)
         line_map[i] = -1;
     page->line_count = line0;
     page->span_count = span0;
+    /* Die Leerzeile über der Tabelle ist damit fertig: Auch in sie ragen Kästen neben dem Text. */
+    if (beside && spacer) {
+        page->lines[line0 - 1].first = (uint32_t)page->span_count;
+        page->lines[line0 - 1].count = 0;
+        attach_floats(ps);
+    }
 
     int starts[TABLE_COLUMNS_MAX], total_width = 0;
     for (int k = 0; k < table.column_count; k++) {
@@ -2653,6 +2790,8 @@ static const char *layout_table(parser_t *ps, const char *p, const char *end)
                     line->count++;
                 }
             }
+            if (beside)
+                attach_floats(ps);      /* was von den Kästen in diese Zeile gehört */
         }
     }
 
@@ -2742,6 +2881,16 @@ static const char *element_end(const char *name, size_t name_len, const char *p,
 }
 
 /* Setzt [start, stop) als eigenen Block der Breite width hinter die bisherigen Zeilen. */
+/* Gibt Kästen frei, die nicht mehr gesetzt werden (Seitenende, Speichermangel). */
+static void drop_floats(parser_t *ps)
+{
+    for (int i = 0; i < ps->float_count; i++) {
+        kfree(ps->floats[i].lines);
+        kfree(ps->floats[i].spans);
+    }
+    ps->float_count = 0;
+}
+
 static void float_content(parser_t *ps, const char *start, const char *stop, int width)
 {
     int floor = ps->floor, depth = ps->depth;
@@ -2751,7 +2900,9 @@ static void float_content(parser_t *ps, const char *start, const char *stop, int
     while (ps->depth > depth)
         pop(ps);
     flush_word(ps);
+    clear_floats(ps, CSS_SIDE_BOTH);    /* der Kasten umschließt, was in ihm neben dem Text steht */
     finish_line(ps);
+    drop_floats(ps);
     ps->floor = floor;
 }
 
@@ -2760,65 +2911,136 @@ static void float_content(parser_t *ps, const char *start, const char *stop, int
  * Start-Element. Liefert die Stelle hinter dem Element - oder NULL, wenn es
  * wie gewöhnlich gesetzt werden soll (kein Platz, kein Ende, kein Speicher).
  */
+/*
+ * Setzt den Inhalt eines Kastens in der Breite width - auf der Seite, auf die
+ * ps->page gerade zeigt, hinter deren bisherige Zeilen. Was im Kasten selbst
+ * neben dem Text steht, gehört zu ihm: Die Kästen der Umgebung ruhen so lange.
+ */
+static void float_pass(parser_t *ps, const char *start, const char *stop, int width)
+{
+    float_box_t outer[FLOATS_MAX];
+    int outer_count = ps->float_count;
+    memcpy(outer, ps->floats, sizeof(outer));
+    ps->float_count = 0;
+    ps->in_float++;
+    float_content(ps, start, stop, width);
+    ps->in_float--;
+    memcpy(ps->floats, outer, sizeof(outer));
+    ps->float_count = outer_count;
+}
+
+/*
+ * Setzt ein Element, das neben dem Text stehen soll, als Kasten: p steht
+ * hinter seinem Start-Element. Liefert die Stelle hinter dem Element - oder
+ * NULL, wenn es wie gewöhnlich im Textfluss gesetzt werden soll.
+ *
+ * Platziert wird wie in Browsern: in der laufenden Zeile, wenn daneben noch
+ * Platz ist (links neben linken Kästen weiter rechts, rechts entsprechend),
+ * sonst in der ersten Zeile darunter, in der es passt.
+ */
 static const char *layout_float(parser_t *ps, int side, tag_t tag, const char *tag_start,
                                 const char *name, size_t name_len, const char *p,
                                 const char *end)
 {
     page_t *page = ps->page;
+    int clear = ps->pending_clear, wish = ps->pending_width, percent = ps->pending_percent;
+    ps->pending_clear = ps->pending_width = ps->pending_percent = 0;
+
     const char *stop = tag == T_IMG ? p : element_end(name, name_len, p, end);
     if (!stop || ps->float_count >= FLOATS_MAX || page->failed)
         return NULL;
 
-    /* Neben den Kasten muss noch Text passen: höchstens 45 % der Zeile */
-    int room = line_right(ps) - line_left(ps);
-    int widest = room * 45 / 100;
-    if (room < 280 || widest < 80)
+    /* In schmalen Fenstern steht alles untereinander */
+    int left = indent(ps);
+    int container = ps->columns - left;
+    if (container < 280)
         return NULL;
-
-    /* 1. Ausmessen - auf einer Wegwerf-Seite, danach ist alles wie vorher */
-    parser_t *snapshot = kmalloc(sizeof(*snapshot));
-    page_t *scratch = kzalloc(sizeof(*scratch));
-    if (!snapshot || !scratch) {
-        kfree(snapshot);
-        kfree(scratch);
-        return NULL;
-    }
     flush_word(ps);
-    memcpy(snapshot, ps, sizeof(*ps));
-    scratch->heading_line = -1;
-    scratch->pixels = true;
-    ps->page = scratch;
-    ps->in_float++;
-    ps->widest_image = 0;
-    raw_line(ps);
-    float_content(ps, tag_start, stop, widest);
-    int content = ps->widest_line, picture = ps->widest_image;
-    bool measured = !scratch->failed;
-    if (ps->option_value != snapshot->option_value)
-        kfree(ps->option_value);
-    memcpy(ps, snapshot, sizeof(*ps));
-    kfree(snapshot);
-    page_free(scratch);
-    if (!measured || content <= 0)
-        return NULL;
 
-    /* So breit wie das Bild darin; ohne Bild so breit wie der Inhalt */
-    int width = picture > 0 ? picture : content;
-    if (width > widest)
-        width = widest;
+    /* 1. Breite: laut Gestaltung, sonst nach dem Inhalt (dafür ausmessen) */
+    int width = wish > 0 ? wish : percent > 0 ? (int)((int64_t)container * percent / 100) : 0;
+    if (width <= 0) {
+        parser_t *snapshot = kmalloc(sizeof(*snapshot));
+        page_t *scratch = kzalloc(sizeof(*scratch));
+        if (!snapshot || !scratch) {
+            kfree(snapshot);
+            kfree(scratch);
+            return NULL;
+        }
+        memcpy(snapshot, ps, sizeof(*ps));
+        scratch->heading_line = -1;
+        scratch->pixels = true;
+        ps->page = scratch;
+        ps->widest_image = 0;
+        raw_line(ps);
+        float_pass(ps, tag_start, stop, container);
+        int content = ps->widest_line, picture = ps->widest_image;
+        bool measured = !scratch->failed;
+        if (ps->option_value != snapshot->option_value)
+            kfree(ps->option_value);
+        memcpy(ps, snapshot, sizeof(*ps));
+        kfree(snapshot);
+        page_free(scratch);
+        if (!measured || content <= 0)
+            return NULL;
+        /* So breit wie das Bild darin; ohne Bild so breit wie der Inhalt */
+        width = picture > 0 ? picture : content;
+    }
+    if (width > container)
+        width = container;
     if (width < 40)
         width = 40;
 
-    /* 2. Setzen, vorläufig hinter die bisherigen Zeilen, und beiseite legen */
+    /*
+     * 2. Platz suchen: nicht über früheren Kästen, mit "clear" erst unter
+     * denen der genannten Seiten - und dann die erste Zeile, in der der
+     * Kasten zwischen die übrigen passt. Fehlt nur wenig oder bleibt noch
+     * die halbe Breite, wird er so schmal gemacht, dass er passt: Seiten
+     * rechnen oft mit Rändern, die es hier nicht gibt.
+     */
+    int current = page->line_count - 1;
+    int start = current + (ps->has_content ? 1 : 0);
+    for (int i = 0; i < ps->float_count; i++) {
+        const float_box_t *f = &ps->floats[i];
+        if (f->start > start)
+            start = f->start;
+        if ((f->side & clear) && f->start + f->count > start)
+            start = f->start + f->count;
+    }
+    int from = left, to = ps->columns;
+    for (;; start++) {
+        int edge = float_left_edge(ps, start);
+        from = edge > left ? edge : left;
+        to = float_right_edge(ps, start);
+        int room = to - from;
+        if (!float_in_line(ps, start) || width <= room)
+            break;
+        if (room >= 120 && (room >= width * 3 / 4 || room >= container / 2)) {
+            width = room;
+            break;
+        }
+    }
+    if (width > to - from)
+        width = to - from;
+
+    /*
+     * Füllt der Kasten die ganze Breite und steht nichts daneben, ist er
+     * kein Kasten neben dem Text, sondern ein gewöhnlicher Block.
+     */
+    if (!float_in_line(ps, start) && width >= container * 9 / 10) {
+        if (start > current)
+            clear_floats(ps, CSS_SIDE_BOTH);
+        return NULL;
+    }
+
+    /* 3. Setzen, vorläufig hinter die bisherigen Zeilen, und beiseite legen */
     int line_count = page->line_count, span_count = page->span_count;
     int anchor_count = page->anchor_count;
     int columns = ps->columns, column = ps->column, lists = ps->list_depth, quote = ps->quote;
     bool has_content = ps->has_content, space_pending = ps->space_pending;
     bool only_bullet = ps->only_bullet;
     int widest_line = ps->widest_line, widest_piece = ps->widest_piece;
-    ps->in_float++;
-    float_content(ps, tag_start, stop, width);
-    ps->in_float--;
+    float_pass(ps, tag_start, stop, width);
     ps->columns = columns;
     ps->list_depth = lists;
     ps->quote = quote;
@@ -2837,16 +3059,24 @@ static const char *layout_float(parser_t *ps, int side, tag_t tag, const char *t
         for (int i = 0; i < rows; i++)
             lines[i].first -= (uint32_t)span_count;
     }
+    /* Sprungmarken im Kasten: ihre Zeile zählt ab seiner ersten */
+    for (int i = anchor_count; i < page->anchor_count; i++) {
+        int row = page->anchors[i].line - line_count;
+        page->anchors[i].line = start + (row < 0 ? 0 : row >= rows ? (rows > 0 ? rows - 1 : 0) : row);
+    }
     page->line_count = line_count;      /* die laufende Zeile ist wieder die letzte */
     page->span_count = span_count;
     ps->column = column;
     ps->has_content = has_content;
     ps->space_pending = space_pending;
     ps->only_bullet = only_bullet;
-    ps->widest_line = widest_line;
+    ps->widest_line = widest_line > width ? widest_line : width;
     ps->widest_piece = widest_piece;
-    if (rows <= 0)
+    if (rows <= 0) {
+        kfree(lines);
+        kfree(spans);
         return stop;                    /* leer (etwa ausgeblendet): fertig */
+    }
     if (!lines || !spans || page->failed) {
         kfree(lines);
         kfree(spans);
@@ -2854,29 +3084,21 @@ static const char *layout_float(parser_t *ps, int side, tag_t tag, const char *t
         return stop;
     }
 
-    /*
-     * 3. Anmelden: Der Kasten beginnt in der laufenden Zeile - steht dort
-     * schon Text, in der nächsten - und unter früheren Kästen derselben Seite.
-     */
-    int start = line_count - 1 + (has_content ? 1 : 0);
-    for (int i = 0; i < ps->float_count; i++) {
-        if (ps->floats[i].side == side && ps->floats[i].start + ps->floats[i].count > start)
-            start = ps->floats[i].start + ps->floats[i].count;
-    }
-    int at = ps->float_count++;
-    ps->floats[at].side = side;
-    ps->floats[at].start = start;
-    ps->floats[at].count = rows;
-    ps->floats[at].width = width;
-    ps->floats[at].x = side == CSS_SIDE_RIGHT ? ps->columns - width : indent(ps);
-    ps->floats[at].lines = lines;
-    ps->floats[at].spans = spans;
-    for (int i = anchor_count; i < page->anchor_count; i++)
-        page->anchors[i].line = start;
+    /* 4. Anmelden: Die Zeilen des Kastens kommen dazu, sobald die Seite so weit ist */
+    float_box_t *box = &ps->floats[ps->float_count++];
+    box->side = side;
+    box->start = start;
+    box->count = rows;
+    box->width = width;
+    box->x = side == CSS_SIDE_RIGHT ? to - width : from;
+    box->lines = lines;
+    box->spans = spans;
 
-    /* Die laufende, noch leere Zeile beginnt jetzt neben dem Kasten */
-    if (!ps->has_content)
+    /* Die laufende, noch leere Zeile beginnt jetzt neben dem Kasten - wenn dort Platz ist */
+    if (!ps->has_content) {
+        skip_narrow(ps);
         ps->column = line_left(ps);
+    }
     return stop;
 }
 
@@ -2887,11 +3109,7 @@ static void parse(parser_t *ps, const char *html, size_t len)
         pop(ps);
     new_line(ps, false);
     clear_floats(ps, CSS_SIDE_BOTH);    /* Kästen, die über das Ende hinausreichen */
-    for (int i = 0; i < ps->float_count; i++) {
-        kfree(ps->floats[i].lines);
-        kfree(ps->floats[i].spans);
-    }
-    ps->float_count = 0;
+    drop_floats(ps);
 }
 
 static page_t *begin(parser_t *ps, const char *base, int columns)

@@ -471,7 +471,7 @@ int main(void)
     page_free(p);
 
     /* Kästen neben dem Text: der Text fließt daran vorbei */
-    static const char float_sheet[] = ".r { float: right } .l { float: left } .unten { clear: both }";
+    static const char float_sheet[] = ".r { float: right; width: 40% } .l { float: left } .unten { clear: both }";
     static const char float_page[] =
         "<div class=r>Kasten rechts mit etwas Text darin, der im Kasten umbricht und so drei oder vier Zeilen ergibt</div>"
         "<p>Erster Absatz neben dem Kasten. Er ist lang genug, um mehrere Zeilen zu ergeben, damit man "
@@ -520,7 +520,7 @@ int main(void)
                 aside_on_filler = false;
         }
         check(box_first == 0 && box_last >= 2 && box_x >= 600 * 55 / 100,
-              "der Kasten steht rechts und ist höchstens 45 % breit");
+              "der Kasten steht rechts in der verlangten Breite");
         check(narrow >= 2 && !overlap, "Text neben dem Kasten bleibt links davon");
         check(wide >= 1, "unter dem Kasten wird der Text wieder breit");
         check(line_left_box >= 0 && x_beside > 5 * 7,
@@ -528,6 +528,183 @@ int main(void)
         check(line_below > line_left_box && x_below == 0, "clear: beginnt unterhalb, wieder am Rand");
         check(aside_on_filler, "Zeilenaufbau bleibt stimmig");
     }
+    page_free(p);
+    css_free(float_css);
+
+    /*
+     * Kästen, die eine Regel an einem Attribut erkennt (so stehen Wikipedias
+     * Bilder neben dem Text), Absatzabstände daneben, und Tabellen: Eine
+     * schmale steht neben dem Kasten, eine breite beginnt darunter.
+     */
+    static const char side_sheet[] = "figure[typeof~='mw:File/Thumb'] { float: right; clear: right; width: 250px }";
+    static const char side_page[] =
+        "<figure class=x typeof=\"mw:File/Thumb\">KASTEN eins zwei drei vier fünf sechs sieben acht neun "
+        "zehn elf zwölf dreizehn vierzehn fünfzehn sechzehn siebzehn achtzehn neunzehn zwanzig und "
+        "immer weiter mit Wörtern, damit der Kasten hoch genug wird: einundzwanzig zweiundzwanzig "
+        "dreiundzwanzig vierundzwanzig fünfundzwanzig sechsundzwanzig siebenundzwanzig achtundzwanzig "
+        "neunundzwanzig dreißig einunddreißig zweiunddreißig dreiunddreißig vierunddreißig "
+        "fünfunddreißig sechsunddreißig siebenunddreißig achtunddreißig neununddreißig vierzig "
+        "einundvierzig zweiundvierzig dreiundvierzig vierundvierzig fünfundvierzig</figure>"
+        "<p>Absatz eins.</p><p>Absatz zwei.</p>"
+        "<table><tr><td>KLEIN</td><td>b</td></tr><tr><td>c</td><td>ZELLE</td></tr></table>"
+        "<p>Absatz drei.</p>"
+        "<table><tr><td>BREIT</td><td>eine Zelle mit so viel Text, dass die Tabelle neben dem Kasten "
+        "umbrechen müsste und deshalb erst darunter beginnt, in voller Breite</td></tr></table>"
+        "<figure typeof=\"mw:File/Frameless\">OHNE</figure>"
+        "<p>Ende</p>";
+    float_css = css_create(600);
+    css_add(float_css, side_sheet, sizeof(side_sheet) - 1);
+    text.css = float_css;
+    p = html_layout_rich(side_page, sizeof(side_page) - 1, "https://a.de/", 600, NULL, &text);
+    check(p && !p->failed, "Seite mit Kasten per Attribut-Regel gesetzt");
+    if (p) {
+        int box_x = 100000, box_first = -1, box_last = -1;
+        int line_1 = -1, line_2 = -1, line_3 = -1, line_small = -1, line_cell = -1, line_wide = -1;
+        int x_small = -1, x_cell = -1, x_wide = -1, line_plain = -1;
+        bool overlap = false, plain_aside = false;
+        for (int i = 0; i < p->line_count; i++) {
+            const line_t *l = &p->lines[i];
+            int text_end = 0, aside_start = 100000;
+            for (uint32_t k = 0; k < l->count; k++) {
+                const span_t *sp = &p->spans[l->first + k];
+                const char *t = p->pool + sp->text;
+                if (sp->style & STYLE_ASIDE) {
+                    if (box_first < 0) box_first = i;
+                    box_last = i;
+                    if (sp->column < box_x) box_x = sp->column;
+                    if (sp->column < aside_start) aside_start = sp->column;
+                    if (IS("OHNE")) plain_aside = true;
+                    continue;
+                }
+                if (sp->column + sp->width > text_end) text_end = sp->column + sp->width;
+                if (IS("Absatz eins")) line_1 = i;
+                if (IS("Absatz zwei")) line_2 = i;
+                if (IS("Absatz drei")) line_3 = i;
+                if (IS("KLEIN")) { line_small = i; x_small = sp->column; }
+                if (IS("ZELLE")) { line_cell = i; x_cell = sp->column; }
+                if (IS("BREIT")) { line_wide = i; x_wide = sp->column; }
+                if (IS("OHNE")) line_plain = i;
+            }
+            if (text_end > aside_start)
+                overlap = true;
+        }
+        check(box_first == 0 && box_last >= 12 && box_x >= 600 * 55 / 100 && box_x < 600,
+              "Regel mit Attribut: der Kasten steht rechts");
+        check(line_1 == 0 && line_2 == 2, "neben dem Kasten bleibt es bei einer Leerzeile zwischen Absätzen");
+        check(line_small == line_2 + 2 && line_cell == line_small + 1 && line_cell < box_last &&
+              x_small == 0 && x_cell > x_small && x_cell < box_x,
+              "schmale Tabelle steht neben dem Kasten");
+        check(line_3 == line_cell + 2 && line_3 < box_last, "nach der Tabelle geht der Text daneben weiter");
+        check(line_wide > box_last && x_wide == 0, "breite Tabelle beginnt unter dem Kasten");
+        check(!overlap, "nichts ragt in den Kasten hinein");
+        check(line_plain > line_wide && !plain_aside, "anderer Attributwert: kein Kasten");
+    }
+    page_free(p);
+    css_free(float_css);
+
+    /*
+     * Seitenaufbau aus Kästen, wie ihn etwa die WordPress-Verwaltung hat: ein
+     * Menü links in fester Breite, der Inhalt als Kasten "100 % breit"
+     * daneben - mit eigenen Kästen darin. Dazu Kästen nebeneinander, und was
+     * Seiten nur für Vorleseprogramme oder zum Aufklappen bereithalten.
+     */
+    static const char layout_sheet[] =
+        "#menue { float: left; width: 120px } #inhalt { float: left; width: 100% } "
+        ".suche { float: right; width: 100px } .filter { float: left } .zeile { clear: both } "
+        ".vorleser { position: absolute; clip: rect(1px,1px,1px,1px) } .oben { top: -1000em } "
+        ".links { left: -9999em } li.punkt { float: left } input { text-align: center } "
+        ".a { float: left; width: 100px } .b { float: left; width: 100px } "
+        ".c { float: right; width: 100px; clear: right }";
+    static const char layout_page[] =
+        "<a class=vorleser href=#x>VORLESER</a><ul class=oben><li>OBEN</li></ul>"
+        "<div id=menue>MENUE eins<br>zwei<br>drei<br>vier<br>fünf<br>sechs<br>sieben<br>acht<br>neun<br>zehn</div>"
+        "<div id=inhalt><h1>TITEL</h1>"
+        "<ul class=filter><li class=punkt>ALLE</li><li class=punkt>ENTWURF</li></ul>"
+        "<p class=suche>SUCHE</p>"
+        "<div class=zeile>ZEILE darunter <span class=links>AKTION</span></div>"
+        "<form><input name=f value=FELD> NEBEN</form>"
+        "<a name=marke></a><p>ABSATZ im Inhalt.</p></div>"
+        "<p>FUSS</p>"
+        "<div class=a>KASTEN-A<br>a2<br>a3</div><div class=b>KASTEN-B</div>"
+        "<div class=c>KASTEN-C<br>c2<br>c3<br>c4</div><div class=c>KASTEN-D</div>"
+        "<p>DANEBEN text</p>";
+    float_css = css_create(800);
+    css_add(float_css, layout_sheet, sizeof(layout_sheet) - 1);
+    text.css = float_css;
+    p = html_layout_rich(layout_page, sizeof(layout_page) - 1, "https://a.de/", 800, NULL, &text);
+    check(p && !p->failed, "Seite aus Kästen gesetzt");
+    if (p) {
+        struct { const char *word; int line, x; } at[] = {
+            { "VORLESER", -1, -1 }, { "OBEN", -1, -1 }, { "MENUE", -1, -1 }, { "zehn", -1, -1 },
+            { "TITEL", -1, -1 }, { "ALLE", -1, -1 }, { "ENTWURF", -1, -1 }, { "SUCHE", -1, -1 },
+            { "ZEILE", -1, -1 }, { "AKTION", -1, -1 }, { "NEBEN", -1, -1 }, { "ABSATZ", -1, -1 },
+            { "FUSS", -1, -1 }, { "KASTEN-A", -1, -1 }, { "KASTEN-B", -1, -1 },
+            { "KASTEN-C", -1, -1 }, { "KASTEN-D", -1, -1 }, { "DANEBEN", -1, -1 }, { "a3", -1, -1 },
+        };
+        enum { VORLESER, OBEN, MENUE, ZEHN, TITEL, ALLE, ENTWURF, SUCHE, ZEILE, AKTION, NEBEN, ABSATZ,
+               FUSS, KASTEN_A, KASTEN_B, KASTEN_C, KASTEN_D, DANEBEN, A3, WORDS };
+        for (int i = 0; i < p->line_count; i++) {
+            const line_t *l = &p->lines[i];
+            for (uint32_t k = 0; k < l->count; k++) {
+                const span_t *sp = &p->spans[l->first + k];
+                const char *t = p->pool + sp->text;
+                for (int w = 0; w < WORDS; w++) {
+                    size_t n = strlen(at[w].word);
+                    for (size_t from = 0; at[w].line < 0 && from + n <= sp->bytes; from++) {
+                        if (memcmp(t + from, at[w].word, n) == 0) {
+                            at[w].line = i;
+                            at[w].x = sp->column;   /* Beginn des Stücks, in dem das Wort steht */
+                        }
+                    }
+                }
+            }
+        }
+        int marke = -1;
+        for (int i = 0; i < p->anchor_count; i++) {
+            if (strcmp(p->anchors[i].id, "marke") == 0)
+                marke = p->anchors[i].line;
+        }
+        check(at[VORLESER].line < 0 && at[OBEN].line < 0,
+              "beschnitten oder nach oben aus dem Bild geschoben: nicht zu sehen");
+        check(at[AKTION].line >= 0, "nach links aus dem Bild geschoben: bleibt erreichbar");
+        check(at[MENUE].line == 0 && at[MENUE].x == 0 && at[ZEHN].line == 9, "Menü steht links");
+        check(at[TITEL].line == 0 && at[TITEL].x == 134,
+              "Kasten mit 100 % Breite steht schmaler neben dem Menü statt darunter");
+        check(at[ALLE].line == at[ENTWURF].line && at[ALLE].line == at[TITEL].line + 2 &&
+              at[ALLE].x >= 134 && at[ALLE].x < 200,
+              "Listenpunkte mit float stehen nebeneinander");
+        check(at[SUCHE].line == at[ALLE].line && at[SUCHE].x == 700,
+              "Kasten im Kasten: rechts in derselben Zeile");
+        check(at[ZEILE].line == at[ALLE].line + 1 && at[ZEILE].x == 134,
+              "clear im Kasten: unter dessen Kästen, nicht unter dem Menü");
+        check(p->widget_count == 1 && p->widgets[0].line == at[NEBEN].line &&
+              p->widgets[0].column == 134 && at[NEBEN].x > 134,
+              "Formularfeld im Kasten; seine Ausrichtung verschiebt die Zeile nicht");
+        if (!(marke >= at[NEBEN].line && marke <= at[ABSATZ].line))
+            printf("  Marke in Zeile %d, NEBEN %d, ABSATZ %d\n", marke, at[NEBEN].line, at[ABSATZ].line);
+        check(marke >= at[NEBEN].line && marke <= at[ABSATZ].line,
+              "Sprungmarke im Kasten zeigt auf ihre Zeile");
+        check(at[FUSS].line == at[ABSATZ].line + 1 && at[FUSS].x == 134,
+              "wo neben den Kästen kein Platz ist, geht der Text erst darunter weiter");
+        check(at[KASTEN_A].line > at[FUSS].line && at[KASTEN_A].x == 0 &&
+              at[KASTEN_B].line == at[KASTEN_A].line && at[KASTEN_B].x == 114,
+              "zwei Kästen links stehen nebeneinander");
+        check(at[KASTEN_C].line == at[KASTEN_A].line && at[KASTEN_C].x == 700 &&
+              at[KASTEN_D].line == at[KASTEN_C].line + 4 && at[KASTEN_D].x == 700,
+              "Kasten mit clear steht unter dem vorigen derselben Seite");
+        check(at[DANEBEN].line >= at[KASTEN_A].line && at[DANEBEN].line <= at[A3].line &&
+              at[DANEBEN].x >= 114 && at[DANEBEN].x < 600,
+              "clear eines Kastens schiebt den Text nicht nach unten");
+    }
+    page_free(p);
+
+    /* Ein Kasten in voller Breite ohne Nachbarn ist ein gewöhnlicher Block */
+    static const char full_page[] =
+        "<div style=\"float:left;width:100%\"><h1>GROSS</h1><p>Text im Block.</p></div><p>Danach</p>";
+    p = html_layout_rich(full_page, sizeof(full_page) - 1, "https://a.de/", 800, NULL, &text);
+    check(p && !p->failed && p->line_count >= 4 && p->lines[0].tall && p->lines[1].filler &&
+          p->lines[0].count == 1 && !(p->spans[p->lines[0].first].style & STYLE_ASIDE),
+          "Kasten in voller Breite: wie ein Block, Überschrift in voller Größe");
     page_free(p);
     text.css = NULL;
     css_free(float_css);
@@ -562,15 +739,22 @@ int main(void)
     page_free(p);
 
     /* Beschädigte Seiten: abschneiden, Bytes kippen, Stücke verdoppeln */
-    static const char fuzz_sheet[] = ".r, div, table { float: right } .l, span, img { float: left } p { clear: left }";
+    static const char fuzz_sheet[] = ".r, div, table { float: right } .l, span, img { float: left } p { clear: left } "
+                                     "figure[typeof~='mw:File/Thumb'], td[x] { float: right; clear: right } "
+                                     "#menue { float: left; width: 120px } #inhalt { float: left; width: 100% } "
+                                     ".suche { float: right; width: 30% } li { float: left } ul { width: 7em }";
     css_add(sheet, fuzz_sheet, sizeof(fuzz_sheet) - 1);
     text.css = sheet;
     unsigned seed = 12345;
-    char *broken = malloc(3 * (sizeof(sample) + sizeof(table_page) + sizeof(float_page)));
-    for (int round = 0; round < 3000; round++) {
-        const char *source = round % 5 == 3 ? table_page : round % 5 == 4 ? float_page : sample;
+    char *broken = malloc(3 * (sizeof(sample) + sizeof(table_page) + sizeof(float_page) +
+                               sizeof(side_page) + sizeof(layout_page)));
+    for (int round = 0; round < 9000; round++) {
+        const char *source = round % 5 == 3 ? table_page : round % 5 == 4 ? float_page
+                           : round % 5 == 2 ? side_page : round % 5 == 1 ? layout_page : sample;
         size_t len = round % 5 == 3 ? sizeof(table_page) - 1
-                   : round % 5 == 4 ? sizeof(float_page) - 1 : sizeof(sample) - 1;
+                   : round % 5 == 4 ? sizeof(float_page) - 1
+                   : round % 5 == 2 ? sizeof(side_page) - 1
+                   : round % 5 == 1 ? sizeof(layout_page) - 1 : sizeof(sample) - 1;
         memcpy(broken, source, len);
         seed = seed * 1103515245u + 12345u;
         unsigned r = seed >> 8;
@@ -603,7 +787,7 @@ int main(void)
     }
     free(broken);
     css_free(sheet);
-    check(1, "3000 beschädigte Seiten verarbeitet");
+    check(1, "9000 beschädigte Seiten verarbeitet");
 
     printf("%d Prüfungen am Browser-Unterbau, %d Fehler\n", checks, failures);
     return failures != 0;

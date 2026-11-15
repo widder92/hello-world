@@ -9,8 +9,11 @@
  *   Rangfolge    Genauigkeit der Auswahl, Reihenfolge, !important
  *   Werte        Farben in allen üblichen Schreibweisen, var(--name)
  *   @media       Bildschirm und Breitenangaben; alles andere wird übergangen
- * Regeln mit Zuständen (:hover), Attributen ([type=x]) oder Nachbarn (a + b)
- * werden ausgelassen statt falsch angewandt.
+ *   Attribute    [name], [name=wert] sowie ~= |= ^= $= *= (auch mit " i")
+ *   Kästen       float, clear und width - sowie die Kniffe, mit denen Seiten
+ *                Text nur für Vorleseprogramme bereithalten (clip, top)
+ * Regeln mit Zuständen (:hover) oder Nachbarn (a + b) werden ausgelassen
+ * statt falsch angewandt; ":not(:focus)" und Ähnliches gilt als erfüllt.
  *
  * Reine Rechenarbeit ohne Hardware; läuft auch im Test auf dem
  * Entwicklungsrechner (tests/css_test.c).
@@ -31,12 +34,14 @@ typedef struct css_node {
     size_t id_len;
     const char *classes;                /* Inhalt des class-Attributs */
     size_t classes_len;
+    const char *attrs;                  /* Text des Start-Tags hinter dem Namen: alle Attribute */
+    size_t attrs_len;
     const struct css_node *parent;      /* umgebendes Element oder NULL */
 } css_node_t;
 
 enum { CSS_COLOR = 1, CSS_BACKGROUND = 2, CSS_WEIGHT = 4, CSS_SLANT = 8, CSS_SIZE = 16,
        CSS_ALIGN = 32, CSS_UNDERLINE = 64, CSS_DISPLAY = 128, CSS_VISIBILITY = 256,
-       CSS_LIST = 512, CSS_FLOAT = 1024, CSS_CLEAR = 2048 };
+       CSS_LIST = 512, CSS_FLOAT = 1024, CSS_CLEAR = 2048, CSS_WIDTH = 4096, CSS_CLIP = 8192 };
 
 enum { CSS_BLOCK = 1, CSS_INLINE, CSS_NONE };
 enum { CSS_LEFT = 1, CSS_CENTER, CSS_RIGHT };
@@ -54,6 +59,10 @@ typedef struct {
     uint8_t clear;                      /* erst unterhalb solcher Kästen beginnen */
     int size_px;                        /* Schriftgröße in Pixeln, oder 0 ... */
     int size_percent;                   /* ... dann relativ zur Umgebung in Prozent */
+    int width_px;                       /* Breite in Pixeln, oder 0 ... */
+    int width_percent;                  /* ... dann in Prozent der Umgebung */
+    bool clipped;                       /* auf nichts beschnitten: nur für Vorleseprogramme da */
+    bool off_top;                       /* weit nach oben aus dem Bild geschoben (top: -1000em) */
 } css_style_t;
 
 /* viewport_width: Breite der Anzeige in Pixeln, für @media-Bedingungen */

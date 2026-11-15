@@ -13,7 +13,8 @@
 
 /* Eigenschaften, die wir auswerten */
 enum { P_COLOR, P_BACKGROUND, P_BACKGROUND_COLOR, P_WEIGHT, P_STYLE, P_SIZE, P_ALIGN,
-       P_DECORATION, P_DISPLAY, P_VISIBILITY, P_LIST, P_FLOAT, P_CLEAR, P_COUNT };
+       P_DECORATION, P_DISPLAY, P_VISIBILITY, P_LIST, P_FLOAT, P_CLEAR, P_WIDTH, P_CLIP,
+       P_CLIP_PATH, P_TOP, P_COUNT };
 
 static const struct {
     const char *name;
@@ -25,14 +26,22 @@ static const struct {
     { "text-decoration", P_DECORATION }, { "text-decoration-line", P_DECORATION },
     { "display", P_DISPLAY }, { "visibility", P_VISIBILITY }, { "list-style", P_LIST },
     { "list-style-type", P_LIST }, { "float", P_FLOAT }, { "clear", P_CLEAR },
+    { "width", P_WIDTH }, { "clip", P_CLIP }, { "clip-path", P_CLIP_PATH },
+    { "top", P_TOP },
 };
 
-enum { S_TAG, S_CLASS, S_ID, S_ROOT };
+enum { S_TAG, S_CLASS, S_ID, S_ROOT, S_ATTR };
+
+/* Vergleiche eines Attributs: vorhanden, gleich, Wort darin, Anfang bis "-", Anfang, Ende, enthält */
+enum { A_EXISTS, A_EQUALS, A_WORD, A_DASH, A_PREFIX, A_SUFFIX, A_CONTAINS };
 
 typedef struct {
     uint8_t kind;
-    uint16_t length;
+    uint8_t op;                         /* nur S_ATTR: A_... */
+    bool fold;                          /* nur S_ATTR: Groß-/Kleinschreibung egal */
+    uint16_t length, value_length;
     const char *name;
+    const char *value;                  /* nur S_ATTR */
 } simple_t;
 
 typedef struct {
@@ -429,11 +438,17 @@ static bool contains_word(const char *text, size_t length, const char *word)
     return false;
 }
 
+static int sheet_viewport(const css_sheet_t *sheet)
+{
+    return sheet ? sheet->viewport : 1000;
+}
+
 static void apply(const css_sheet_t *sheet, cascade_t *c, uint8_t property, const char *raw,
                   size_t raw_length, uint64_t priority)
 {
     /* Zwei Schreibweisen für dasselbe teilen sich die Rangfolge */
-    uint8_t slot = property == P_BACKGROUND_COLOR ? P_BACKGROUND : property;
+    uint8_t slot = property == P_BACKGROUND_COLOR ? P_BACKGROUND
+                 : property == P_CLIP_PATH ? P_CLIP : property;
     if (priority < c->priority[slot])
         return;
 
@@ -606,6 +621,106 @@ static void apply(const css_sheet_t *sheet, cascade_t *c, uint8_t property, cons
                  : word_is(text, length, "none") ? CSS_SIDE_NONE : CSS_SIDE_BOTH;
         s->has |= CSS_CLEAR;
         break;
+    case P_WIDTH: {
+        const char *p = text, *unit;
+        size_t unit_length;
+        int64_t value;
+        int px = 0, percent = 0;
+        if (word_is(text, length, "auto")) {
+            s->width_px = s->width_percent = 0;
+            s->has &= ~(uint32_t)CSS_WIDTH;
+            break;
+        }
+        if (!number(&p, text + length, &value, &unit, &unit_length) || p != text + length ||
+            value < 0)
+            return;                     /* calc(), fit-content ...: wie nicht angegeben */
+        if (word_is(unit, unit_length, "px") || (unit_length == 0 && value == 0))
+            px = (int)((value + 500) / 1000);
+        else if (word_is(unit, unit_length, "pt"))
+            px = (int)(value * 4 / 3000);
+        else if (word_is(unit, unit_length, "em") || word_is(unit, unit_length, "rem"))
+            px = (int)(value * 16 / 1000);
+        else if (word_is(unit, unit_length, "ch") || word_is(unit, unit_length, "ex"))
+            px = (int)(value * 8 / 1000);
+        else if (word_is(unit, unit_length, "vw"))
+            px = (int)(value * sheet_viewport(sheet) / 100000);
+        else if (word_is(unit, unit_length, "%"))
+            percent = (int)((value + 500) / 1000);
+        else
+            return;
+        if (px > 20000)
+            px = 20000;
+        if (percent > 100)
+            percent = 100;
+        s->width_px = px;
+        s->width_percent = px ? 0 : percent;
+        s->has |= CSS_WIDTH;            /* auch "0": so breit soll es sein */
+        break;
+    }
+    case P_TOP: {
+        /*
+         * Aufklappmenüs und Texte für Vorleseprogramme werden oft weit nach
+         * oben aus dem Bild geschoben (top: -1000em) statt ausgeblendet. Nur
+         * das wird hier erkannt. Nach links Geschobenes (left: -9999px)
+         * bleibt sichtbar: So verstecken Seiten gern Bedienelemente, die erst
+         * unter dem Mauszeiger erscheinen - hier wären sie sonst unerreichbar.
+         */
+        const char *p = text, *unit;
+        size_t unit_length;
+        int64_t value;
+        bool away = false;
+        if (number(&p, text + length, &value, &unit, &unit_length) && p == text + length) {
+            if (word_is(unit, unit_length, "em") || word_is(unit, unit_length, "rem"))
+                value *= 16;
+            else if (!word_is(unit, unit_length, "px"))
+                value = 0;
+            away = value <= -500000;
+        }
+        s->off_top = away;
+        break;
+    }
+    case P_CLIP:
+    case P_CLIP_PATH: {
+        /*
+         * "Nur für Vorleseprogramme": Solche Texte werden auf ein Rechteck
+         * ohne Fläche beschnitten - rect(0 0 0 0), rect(1px, 1px, 1px, 1px)
+         * oder inset(50%).
+         */
+        size_t open = 0;
+        while (open < length && text[open] != '(')
+            open++;
+        bool rect = open == 4 && word_is(text, 4, "rect");
+        bool inset = open == 5 && word_is(text, 5, "inset");
+        bool nothing = false;
+        if ((rect && property == P_CLIP) || inset) {
+            const char *p = text + open + 1, *end = text + length, *unit;
+            size_t unit_length;
+            int64_t value;
+            int count = 0;
+            nothing = true;
+            while (p < end && *p != ')') {
+                if (space(*p) || *p == ',') {
+                    p++;
+                    continue;
+                }
+                if (!number(&p, end, &value, &unit, &unit_length)) {
+                    nothing = false;
+                    break;
+                }
+                count++;
+                if (rect ? value > 1000
+                         : !(word_is(unit, unit_length, "%") && value >= 50000))
+                    nothing = false;
+            }
+            if (count == 0)
+                nothing = false;
+        } else if (!word_is(text, length, "auto") && !word_is(text, length, "none")) {
+            return;
+        }
+        s->clipped = nothing;
+        s->has |= CSS_CLIP;
+        break;
+    }
     default:
         return;
     }
@@ -624,6 +739,114 @@ static bool has_class(const css_node_t *node, const char *name, size_t length)
             i++;
         if (i - start == length && memcmp(text + start, name, length) == 0)
             return true;
+    }
+    return false;
+}
+
+static bool same_text(const char *a, const char *b, size_t length, bool fold)
+{
+    for (size_t i = 0; i < length; i++) {
+        if (fold ? lower(a[i]) != lower(b[i]) : a[i] != b[i])
+            return false;
+    }
+    return true;
+}
+
+/*
+ * Sucht ein Attribut im Text des Start-Tags (name, name=wert, name="wert").
+ * Liefert false, wenn es fehlt.
+ */
+static bool find_attribute(const css_node_t *node, const char *name, size_t length,
+                           const char **value, size_t *value_length)
+{
+    const char *p = node->attrs;
+    const char *end = p + node->attrs_len;
+    if (!p)
+        return false;
+    while (p < end) {
+        while (p < end && (space(*p) || *p == '/'))
+            p++;
+        const char *start = p;
+        while (p < end && !space(*p) && *p != '=' && *p != '>' && *p != '/')
+            p++;
+        size_t found = (size_t)(p - start);
+        if (found == 0) {
+            if (p < end)
+                p++;                    /* verirrtes Zeichen */
+            continue;
+        }
+        while (p < end && space(*p))
+            p++;
+        const char *text = "";
+        size_t text_length = 0;
+        if (p < end && *p == '=') {
+            p++;
+            while (p < end && space(*p))
+                p++;
+            if (p < end && (*p == '"' || *p == '\'')) {
+                char quote = *p++;
+                text = p;
+                while (p < end && *p != quote)
+                    p++;
+                text_length = (size_t)(p - text);
+                if (p < end)
+                    p++;
+            } else {
+                text = p;
+                while (p < end && !space(*p) && *p != '>')
+                    p++;
+                text_length = (size_t)(p - text);
+            }
+        }
+        if (found == length && same_text(start, name, length, true)) {
+            *value = text;
+            *value_length = text_length;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool attribute_matches(const simple_t *s, const css_node_t *node)
+{
+    const char *have;
+    size_t n;
+    if (!find_attribute(node, s->name, s->length, &have, &n))
+        return false;
+    const char *want = s->value;
+    size_t m = s->value_length;
+    switch (s->op) {
+    case A_EXISTS:
+        return true;
+    case A_EQUALS:
+        return n == m && same_text(have, want, m, s->fold);
+    case A_DASH:
+        return n >= m && same_text(have, want, m, s->fold) && (n == m || have[m] == '-');
+    case A_PREFIX:
+        return m > 0 && n >= m && same_text(have, want, m, s->fold);
+    case A_SUFFIX:
+        return m > 0 && n >= m && same_text(have + n - m, want, m, s->fold);
+    case A_CONTAINS:
+        if (m == 0)
+            return false;
+        for (size_t i = 0; i + m <= n; i++) {
+            if (same_text(have + i, want, m, s->fold))
+                return true;
+        }
+        return false;
+    case A_WORD:
+        if (m == 0)
+            return false;
+        for (size_t i = 0; i < n;) {
+            while (i < n && space(have[i]))
+                i++;
+            size_t start = i;
+            while (i < n && !space(have[i]))
+                i++;
+            if (i - start == m && same_text(have + start, want, m, s->fold))
+                return true;
+        }
+        return false;
     }
     return false;
 }
@@ -651,6 +874,10 @@ static bool compound_matches(const compound_t *c, const css_node_t *node)
             break;
         case S_ROOT:
             if (node->parent)
+                return false;
+            break;
+        case S_ATTR:
+            if (!attribute_matches(s, node))
                 return false;
             break;
         }
@@ -820,6 +1047,93 @@ static void *grow(void *array, int count, int *capacity, size_t item, int limit)
 }
 
 /*
+ * Liest eine Attribut-Bedingung ab "[": [name], [name=wert], [name~="wert" i].
+ * Setzt *at hinter die schließende Klammer.
+ */
+static bool parse_attribute(const char *text, size_t length, size_t *at, simple_t *out)
+{
+    size_t i = *at + 1;
+    while (i < length && space(text[i]))
+        i++;
+    size_t start = i;
+    while (i < length && (name_char(text[i]) || text[i] == ':'))
+        i++;
+    if (i == start || i - start > 200)
+        return false;
+    out->kind = S_ATTR;
+    out->op = A_EXISTS;
+    out->fold = false;
+    out->name = text + start;
+    out->length = (uint16_t)(i - start);
+    out->value = "";
+    out->value_length = 0;
+    while (i < length && space(text[i]))
+        i++;
+    if (i < length && text[i] == ']') {
+        *at = i + 1;
+        return true;
+    }
+
+    if (i < length && text[i] == '=') {
+        out->op = A_EQUALS;
+        i++;
+    } else if (i + 1 < length && text[i + 1] == '=') {
+        switch (text[i]) {
+        case '~': out->op = A_WORD; break;
+        case '|': out->op = A_DASH; break;
+        case '^': out->op = A_PREFIX; break;
+        case '$': out->op = A_SUFFIX; break;
+        case '*': out->op = A_CONTAINS; break;
+        default: return false;
+        }
+        i += 2;
+    } else {
+        return false;
+    }
+    while (i < length && space(text[i]))
+        i++;
+    if (i >= length)
+        return false;
+    if (text[i] == '"' || text[i] == '\'') {
+        char quote = text[i++];
+        start = i;
+        while (i < length && text[i] != quote) {
+            if (text[i] == '\\')
+                return false;           /* maskierte Zeichen: selten, wird ausgelassen */
+            i++;
+        }
+        if (i >= length || i - start > 2000)
+            return false;
+        out->value = text + start;
+        out->value_length = (uint16_t)(i - start);
+        i++;
+    } else {
+        start = i;
+        while (i < length && !space(text[i]) && text[i] != ']') {
+            if (text[i] == '\\')
+                return false;
+            i++;
+        }
+        if (i == start || i - start > 2000)
+            return false;               /* "[name=]": ungültig */
+        out->value = text + start;
+        out->value_length = (uint16_t)(i - start);
+    }
+    while (i < length && space(text[i]))
+        i++;
+    if (i < length && (text[i] == 'i' || text[i] == 'I' || text[i] == 's' || text[i] == 'S')) {
+        out->fold = lower(text[i]) == 'i';
+        i++;
+        while (i < length && space(text[i]))
+            i++;
+    }
+    if (i >= length || text[i] != ']')
+        return false;
+    *at = i + 1;
+    return true;
+}
+
+/*
  * Liest eine Auswahl ("ul.menu > li a"). Liefert false, wenn etwas darin
  * vorkommt, das wir nicht prüfen können - die Regel entfällt dann.
  */
@@ -859,6 +1173,14 @@ static bool parse_selector(const char *text, size_t length, compound_t *out, int
                 any = true;
                 continue;
             }
+            if (text[i] == '[') {
+                if (c->count >= SIMPLES_MAX || !parse_attribute(text, length, &i, &s))
+                    return false;
+                c->simples[c->count++] = s;
+                classes++;
+                any = true;
+                continue;
+            }
             if (text[i] == '.' || text[i] == '#') {
                 s.kind = text[i] == '.' ? S_CLASS : S_ID;
                 i++;
@@ -867,6 +1189,35 @@ static bool parse_selector(const char *text, size_t length, compound_t *out, int
                 size_t start = ++i;
                 while (i < length && name_char(text[i]))
                     i++;
+                if (word_is(text + start, i - start, "not") && i < length && text[i] == '(') {
+                    /*
+                     * ":not(:focus)" und Ähnliches trifft immer zu: Hier hat
+                     * nichts den Fokus und nichts liegt unter dem Mauszeiger.
+                     * Jede andere Verneinung wird ausgelassen.
+                     */
+                    static const char *const states[] = { "focus", "hover", "active",
+                                                          "focus-visible", "focus-within",
+                                                          "target" };
+                    size_t inner = ++i;
+                    while (i < length && text[i] != ')')
+                        i++;
+                    if (i >= length)
+                        return false;
+                    const char *what = text + inner;
+                    size_t n = i - inner;
+                    i++;
+                    trim(&what, &n);
+                    bool state = false;
+                    for (unsigned k = 0; k < sizeof(states) / sizeof(states[0]); k++) {
+                        if (n > 1 && what[0] == ':' && word_is(what + 1, n - 1, states[k]))
+                            state = true;
+                    }
+                    if (!state)
+                        return false;
+                    classes++;
+                    any = true;
+                    continue;
+                }
                 if (word_is(text + start, i - start, "root")) {
                     s.kind = S_ROOT;
                 } else if (word_is(text + start, i - start, "link") ||
@@ -874,7 +1225,7 @@ static bool parse_selector(const char *text, size_t length, compound_t *out, int
                     /* Links gelten als unbesucht; gemeint sind nur <a>-Elemente */
                     if (c->count >= SIMPLES_MAX)
                         return false;
-                    c->simples[c->count++] = (simple_t){ S_TAG, 1, "a" };
+                    c->simples[c->count++] = (simple_t){ .kind = S_TAG, .length = 1, .name = "a" };
                     any = true;
                     classes++;
                     continue;
@@ -890,7 +1241,7 @@ static bool parse_selector(const char *text, size_t length, compound_t *out, int
             } else if (name_char(text[i])) {
                 s.kind = S_TAG;
             } else {
-                return false;           /* Attribute, Klammern, Sonderzeichen */
+                return false;           /* Klammern, Sonderzeichen */
             }
             size_t start = i;
             while (i < length && (name_char(text[i]) || text[i] == '\\'))
@@ -988,11 +1339,19 @@ static void add_rule(css_sheet_t *sheet, const char *selectors, size_t selectors
     for (size_t i = 0; i < selectors_length;) {
         size_t start = i;
         int level = 0;
-        while (i < selectors_length && (level > 0 || selectors[i] != ',')) {
-            if (selectors[i] == '(')
+        char quote = 0;
+        while (i < selectors_length && (level > 0 || quote || selectors[i] != ',')) {
+            char ch = selectors[i];
+            if (quote) {
+                if (ch == quote)
+                    quote = 0;
+            } else if (ch == '"' || ch == '\'') {
+                quote = ch;
+            } else if (ch == '(' || ch == '[') {
                 level++;
-            else if (selectors[i] == ')')
+            } else if ((ch == ')' || ch == ']') && level > 0) {
                 level--;
+            }
             i++;
         }
         const char *one = selectors + start;
