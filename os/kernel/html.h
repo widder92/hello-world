@@ -1,7 +1,8 @@
 /*
  * HTML für den Browser: zerlegt eine Seite und setzt sie in Zeilen aus Text,
- * Links und Formularfeldern um - ein fester Zeichenraster, wie in einem
- * Textbrowser. Stylesheets und Skripte werden nicht ausgeführt.
+ * Links, Formularfeldern und Bildern um. Stylesheets wertet der Seitenaufbau
+ * aus, soweit er sie versteht (css.h); Skripte führt er nicht selbst aus -
+ * laufen sie (script.h), bekommt er den Quelltext aus deren Abbild der Seite.
  */
 #pragma once
 
