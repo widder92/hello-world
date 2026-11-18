@@ -19,9 +19,15 @@ typedef struct task {
     uint64_t wake_ms;                   /* Weckzeit; 0 = keine Frist */
     uint64_t cpu_tsc;                   /* Rechenzeit in TSC-Einheiten */
     bool boosted;                       /* gerade aufgewacht: bevorzugen */
+    /* Zustand der Kommazahl-Register (x87, SSE): wandert beim Wechsel mit */
+    uint8_t fx[512] __attribute__((aligned(16)));
 } task_t;
 
-void context_switch(uint64_t *old_rsp, uint64_t new_rsp);   /* lowlevel.asm */
+/* lowlevel.asm */
+void context_switch(uint64_t *old_rsp, uint64_t new_rsp, void *old_fx, void *new_fx);
+void fpu_initial(void *area);
+
+static uint8_t fx_template[512] __attribute__((aligned(16)));
 
 static task_t tasks[MAX_TASKS];         /* tasks[0] ist der Leerlauf-Task */
 static task_t *current;
@@ -69,7 +75,7 @@ static void schedule(void)
     need_resched = false;
     if (next != prev) {
         current = next;
-        context_switch(&prev->rsp, next->rsp);
+        context_switch(&prev->rsp, next->rsp, prev->fx, next->fx);
     }
 }
 
@@ -83,7 +89,9 @@ static void task_trampoline(void)
 
 void task_init(void)
 {
+    fpu_initial(fx_template);
     current = &tasks[0];
+    memcpy(current->fx, fx_template, sizeof(fx_template));
     current->pid = 0;
     current->state = TASK_RUNNING;
     strlcpy(current->name, "leerlauf", TASK_NAME_MAX);
@@ -129,6 +137,7 @@ int task_create(const char *name, void (*entry)(void *arg), void *arg,
     console_ref(console);
 
     t->rsp = (uint64_t)sp;
+    memcpy(t->fx, fx_template, sizeof(fx_template));
     t->pid = next_pid++;
     t->entry = entry;
     t->arg = arg;

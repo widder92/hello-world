@@ -28,7 +28,7 @@ static css_node_t node(const char *tag, const char *id, const char *classes,
                        const css_node_t *parent)
 {
     css_node_t n = { tag, strlen(tag), id, id ? strlen(id) : 0, classes,
-                     classes ? strlen(classes) : 0, NULL, 0, parent };
+                     classes ? strlen(classes) : 0, NULL, 0, parent, NULL };
     return n;
 }
 

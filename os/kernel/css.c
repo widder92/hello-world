@@ -759,6 +759,13 @@ static bool same_text(const char *a, const char *b, size_t length, bool fold)
 static bool find_attribute(const css_node_t *node, const char *name, size_t length,
                            const char **value, size_t *value_length)
 {
+    if (node->attr) {
+        const char *found = node->attr(node, name, length, value_length);
+        if (!found)
+            return false;
+        *value = found;
+        return true;
+    }
     const char *p = node->attrs;
     const char *end = p + node->attrs_len;
     if (!p)
@@ -1611,4 +1618,96 @@ bool css_add(css_sheet_t *sheet, const char *text, size_t length)
 int css_rule_count(const css_sheet_t *sheet)
 {
     return sheet ? sheet->rule_count : 0;
+}
+
+/* --- Einzelne Auswahlen (querySelector) -------------------------------------------------------- */
+
+struct css_selector {
+    int count;
+    rule_t rules[16];                   /* je Komma-Glied eine */
+    char text[];
+};
+
+css_selector_t *css_selector_parse(const char *text, size_t length)
+{
+    if (length == 0 || length > 4000)
+        return NULL;
+    css_selector_t *sel = kzalloc(sizeof(css_selector_t) + length + 1);
+    if (!sel)
+        return NULL;
+    memcpy(sel->text, text, length);
+    for (size_t i = 0; i < length;) {
+        size_t start = i;
+        int level = 0;
+        char quote = 0;
+        while (i < length && (level > 0 || quote || sel->text[i] != ',')) {
+            char ch = sel->text[i];
+            if (quote) {
+                if (ch == quote)
+                    quote = 0;
+            } else if (ch == '"' || ch == '\'') {
+                quote = ch;
+            } else if (ch == '(' || ch == '[') {
+                level++;
+            } else if ((ch == ')' || ch == ']') && level > 0) {
+                level--;
+            }
+            i++;
+        }
+        const char *one = sel->text + start;
+        size_t n = i - start;
+        i++;
+        trim(&one, &n);
+        compound_t compounds[COMPOUNDS_MAX];
+        int count;
+        uint32_t specificity;
+        if (!n || sel->count >= 16 || !parse_selector(one, n, compounds, &count, &specificity)) {
+            css_selector_free(sel);
+            return NULL;
+        }
+        compound_t *copy = kmalloc((size_t)count * sizeof(compound_t));
+        if (!copy) {
+            css_selector_free(sel);
+            return NULL;
+        }
+        memcpy(copy, compounds, (size_t)count * sizeof(compound_t));
+        /* Elementnamen zählen ohne Rücksicht auf Groß- und Kleinschreibung */
+        for (int c = 0; c < count; c++) {
+            for (int k = 0; k < copy[c].count; k++) {
+                simple_t *simple = &copy[c].simples[k];
+                if (simple->kind != S_TAG || simple->name < sel->text ||
+                    simple->name >= sel->text + length)
+                    continue;
+                char *name = sel->text + (simple->name - sel->text);
+                for (size_t x = 0; x < simple->length; x++)
+                    name[x] = lower(name[x]);
+            }
+        }
+        sel->rules[sel->count].compounds = copy;
+        sel->rules[sel->count].compound_count = (uint8_t)count;
+        sel->count++;
+    }
+    if (sel->count == 0) {
+        css_selector_free(sel);
+        return NULL;
+    }
+    return sel;
+}
+
+bool css_selector_matches(const css_selector_t *selector, const css_node_t *node)
+{
+    for (int i = 0; selector && i < selector->count; i++) {
+        if (selector_matches(&selector->rules[i], selector->rules[i].compound_count - 1, node))
+            return true;
+    }
+    return false;
+}
+
+void css_selector_free(css_selector_t *selector)
+{
+    if (!selector)
+        return;
+    for (int i = 0; i < selector->count; i++)
+        kfree(selector->rules[i].compounds);
+    kfree(selector);
 }

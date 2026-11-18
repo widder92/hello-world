@@ -23,3 +23,6 @@ void time_delay_us(uint32_t us);
 uint64_t time_tsc_to_ms(uint64_t tsc);
 
 void time_now(datetime_t *out);
+
+/* Millisekunden seit dem 1.1.1970, gerechnet aus der Uhr des Rechners (Ortszeit) */
+uint64_t time_epoch_ms(void);

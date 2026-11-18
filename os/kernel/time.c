@@ -86,3 +86,8 @@ void time_now(datetime_t *out)
     out->minute = (uint8_t)(rest / 60 % 60);
     out->second = (uint8_t)(rest % 60);
 }
+
+uint64_t time_epoch_ms(void)
+{
+    return boot_seconds * 1000 + time_ms();
+}

@@ -37,6 +37,12 @@ typedef struct css_node {
     const char *attrs;                  /* Text des Start-Tags hinter dem Namen: alle Attribute */
     size_t attrs_len;
     const struct css_node *parent;      /* umgebendes Element oder NULL */
+    /*
+     * Wer seine Attribute nicht als Text vorliegen hat, gibt stattdessen eine
+     * Auskunft mit: liefert den Wert (NULL: fehlt) und seine Länge.
+     */
+    const char *(*attr)(const struct css_node *node, const char *name, size_t name_len,
+                        size_t *value_len);
 } css_node_t;
 
 enum { CSS_COLOR = 1, CSS_BACKGROUND = 2, CSS_WEIGHT = 4, CSS_SLANT = 8, CSS_SIZE = 16,
@@ -85,3 +91,13 @@ bool css_color(const char *text, size_t length, uint32_t *rgb);
 
 /* Anzahl der eingelesenen Regeln (für Meldungen und Tests) */
 int css_rule_count(const css_sheet_t *sheet);
+
+/*
+ * Eine einzelne Auswahl ("ul.menu > li, #kopf") zum Prüfen von Elementen -
+ * für querySelector und Verwandte. NULL, wenn sie ungültig ist oder etwas
+ * enthält, das sich hier nicht prüfen lässt.
+ */
+typedef struct css_selector css_selector_t;
+css_selector_t *css_selector_parse(const char *text, size_t length);
+bool css_selector_matches(const css_selector_t *selector, const css_node_t *node);
+void css_selector_free(css_selector_t *selector);

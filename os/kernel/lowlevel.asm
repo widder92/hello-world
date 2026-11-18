@@ -54,6 +54,7 @@ gdt_load:
 ; -----------------------------------------------------------------------------
 global context_switch
 context_switch:
+    fxsave [r8]                 ; Kommazahl-Register des alten Tasks sichern
     push rbp
     push rbx
     push rdi
@@ -71,6 +72,52 @@ context_switch:
     pop rsi
     pop rdi
     pop rbx
+    pop rbp
+    fxrstor [r9]                ; ... und die des neuen zurückholen
+    ret
+
+; -----------------------------------------------------------------------------
+; void fpu_initial(void *area)
+;
+; Schaltet die Kommazahl-Befehle (x87, SSE) ein, bringt sie in den
+; Grundzustand und legt diesen in area ab (512 Bytes, auf 16 ausgerichtet) -
+; als Vorlage für neue Tasks. Der Kernel selbst rechnet nur mit ganzen
+; Zahlen; allein die JavaScript-Maschine braucht Kommazahlen.
+; -----------------------------------------------------------------------------
+global fpu_initial
+fpu_initial:
+    mov rax, cr0
+    and rax, ~0xC               ; EM und TS aus: Befehle erlaubt
+    or rax, 0x2                 ; MP
+    mov cr0, rax
+    mov rax, cr4
+    or rax, 0x600               ; OSFXSR, OSXMMEXCPT
+    mov cr4, rax
+    fninit
+    sub rsp, 8
+    mov dword [rsp], 0x1F80     ; alle Ausnahmen maskiert, runden zur nächsten Zahl
+    ldmxcsr [rsp]
+    add rsp, 8
+    fxsave [rcx]
+    ret
+
+; -----------------------------------------------------------------------------
+; void call_on_stack(void (*fn)(void *arg), void *arg, void *stack_top)
+;
+; Ruft fn(arg) auf einem anderen, größeren Stack auf und kehrt danach auf den
+; bisherigen zurück. Für Arbeit, die tief verschachtelt rechnet (Skripte).
+; -----------------------------------------------------------------------------
+global call_on_stack
+call_on_stack:
+    push rbp
+    mov rbp, rsp
+    mov rsp, r8
+    and rsp, -16
+    sub rsp, 32                 ; "Shadow Space" der Aufrufkonvention
+    mov rax, rcx
+    mov rcx, rdx
+    call rax
+    mov rsp, rbp
     pop rbp
     ret
 

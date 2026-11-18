@@ -738,6 +738,92 @@ int main(void)
     check(p && p->image_count == 0, "ohne Bildanzeige keine Bildblöcke");
     page_free(p);
 
+    /* HTML5: aufklappbare Abschnitte, Dialoge, Balken, Medien, Platzhalter - ohne und mit Skripten */
+    static const char html5_page[] =
+        "<header><h1>Kopf</h1><nav><a href='#a'>Eins</a></nav></header><main><article id=a>"
+        "<p>Mit <mark>Marker</mark> und <time>heute</time>.</p>"
+        "<details><summary>Mehr</summary><p>Verborgenes</p></details>"
+        "<details open><summary>Offen</summary><p>Sichtbares</p></details>"
+        "<p>Stand <progress value=30 max=100>dreissig</progress> und <meter value=0.75>viel</meter>"
+        " <progress>unbestimmt</progress></p>"
+        "<dialog>Geschlossen</dialog><dialog open>Geoeffnet</dialog><template><p>Vorlage</p></template>"
+        "<p hidden>Unsichtbar</p></article>"
+        "<form action=/x><input name=q placeholder='Suchwort'><input type=email name=m>"
+        "<textarea name=t placeholder='Dein Text'></textarea><button type=button>Nur mit Skript</button>"
+        "<input type=button value='Auch nur mit Skript'><input type=reset><button>Senden</button></form>"
+        "<p><input type=checkbox id=frei> <input type=checkbox role=button id=menue></p>"
+        "<video controls><source src='/filme/film.mp4' type='video/mp4'>Kein Video</video>"
+        "<audio src='ton.mp3'>Kein Ton</audio><canvas>Keine Zeichenflaeche</canvas>"
+        "<iframe src='/karte.html' title='Karte'></iframe><iframe src='javascript:void(0)'></iframe>"
+        "<object data=x.swf>Ersatz</object>"
+        "<p><a href='javascript:tuwas()'>Skript-Link</a> <a href='#'>Leerer Anker</a></p></main>";
+    text.css = NULL;
+    for (int with_scripts = 0; with_scripts < 2; with_scripts++) {
+        char all[4000] = "";
+        text.scripts = with_scripts;
+        p = html_layout_rich(html5_page, sizeof(html5_page) - 1, "https://a.de/dir/seite.html", 900,
+                             &pictures, &text);
+        size_t used = 0;
+        for (int i = 0; p && i < p->line_count && used + 700 < sizeof(all); i++)
+            used += (size_t)snprintf(all + used, sizeof(all) - used, "%s\n", line_text(p, i));
+        const char *mode = with_scripts ? "mit Skripten" : "ohne Skripte";
+        #define H5(cond, what) snprintf(note, sizeof(note), "HTML5 %s: %s", mode, what); check(p && (cond), note)
+        H5(strstr(all, "Kopf") && strstr(all, "Eins") && strstr(all, "Marker") && strstr(all, "heute"),
+           "Abschnitte, mark und time erscheinen");
+        H5(strstr(all, "Sichtbares") && strstr(all, "\xE2\x96\xBE Offen"), "offenes details mit Dreieck nach unten");
+        if (with_scripts) {
+            H5(!strstr(all, "Verborgenes") && strstr(all, "\xE2\x96\xB8 Mehr"),
+               "zugeklapptes details zeigt nur die Überschrift");
+        } else {
+            H5(strstr(all, "Verborgenes") && strstr(all, "\xE2\x96\xBE Mehr"),
+               "details steht offen (aufklappen ginge nur mit Skripten)");
+        }
+        H5(strstr(all, "\xE2\x96\x88\xE2\x96\x88\xE2\x96\x88\xE2\x96\x91") && strstr(all, "30 %") &&
+           !strstr(all, "dreissig"), "progress als Balken mit Prozent");
+        H5(strstr(all, "75 %") && !strstr(all, "viel"), "meter als Balken");
+        H5(strstr(all, "[l\xC3\xA4uft ...]") && !strstr(all, "unbestimmt"), "progress ohne Wert");
+        H5(strstr(all, "Geoeffnet") && !strstr(all, "Geschlossen"), "dialog nur, wenn er offen ist");
+        H5(!strstr(all, "Vorlage") && !strstr(all, "Unsichtbar"), "template und hidden bleiben weg");
+        H5(strstr(all, "[Video: film.mp4]") && !strstr(all, "Kein Video"), "Video: Hinweis aus der source-Angabe");
+        H5(strstr(all, "[Tonaufnahme: ton.mp3]") && !strstr(all, "Kein Ton"), "Ton: Hinweis");
+        H5(strstr(all, "[Eingebettete Seite: Karte]"), "iframe: Hinweis mit Titel");
+        H5(strstr(all, "Keine Zeichenflaeche") && strstr(all, "Ersatz"), "canvas und object zeigen ihren Ersatzinhalt");
+        bool video = false, karte = false, script_link = false;
+        int iframes = 0;
+        for (int i = 0; p && i < p->link_count; i++) {
+            video |= strcmp(p->links[i], "https://a.de/filme/film.mp4") == 0;
+            karte |= strcmp(p->links[i], "https://a.de/karte.html") == 0;
+            script_link |= strcmp(p->links[i], "javascript:tuwas()") == 0;
+            iframes += strstr(p->links[i], "karte") != NULL;
+        }
+        H5(video && karte && iframes == 1, "Hinweise führen zur Datei bzw. Seite");
+        H5(script_link, "javascript:-Link bleibt als Link erhalten");
+        int buttons = 0, submits = 0, boxes = 0, with_hint = 0, labelled = 0;
+        for (int i = 0; p && i < p->widget_count; i++) {
+            const widget_t *w = &p->widgets[i];
+            buttons += w->kind == W_BUTTON;
+            labelled += w->kind == W_BUTTON && w->label &&
+                        (strcmp(w->label, "Nur mit Skript") == 0 ||
+                         strcmp(w->label, "Auch nur mit Skript") == 0 ||
+                         strcmp(w->label, "Zur\xC3\xBC" "cksetzen") == 0);
+            submits += w->kind == W_SUBMIT;
+            boxes += w->kind == W_CHECKBOX;
+            with_hint += w->placeholder && (strcmp(w->placeholder, "Suchwort") == 0 ||
+                                            strcmp(w->placeholder, "Dein Text") == 0);
+        }
+        H5(with_hint == 2, "placeholder an Eingabefeld und Textfeld");
+        H5(submits == 1, "ein Knopf zum Absenden");
+        if (with_scripts) {
+            H5(buttons == 3 && labelled == 3, "Knöpfe für Skripte erscheinen, mit Beschriftung");
+            H5(boxes == 1, "Ankreuzfeld ohne Namen erscheint, der Menüschalter nicht");
+        } else {
+            H5(buttons == 0 && !strstr(all, "Nur mit Skript"), "Knöpfe für Skripte bleiben weg");
+            H5(boxes == 0, "Ankreuzfelder ohne Namen bleiben weg");
+        }
+        page_free(p);
+    }
+    text.scripts = false;
+
     /* Beschädigte Seiten: abschneiden, Bytes kippen, Stücke verdoppeln */
     static const char fuzz_sheet[] = ".r, div, table { float: right } .l, span, img { float: left } p { clear: left } "
                                      "figure[typeof~='mw:File/Thumb'], td[x] { float: right; clear: right } "
@@ -747,14 +833,16 @@ int main(void)
     text.css = sheet;
     unsigned seed = 12345;
     char *broken = malloc(3 * (sizeof(sample) + sizeof(table_page) + sizeof(float_page) +
-                               sizeof(side_page) + sizeof(layout_page)));
-    for (int round = 0; round < 9000; round++) {
-        const char *source = round % 5 == 3 ? table_page : round % 5 == 4 ? float_page
-                           : round % 5 == 2 ? side_page : round % 5 == 1 ? layout_page : sample;
-        size_t len = round % 5 == 3 ? sizeof(table_page) - 1
-                   : round % 5 == 4 ? sizeof(float_page) - 1
-                   : round % 5 == 2 ? sizeof(side_page) - 1
-                   : round % 5 == 1 ? sizeof(layout_page) - 1 : sizeof(sample) - 1;
+                               sizeof(side_page) + sizeof(layout_page) + sizeof(html5_page)));
+    for (int round = 0; round < 10800; round++) {
+        int which = round % 6;
+        const char *source = which == 3 ? table_page : which == 4 ? float_page
+                           : which == 2 ? side_page : which == 1 ? layout_page
+                           : which == 5 ? html5_page : sample;
+        size_t len = which == 3 ? sizeof(table_page) - 1 : which == 4 ? sizeof(float_page) - 1
+                   : which == 2 ? sizeof(side_page) - 1 : which == 1 ? sizeof(layout_page) - 1
+                   : which == 5 ? sizeof(html5_page) - 1 : sizeof(sample) - 1;
+        text.scripts = (round / 6) % 2;
         memcpy(broken, source, len);
         seed = seed * 1103515245u + 12345u;
         unsigned r = seed >> 8;
@@ -787,7 +875,7 @@ int main(void)
     }
     free(broken);
     css_free(sheet);
-    check(1, "9000 beschädigte Seiten verarbeitet");
+    check(1, "10800 beschädigte Seiten verarbeitet");
 
     printf("%d Prüfungen am Browser-Unterbau, %d Fehler\n", checks, failures);
     return failures != 0;

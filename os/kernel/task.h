@@ -53,6 +53,13 @@ void task_tick(void);
 /* Gibt die Stacks beendeter Tasks frei. */
 void task_reap(void);
 
+/*
+ * Ruft fn(arg) auf einem anderen Stack auf (stack_top: dessen oberes Ende)
+ * und kehrt danach zurück. Die Stacks der Tasks sind klein; wer tief
+ * verschachtelt rechnet, besorgt sich dafür einen größeren.
+ */
+void call_on_stack(void (*fn)(void *arg), void *arg, void *stack_top);
+
 uint32_t task_current_pid(void);
 const char *task_current_name(void);
 console_t *task_console(void);

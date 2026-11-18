@@ -24,7 +24,10 @@ fremde Bibliothek: rund 24 000 Zeilen C und etwas Assembler.
   Formularen und Bildern (PNG, JPEG, GIF), wertet die Stylesheets der Seite
   aus (Farben, Hintergründe, Schriftgrößen, Ausrichtung, Ausgeblendetes,
   Bilder und Kästen neben dem Text), meldet sich an (Cookies) und prüft bei
-  https den Server – ohne JavaScript
+  https den Server
+- **JavaScript** mit einer eigenen Maschine (abschaltbar, ausgeliefert: aus):
+  genug für Seiten mit einfachen und älteren Skripten, jQuery und die
+  WordPress-Verwaltung – nicht für große Web-Anwendungen
 - **Echte Schriften**: ein eigener TrueType-Renderer zeichnet Text in jeder
   Größe aus den eingebauten Schriftdateien (DejaVu Sans) – in Fenstertiteln,
   Menüs, Dialogen und im Browser
@@ -338,11 +341,12 @@ Was dabei zu wissen ist:
 ![Der Browser mit der Bearbeitungsseite eines WordPress-Beitrags](docs/screenshot-browser.png)
 
 Startmenü → „Browser", F8 oder `browse adresse` im Terminal. Es ist ein
-**einfacher Browser**: Er holt eine Seite samt ihren Stylesheets, lässt ihre
-Skripte weg und setzt sie selbst, in echter Schrift: Überschriften, fett,
-kursiv, Listen, Tabellen mit Spalten, Links, Formulare und Bilder, mit den
-Farben, Hintergründen und Schriftgrößen der Seite. Bilder und Kästen, die
-laut Seite neben dem Text stehen sollen, stehen dort.
+**einfacher Browser**: Er holt eine Seite samt ihren Stylesheets und setzt
+sie selbst, in echter Schrift: Überschriften, fett, kursiv, Listen, Tabellen
+mit Spalten, Links, Formulare und Bilder, mit den Farben, Hintergründen und
+Schriftgrößen der Seite. Bilder und Kästen, die laut Seite neben dem Text
+stehen sollen, stehen dort. Die Skripte der Seite (JavaScript) führt er aus,
+wenn du das einschaltest – siehe [JavaScript](#javascript).
 
 ![Bilder neben dem Text: Der Text fließt an den Kästen vorbei](docs/screenshot-daneben.png)
 
@@ -416,10 +420,21 @@ Was er kann:
   Weggeschobenes bleibt sichtbar: So verstecken Seiten Bedienelemente, die
   erst unter dem Mauszeiger erscheinen – hier wären sie sonst unerreichbar.
 
+- **HTML5:** Abschnitte (`header`, `nav`, `main`, `article`, `section`,
+  `aside`, `footer`, `figure`), hervorgehobener Text (`mark`),
+  Fortschrittsbalken (`progress`, `meter`), Hinweistexte in leeren Feldern
+  (`placeholder`), die neuen Feldarten (E-Mail, Zahl, Datum, Suche … als
+  Textfelder), `hidden`, `template`, `dialog` (nur wenn geöffnet) und
+  aufklappbare Abschnitte (`details`; auf- und zuklappen lassen sie sich mit
+  eingeschaltetem JavaScript, sonst stehen sie offen da). Für Video, Ton und
+  eingebettete Seiten (`video`, `audio`, `iframe`) erscheint ein Hinweis mit
+  Link auf die Datei oder Seite; `canvas` und `object` zeigen ihren
+  Ersatzinhalt.
+
 Was er **nicht** kann – und das ist bei heutigen Webseiten viel:
 
-- **kein JavaScript.** Seiten und Funktionen, die darauf beruhen, bleiben leer,
-  reagieren nicht oder sagen selbst, dass sie JavaScript brauchen.
+- **JavaScript nur zum Teil** und nur, wenn eingeschaltet – was geht und was
+  nicht, steht [unten](#javascript). Große Web-Anwendungen laufen nicht.
 - nur einen Teil der Anordnung: Kästen neben dem Text ja, aber keine
   Spalten und Raster moderner Seiten (flex, grid), keine frei platzierten
   Elemente, Abstände, Rahmen oder Hintergrundbilder. Was so angeordnet wäre,
@@ -433,6 +448,80 @@ Was er **nicht** kann – und das ist bei heutigen Webseiten viel:
 - Lange Menüs einer Seite stehen als Liste am Seitenanfang. Der Browser
   springt deshalb beim Laden zur Hauptüberschrift; mit Pos1 geht es nach oben.
 
+### JavaScript
+
+![Eine Testseite mit Skripten: Zähler, aufklappbarer Text, Eingabe mit Echo, Liste, Uhr](docs/screenshot-javascript.png)
+
+Der Knopf rechts oben in der Leiste schaltet JavaScript ein und aus
+(„JavaScript an" / „JavaScript aus"); die Seite wird dann neu geladen, und
+die Einstellung bleibt auf dem Stick gespeichert. **Ausgeliefert wird es
+ausgeschaltet** – der Grund steht unter „Sicherheit".
+
+HelloOS bringt dafür eine eigene JavaScript-Maschine mit (kein fremder Code):
+Sie liest den Quelltext, führt ihn aus und gibt den Skripten ein
+veränderbares Abbild der Seite (DOM). Angezeigt wird immer, was in diesem
+Abbild steht; ändern Skripte es, setzt der Browser die Seite neu.
+
+**Was geht**
+
+- Die Sprache bis etwa zum Stand von 2015–2020: Funktionen, Objekte, Felder,
+  Zeichenketten, reguläre Ausdrücke, JSON, Datum, Klassen, Pfeilfunktionen,
+  `let`/`const`, Vorlagen-Zeichenketten, Zerlegen (`{a, b} = …`), `Map`, `Set`,
+  `Promise`, typisierte Felder (`Uint8Array` …).
+- Die Seite lesen und umbauen: `getElementById`, `querySelector(All)`,
+  `createElement`, `appendChild`, `innerHTML`, `textContent`, `classList`,
+  `style`, `dataset`, Attribute, `document.write`.
+- Ereignisse: Klicks (auch auf gewöhnlichen Text), Eingaben und Tasten in
+  Feldern, Ankreuzen, Auswählen, Absenden – samt `preventDefault`, also
+  Formularprüfung vor dem Absenden. Knöpfe ohne Formular
+  (`<button type="button">`) erscheinen und funktionieren; Links der Form
+  `javascript:…` auch.
+- Zeitgeber (`setTimeout`, `setInterval`), `alert` und `confirm` (als Kasten
+  über der Seite; Esc unterdrückt weitere Meldungen der Seite),
+  `location.href = …`, `history.back()`.
+- **Daten nachladen** mit `XMLHttpRequest` und `fetch` – nur vom Server der
+  Seite selbst. Während ein Skript auf die Antwort wartet, wartet auch das
+  Fenster.
+- Ein- und Ausblenden: Skripte erfahren, was laut Stylesheet zu sehen ist
+  (`getComputedStyle(…).display`, `offsetWidth`), und was sie per
+  `style.display` zeigen, erscheint.
+- **jQuery** (getestet mit 3.7) läuft samt Selektoren, Ein-/Ausblenden,
+  Animationen (in Schritten) und `$.ajax`.
+
+**Was nicht geht**
+
+- Neuere Sprachmittel: `async`/`await`, Generatoren (`function*`), Module
+  (`import`/`export`, `<script type="module">`). Ein Skript, das so etwas
+  enthält, wird als Ganzes ausgelassen; die Statuszeile nennt die Zahl.
+- Alles, was zeichnet oder abspielt: Canvas, WebGL, Video, Ton. Kein
+  `localStorage` über das Fenster hinaus, keine Web Worker, kein WebSocket.
+- Maße und Positionen: Wo ein Element steht und wie groß es ist, erfahren
+  Skripte nicht (sichtbare Elemente melden eine angenommene Größe). Menüs,
+  die unter dem Mauszeiger aufklappen, und alles mit Ziehen gehen nicht.
+- Skriptdateien lädt der Browser nur beim Laden der Seite; was ein Skript
+  später nachfordert, bleibt aus. Nachladen von fremden Servern ist gesperrt.
+- Stylesheets, die ein Skript nach dem Laden einfügt, wirken nicht.
+- Tempo: Die Maschine deutet den Quelltext Schritt für Schritt, statt ihn zu
+  übersetzen – grob hundertmal langsamer als ein großer Browser. Ein Skript
+  darf zehn Sekunden rechnen, alle Skripte einer Seite beim Laden zusammen
+  dreißig, und 48 MB Speicher belegen; wer das überschreitet, wird
+  angehalten (die Seite bleibt, wie sie bis dahin war, und die Statuszeile
+  sagt es).
+
+Unterm Strich: Seiten mit einfachen und älteren Skripten – Menüs zum
+Aufklappen, Formularprüfung, „Mehr anzeigen", jQuery-Seiten, die
+WordPress-Verwaltung – funktionieren. Große Web-Anwendungen (Google Maps,
+YouTube, der Block-Editor von WordPress) nicht.
+
+**Sicherheit.** Ein großer Browser sperrt jede Seite in einen eigenen,
+abgeschotteten Prozess. HelloOS hat keine solche Trennung: Die Skripte einer
+Seite laufen im selben Speicher wie das System. Die Maschine prüft deshalb
+jeden Zugriff, begrenzt Zeit, Speicher und Verschachtelung, und sie wird mit
+zehntausenden absichtlich beschädigten Skripten und Seiten getestet – aber
+ein Fehler in ihr könnte einer bösartigen Seite mehr erlauben als in einem
+großen Browser. Darum ist JavaScript ausgeschaltet, bis du es einschaltest;
+für Seiten, denen du nicht traust, lass es aus.
+
 ### WordPress im Browser von HelloOS
 
 Getestet mit einer echten WordPress-Installation (Version 6.4, lokal, ohne
@@ -442,7 +531,8 @@ weitere Plugins):
 | --- | --- |
 | Anmelden (`wp-login.php`) | funktioniert |
 | Dashboard, Listen der Beiträge, Seiten, Kommentare, Benutzer, Einstellungen | lesbar; Links und einfache Formulare funktionieren |
-| Beitrag bearbeiten mit dem **Block-Editor** (Standard) | **geht nicht** – WordPress meldet „Der Block-Editor benötigt JavaScript" |
+| Mit JavaScript: „Quick Edit" in der Beitragsliste (Titel ändern, „Update"), „Screen Options", Menü einklappen | funktioniert – die Skripte von WordPress (jQuery und über 60 weitere) laufen ohne Fehler |
+| Beitrag bearbeiten mit dem **Block-Editor** (Standard) | **geht nicht** – ohne JavaScript meldet WordPress „Der Block-Editor benötigt JavaScript", mit JavaScript ist er für diese Maschine zu groß |
 | Beitrag bearbeiten mit dem **klassischen Editor** | funktioniert: Titel und Text geändert, „Aktualisieren" gedrückt, Änderung in der Datenbank geprüft. Der Text erscheint als HTML-Quelltext. |
 | Bilder und andere Dateien hochladen (Mediathek) | geht nicht |
 | Design anpassen (Customizer, Website-Editor), Plugins per Mausklick, alles mit Ziehen und Ablegen | geht nicht |
@@ -450,11 +540,12 @@ weitere Plugins):
 
 Den klassischen Editor bekommt eine WordPress-Seite über das Plugin „Classic
 Editor" – das muss einmal von einem normalen Browser aus installiert werden.
-Unterm Strich: Nachsehen, Texte korrigieren, einfache Einstellungen – ja. Das
-WordPress, wie man es aus Chrome oder Firefox kennt – nein, und daran ändert
-sich in HelloOS auch nichts Grundsätzliches: Ein Browser, der JavaScript und
-moderne Gestaltung beherrscht, ist ein Projekt in der Größenordnung von
-Millionen Zeilen Code.
+Unterm Strich: Nachsehen, Texte korrigieren, einfache Einstellungen – ja,
+mit eingeschaltetem JavaScript auch die kleinen Helfer der Verwaltung. Das
+WordPress, wie man es aus Chrome oder Firefox kennt – nein: Ein Browser, der
+moderne Web-Anwendungen und ihre Gestaltung vollständig beherrscht, ist ein
+Projekt in der Größenordnung von Millionen Zeilen Code. HelloOS geht den Weg
+dahin in Etappen.
 
 ## Eigene Dateien
 
@@ -804,7 +895,7 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `kernel/lowlevel.asm` | Interrupt-Einsprünge, Task-Wechsel |
 | `kernel/interrupts.c` | GDT, IDT, Ausnahmen, Local APIC, Systemtakt |
 | `kernel/time.c` | Zeitmessung, Datum und Uhrzeit |
-| `kernel/memory.c` | Heap, Seitenvergabe, Seitentabellen |
+| `kernel/memory.c`, `kernel/heap.c` | Seitenvergabe, Seitentabellen; der Heap (Listen freier Blöcke nach Größe) |
 | `kernel/task.c` | Tasks und Scheduler |
 | `kernel/console.c`, `kernel/serial.c` | Konsolen, `kprintf`, serielle Schnittstelle |
 | `kernel/keyboard.c`, `kernel/ps2.c` | Tastaturbelegungen, PS/2-Tastatur und -Maus |
@@ -820,6 +911,9 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `kernel/tls.c`, `kernel/http.c`, `kernel/url.c` | TLS 1.3, HTTP-Client, Web-Adressen |
 | `kernel/html.c`, `kernel/browser.c` | HTML zerlegen und als Text setzen; das Browser-Fenster |
 | `kernel/css.c` | Stylesheets lesen und auf Elemente anwenden |
+| `kernel/js_*.c`, `kernel/js.h` | die JavaScript-Maschine: Quelltext lesen (`js_parse.c`), ausführen (`js_run.c`), Werte und Speicherbereinigung (`js_core.c`), Zahlen (`js_num.c`), eingebaute Objekte (`js_lib*.c`), reguläre Ausdrücke (`js_regex.c`), typisierte Felder (`js_typed.c`) |
+| `kernel/dom.c` | das veränderbare Abbild einer Seite (DOM): Baum lesen, umbauen, wieder zu Quelltext machen |
+| `kernel/dom_js.c`, `kernel/domlib.js`, `kernel/script.h` | Skripte einer Seite: Verbindung von Abbild und JavaScript-Maschine; `window`, `document` und die Elemente, zum großen Teil selbst in JavaScript geschrieben |
 | `kernel/image*.c`, `kernel/inflate.c` | Bilder entschlüsseln (PNG, JPEG, GIF) und verkleinern |
 | `kernel/ssh.c`, `kernel/sftp.c` | SSH-Client, Dateiübertragung per SFTP |
 | `kernel/json.c` | JSON lesen und schreiben |
@@ -836,10 +930,15 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `tools/update-tool.py` | Schlüssel erzeugen, Update-Pakete signieren und prüfen |
 | `tools/mkfont.py` | erzeugt `font_data.c` aus einer TrueType-Schrift |
 | `tools/mkroots.py` | erzeugt `tls_roots.bin` aus einer Liste von Wurzelzertifikaten |
+| `tools/embed.py` | bettet `domlib.js` als Zeichenfeld in den Kernel ein |
 | `tools/smoke-test.sh` | automatischer Boot-Test in QEMU |
 | `tests/crypto_test.py` | Kryptografie gegen `hashlib` und `cryptography` prüfen |
 | `tests/web_test.c` | Web-Adressen und Seitenaufbau prüfen (Text, Tabellen, Kästen neben dem Text), auch mit beschädigten Seiten |
 | `tests/block_test.c` | Schreibsperre für interne Platten prüfen |
+| `tests/heap_test.c` | Kernel-Heap prüfen: zufälliges Anfordern und Freigeben, Verkettungen, voller Speicher |
+| `tests/js_test.c`, `tests/js/*.js`, `tests/js_oracle.js` | JavaScript-Maschine prüfen (auch mit ständiger Speicherbereinigung und mit verstümmelten Skripten); die Erwartungen prüft Node.js gegen, wenn es installiert ist |
+| `tests/dom_test.c` | Seitenabbild prüfen: lesen, umbauen, Quelltext erzeugen, beschädigte Seiten |
+| `tests/script_test.c` | Skripte von Webseiten prüfen: Abbild, Ereignisse, Laden, Zeitgeber, Nachladen, Grenzen, beschädigte Seiten |
 | `tests/hid_test.c` | Auswertung der HID-Berichte prüfen (Mäuse, Tastaturen, Funkempfänger) |
 | `tests/image_test.c`, `tests/image_test.py` | Bild-Dekoder gegen eine Referenz prüfen, auch mit beschädigten Dateien |
 | `tests/css_test.c` | Stylesheets prüfen: Auswahlen (auch nach Attributen), Rangfolge, Farben, Variablen, `@media`, Breiten, beschädigte Eingaben |
@@ -860,7 +959,8 @@ gehalten. Naheliegende nächste Schritte:
 - User-Modus (Ring 3) mit Systemaufrufen und getrennten Adressräumen
 - Programme aus Dateien laden (ELF), mehrere Prozessorkerne
 - Symbole auf dem Desktop, ein Dateimanager, Fenster an den Kanten ziehen und minimieren
-- im Browser: Spalten und Raster (flex, grid), Abstände und Rahmen (auch Tabellenlinien), WebP-Bilder, Lesezeichen (JavaScript bleibt außer Reichweite)
+- im Browser: Spalten und Raster (flex, grid), Abstände und Rahmen (auch Tabellenlinien), WebP-Bilder, Lesezeichen
+- JavaScript: `async`/`await`, Generatoren und Module; Zeichenflächen (Canvas); Maße und Positionen der Elemente; eine Schutzwand zwischen Skripten und System (dafür braucht es den User-Modus)
 - echte Schrift auch in Terminal, Editor und Eingabefeldern; Hinting für schärfere kleine Schrift
 
 ## Die ältere 32-Bit-Version

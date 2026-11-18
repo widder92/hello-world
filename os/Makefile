@@ -52,6 +52,12 @@ CFLAGS  := --target=x86_64-unknown-windows -std=gnu11 -O2 -Wall -Wextra \
            -mgeneral-regs-only -mno-stack-arg-probe -MMD -MP -I$(BUILD)
 LDFLAGS := /subsystem:efi_application /entry:efi_main /nodefaultlib
 
+# Die JavaScript-Maschine rechnet mit Kommazahlen. Nur ihre Dateien (js_*.c
+# und die Anbindung dom_js.c) dürfen dafür die SSE-Register benutzen; der
+# Taskwechsel sichert sie. Der übrige Kernel bleibt bei ganzen Zahlen, damit
+# Interrupts diese Register nie anfassen.
+JS_CFLAGS := $(filter-out -mgeneral-regs-only,$(CFLAGS)) -msse2 -fno-math-errno
+
 C_SRCS   := $(wildcard kernel/*.c)
 ASM_SRCS := $(wildcard kernel/*.asm)
 OBJS     := $(patsubst kernel/%.c,$(BUILD)/%.obj,$(C_SRCS)) \
@@ -82,6 +88,16 @@ $(BUILD)/claude.obj: CFLAGS += -DCLAUDE_API_URL='"$(CLAUDE_API_URL)"'
 
 $(BUILD)/%.obj: kernel/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/js_%.obj: kernel/js_%.c | $(BUILD)
+	$(CC) $(JS_CFLAGS) -c $< -o $@
+
+# Der in JavaScript geschriebene Teil des Browsers wird fest eingebaut.
+$(BUILD)/domlib.inc: kernel/domlib.js tools/embed.py | $(BUILD)
+	$(PYTHON) tools/embed.py $< domlib_js $@
+
+$(BUILD)/dom_js.obj: kernel/dom_js.c $(BUILD)/domlib.inc | $(BUILD)
+	$(CC) $(JS_CFLAGS) -c $< -o $@
 
 $(BUILD)/%.asm.obj: kernel/%.asm | $(BUILD)
 	$(AS) -f win64 -i$(BUILD)/ $< -o $@
@@ -115,6 +131,10 @@ test: $(IMAGE)
 	QEMU="$(QEMU)" OVMF="$(OVMF)" ./tools/smoke-test.sh $(IMAGE)
 
 # Läuft auf dem Entwicklungsrechner; braucht die Python-Pakete "cryptography" und "Pillow".
+# Die JavaScript-Maschine: läuft auch auf dem Entwicklungsrechner
+JS_ENGINE := kernel/js_core.c kernel/js_num.c kernel/js_parse.c kernel/js_run.c \
+             kernel/js_lib.c kernel/js_lib2.c kernel/js_regex.c kernel/js_typed.c
+
 check: | $(BUILD)
 	$(PYTHON) tests/crypto_test.py
 	cc -O1 -g -fsanitize=address,undefined -Wall -Wno-builtin-declaration-mismatch \
@@ -123,6 +143,9 @@ check: | $(BUILD)
 	$(BUILD)/web_test
 	cc -O1 -g -fsanitize=address,undefined -Wall -o $(BUILD)/block_test tests/block_test.c
 	$(BUILD)/block_test
+	cc -O1 -g -fsanitize=address,undefined -Wall -Wextra -o $(BUILD)/heap_test \
+	    tests/heap_test.c kernel/heap.c
+	$(BUILD)/heap_test
 	cc -O1 -g -fsanitize=address,undefined -Wall -Wextra -o $(BUILD)/hid_test \
 	    tests/hid_test.c kernel/hid.c
 	$(BUILD)/hid_test
@@ -136,6 +159,21 @@ check: | $(BUILD)
 	cc -O1 -g -fsanitize=address,undefined -Wall -Wextra -o $(BUILD)/css_test \
 	    tests/css_test.c kernel/css.c
 	$(BUILD)/css_test
+	cc -O1 -g -fsanitize=address,undefined -fno-math-errno -Wall -Wextra \
+	    -o $(BUILD)/js_test tests/js_test.c $(JS_ENGINE)
+	$(BUILD)/js_test
+	$(BUILD)/js_test --fuzz 4000
+	@if command -v node >/dev/null 2>&1; then \
+	    TZ=UTC LANG=de_DE.UTF-8 LC_ALL=de_DE.UTF-8 node tests/js_oracle.js; \
+	else echo "(Node.js fehlt: die Erwartungen der Skript-Tests bleiben ungeprüft)"; fi
+	cc -O1 -g -fsanitize=address,undefined -Wall -Wextra -o $(BUILD)/dom_test \
+	    tests/dom_test.c kernel/dom.c kernel/html.c kernel/css.c kernel/url.c
+	$(BUILD)/dom_test
+	$(PYTHON) tools/embed.py kernel/domlib.js domlib_js $(BUILD)/domlib.inc
+	cc -O1 -g -fsanitize=address,undefined -fno-math-errno -Wall -Wextra -I$(BUILD) \
+	    -o $(BUILD)/script_test tests/script_test.c kernel/dom_js.c kernel/dom.c \
+	    kernel/html.c kernel/css.c kernel/url.c $(JS_ENGINE)
+	$(BUILD)/script_test
 
 clean:
 	rm -rf $(BUILD)

@@ -29,6 +29,7 @@ typedef struct {
     int16_t widget;                     /* Nummer des Formularfelds oder -1 */
     int16_t image;                      /* Bild an dieser Stelle (in Tabellen), oder -1 */
     uint16_t image_row;                 /* ... und welche seiner Zeilen */
+    uint32_t node;                      /* Nummer des Elements laut data-hx (für Skripte), oder 0 */
 } span_t;
 
 typedef struct {
@@ -43,6 +44,7 @@ typedef struct {
 
 typedef enum {
     W_TEXT, W_PASSWORD, W_CHECKBOX, W_RADIO, W_SELECT, W_TEXTAREA, W_SUBMIT, W_HIDDEN,
+    W_BUTTON,                           /* Knopf, der nur mit Skripten etwas tut */
 } widget_kind_t;
 
 typedef struct {
@@ -55,15 +57,18 @@ typedef struct {
     char *name;                         /* kann fehlen (NULL) */
     char *value;                        /* Inhalt bzw. der Wert, der gesendet wird */
     char *label;                        /* Beschriftung eines Knopfs */
+    char *placeholder;                  /* Hinweis, der im leeren Feld steht (oder NULL) */
     bool checked;
     int first_option, option_count, selected;
     int width;                          /* Breite auf dem Bildschirm, in Zeichen */
     int line, column;                   /* Platz auf der Seite; line -1: unsichtbar */
+    uint32_t node;                      /* Nummer des Elements laut data-hx, oder 0 */
 } widget_t;
 
 typedef struct {
     char *action;                       /* vollständige Adresse */
     bool post;
+    uint32_t node;                      /* Nummer des Elements laut data-hx, oder 0 */
 } form_t;
 
 typedef struct {
@@ -84,6 +89,7 @@ typedef struct {
     int column;                         /* Einrückung in Zeichen */
     int width, height;                  /* Größe auf dem Bildschirm; 0: unbekannt */
     bool ready;                         /* war beim Setzen der Seite geladen */
+    uint32_t node;                      /* Nummer des Elements laut data-hx, oder 0 */
 } page_image_t;
 
 /* Was der Seitenaufbau über ein Bild wissen kann */
@@ -127,6 +133,12 @@ typedef struct {
     bool failed;                        /* Speicher ging aus - die Seite ist unvollständig */
 } page_t;
 
+/*
+ * Löst Zeichenangaben wie &amp; und &#228; auf. out braucht len + 8 Bytes;
+ * liefert die Länge des Ergebnisses (mit abschließender Null).
+ */
+size_t html_decode_text(const char *text, size_t len, char *out, size_t size);
+
 /* Baut die Seite für eine Breite von columns Zeichen; NULL bei Speichermangel. */
 page_t *html_layout(const char *html, size_t len, const char *base_url, int columns);
 /*
@@ -149,6 +161,11 @@ typedef struct {
     /* Die üblichen Farben des Browsers: nötig, um unlesbare Kombinationen zu erkennen */
     uint32_t text_color, link_color, page_color;
     const struct css_sheet *css;        /* Stylesheets der Seite oder NULL */
+    /*
+     * Die Skripte der Seite laufen: Dann erscheint auch, was nur mit ihnen
+     * etwas tut - Knöpfe ohne Formular, Ankreuzfelder ohne Namen.
+     */
+    bool scripts;
 } html_text_t;
 
 /*
@@ -159,6 +176,13 @@ typedef struct {
 typedef void (*html_style_found_t)(void *ctx, bool linked, const char *text, size_t len);
 void html_find_styles(const char *html, size_t len, const char *base_url,
                       html_style_found_t found, void *ctx);
+
+/*
+ * Klassen, an denen sich erkennen lässt, dass ein Element verborgen sein soll
+ * ("hidden", "sr-only", Aufklappmenüs ...) - damit die Skripte einer Seite
+ * dasselbe für unsichtbar halten wie die Anzeige. scripts: Die Skripte laufen.
+ */
+bool html_class_hides(const char *classes, size_t len, bool scripts);
 
 /* Wie html_layout(), aber mit Bildern als Blöcken und/oder in echter Schrift. */
 page_t *html_layout_rich(const char *html, size_t len, const char *base_url, int columns,

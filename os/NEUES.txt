@@ -1,3 +1,11 @@
+HelloOS 0.19
+- Browser: JavaScript. HelloOS hat jetzt eine eigene JavaScript-Maschine; der Knopf rechts oben im Browser schaltet sie ein und aus (ausgeliefert: aus). Damit funktionieren Seiten mit einfachen und älteren Skripten: Menüs zum Aufklappen, Formularprüfung, Zähler und Uhren, Knöpfe ohne Formular, jQuery-Seiten, Nachladen von Daten (XMLHttpRequest, fetch) - und in der WordPress-Verwaltung zum Beispiel "Quick Edit".
+- Noch nicht möglich: große Web-Anwendungen (Google Maps, YouTube, der Block-Editor von WordPress), die neuesten Sprachmittel (async/await, Module), Zeichenflächen, Video und Ton.
+- Sicherheit: Skripte laufen ohne Schutzwand zum System. Die Maschine prüft jeden Zugriff und begrenzt Zeit und Speicher - schalte JavaScript aber nur für Seiten ein, denen du traust.
+- Browser: HTML5-Elemente - aufklappbare Abschnitte, Fortschrittsbalken, Hinweistexte in leeren Feldern, markierter Text; für Video, Ton und eingebettete Seiten erscheint ein Hinweis mit Link.
+- Das System verwaltet seinen Arbeitsspeicher schneller: Anfordern und Freigeben dauern nicht mehr länger, je mehr belegt ist.
+- Kleinigkeiten: Links auf eine Stelle derselben Seite springen dorthin, statt die Seite neu zu laden.
+
 HelloOS 0.18
 - Browser: Bilder und Kästen stehen jetzt neben dem Text, wenn die Seite das so vorsieht. Bei Wikipedia sind der Infokasten und die Fotos rechts neben dem Artikel, die WordPress-Verwaltung zeigt ihr Menü links und den Inhalt rechts daneben.
 - Der Browser versteht dafür mehr von der Gestaltung der Seiten: Regeln nach Attributen, Breitenangaben, und was nur für Vorleseprogramme gedacht ist, bleibt weg.

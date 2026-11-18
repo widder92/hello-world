@@ -1,6 +1,7 @@
 #include "memory.h"
 #include "bootinfo.h"
 #include "cpu.h"
+#include "heap.h"
 #include "interrupts.h"
 #include "string.h"
 
@@ -8,19 +9,9 @@
 #define GIB         (1024 * MIB)
 #define PAGE_SIZE   4096ull
 #define HEAP_MAX    GIB
-#define BLOCK_MAGIC 0x48454C4Fu         /* "HELO" */
 #define ALIGNMENT   16ull
 
-/* Jeder Heap-Block beginnt mit diesem Kopf; die Blöcke bilden eine Liste. */
-typedef struct block {
-    uint64_t size;                      /* Nutzgröße ohne Kopf */
-    struct block *next;
-    uint32_t free;
-    uint32_t magic;
-    uint64_t pad;                       /* Kopf auf 32 Bytes auffüllen */
-} block_t;
-
-static block_t *heap;
+/* Der Heap selbst steht in heap.c; hier wird er eingerichtet und gesperrt. */
 static uint64_t heap_start, heap_size;
 static uint64_t page_bottom, page_top;  /* Vorrat für alloc_pages() */
 static uint64_t total_bytes;
@@ -112,41 +103,15 @@ void memory_init(void)
     heap_start = (best_base + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
     heap_size = (best_limit - heap_start) & ~(ALIGNMENT - 1);
 
-    heap = (block_t *)heap_start;
-    heap->size = heap_size - sizeof(block_t);
-    heap->free = 1;
-    heap->next = NULL;
-    heap->magic = BLOCK_MAGIC;
+    heap_init((void *)heap_start, heap_size);
 }
 
 void *kmalloc(size_t size)
 {
     if (size == 0 || size > heap_size)
         return NULL;
-    size = (size + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
-
-    void *result = NULL;
     uint64_t flags = irq_save();
-
-    /* First Fit: den ersten freien Block nehmen, der groß genug ist */
-    for (block_t *b = heap; b; b = b->next) {
-        if (!b->free || b->size < size)
-            continue;
-        /* Rest abspalten, wenn er für einen eigenen Block reicht */
-        if (b->size >= size + sizeof(block_t) + ALIGNMENT) {
-            block_t *rest = (block_t *)((uint8_t *)(b + 1) + size);
-            rest->size = b->size - size - sizeof(block_t);
-            rest->free = 1;
-            rest->next = b->next;
-            rest->magic = BLOCK_MAGIC;
-            b->size = size;
-            b->next = rest;
-        }
-        b->free = 0;
-        result = b + 1;
-        break;
-    }
-
+    void *result = heap_alloc(size);
     irq_restore(flags);
     return result;
 }
@@ -163,23 +128,8 @@ void kfree(void *ptr)
 {
     if (!ptr)
         return;
-    block_t *block = (block_t *)ptr - 1;
-    if (block->magic != BLOCK_MAGIC || block->free)
-        return;                         /* ungültiger Zeiger oder doppeltes Free */
-
     uint64_t flags = irq_save();
-    block->free = 1;
-
-    /* Benachbarte freie Blöcke wieder verschmelzen */
-    for (block_t *b = heap; b; ) {
-        if (b->free && b->next && b->next->free) {
-            b->size += sizeof(block_t) + b->next->size;
-            b->next->magic = 0;
-            b->next = b->next->next;
-        } else {
-            b = b->next;
-        }
-    }
+    heap_free(ptr);
     irq_restore(flags);
 }
 
@@ -260,13 +210,6 @@ void memory_stats(memory_stats_t *out)
     out->total_bytes = total_bytes;
     out->heap_start = heap_start;
     out->heap_size = heap_size;
-    out->heap_used = 0;
-    out->heap_blocks = 0;
-    for (block_t *b = heap; b; b = b->next) {
-        out->heap_blocks++;
-        out->heap_used += sizeof(block_t);
-        if (!b->free)
-            out->heap_used += b->size;
-    }
+    heap_usage(&out->heap_used, &out->heap_blocks);
     irq_restore(flags);
 }

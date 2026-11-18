@@ -47,10 +47,14 @@ static const struct {
     { "fieldset", T_BLOCK }, { "figure", T_BLOCK }, { "figcaption", T_BLOCK },
     { "details", T_BLOCK }, { "summary", T_BLOCK }, { "legend", T_BLOCK },
     { "center", T_BLOCK }, { "caption", T_BLOCK }, { "body", T_BLOCK },
-    /* Inhalt, mit dem ein Browser ohne Bilder und Skripte nichts anfangen kann */
+    /*
+     * Inhalt, mit dem dieser Browser nichts anfangen kann. Für Video, Ton und
+     * eingebettete Seiten erscheint stattdessen ein Hinweis mit Link (siehe
+     * media_note); <canvas> und <object> zeigen ihren Ersatzinhalt.
+     */
     { "svg", T_SKIP }, { "template", T_SKIP }, { "iframe", T_SKIP },
-    { "canvas", T_SKIP }, { "video", T_SKIP }, { "audio", T_SKIP },
-    { "object", T_SKIP }, { "datalist", T_SKIP }, { "map", T_SKIP },
+    { "video", T_SKIP }, { "audio", T_SKIP },
+    { "datalist", T_SKIP }, { "map", T_SKIP },
     /* Elemente ohne Inhalt und ohne Ende-Marke */
     { "meta", T_VOID }, { "link", T_VOID }, { "area", T_VOID }, { "base", T_VOID },
     { "col", T_VOID }, { "embed", T_VOID }, { "source", T_VOID },
@@ -66,7 +70,9 @@ typedef struct {
 enum { U_HIDDEN = 1, U_BOLD = 2, U_LINK = 4, U_PRE = 8, U_HEADING = 16, U_LIST = 32,
        U_QUOTE = 64, U_CAPTURE = 128, U_ITALIC = 256, U_MONO = 512,
        U_BREAK = 1024,                  /* laut Gestaltung ein eigener Block: danach neue Zeile */
-       U_INLINE = 2048 };               /* laut Gestaltung im Textfluss: keine neue Zeile */
+       U_INLINE = 2048,                 /* laut Gestaltung im Textfluss: keine neue Zeile */
+       U_DETAILS = 4096,                /* zugeklapptes <details>: nur seine Überschrift ist zu sehen */
+       U_SHOWN = 8192 };                /* <summary> darin: hebt das Verbergen für sich auf */
 
 /* Was die Gestaltung der Seite für das laufende Element festlegt (wird vererbt) */
 typedef struct {
@@ -84,6 +90,7 @@ typedef struct {
     uint16_t undo;
     css_node_t node;                    /* woran Stylesheet-Regeln das Element erkennen */
     style_t saved;                      /* was vor dem Element galt */
+    uint32_t outer_id;                  /* Nummer des umgebenden Elements (data-hx) */
 } element_t;
 
 /* Ein Kasten neben dem Text: fertig gesetzt, wartet auf die Zeilen, neben denen er steht */
@@ -123,6 +130,8 @@ typedef struct {
     bool no_float;                      /* ... passt aber nicht: wie gewöhnlich setzen */
     int widest_image;                   /* beim Ausmessen: breitestes Bild */
 
+    uint32_t node_id;                   /* Nummer des laufenden Elements laut data-hx, oder 0 */
+
     element_t stack[STACK_MAX];
     int depth;
     int hidden, bold, pre, heading, quote, italic, mono;
@@ -143,6 +152,8 @@ typedef struct {
     size_t word_len;
 
     /* Text, der nicht auf die Seite kommt, sondern zu einem Knopf oder Eintrag wird */
+    bool media_wait;                    /* <video>/<audio> ohne Adresse: Die erste <source> liefert sie */
+    bool media_sound;
     bool capturing;
     char capture[CAPTURE_MAX];
     size_t capture_len;
@@ -205,6 +216,7 @@ void page_free(page_t *page)
         kfree(page->widgets[i].name);
         kfree(page->widgets[i].value);
         kfree(page->widgets[i].label);
+        kfree(page->widgets[i].placeholder);
     }
     for (int i = 0; i < page->option_count; i++) {
         kfree(page->options[i].label);
@@ -423,12 +435,11 @@ static bool has_token(const attr_t *a, const char *word)
     return false;
 }
 
-/* Soll das Element unsichtbar sein? Ohne Stylesheets entscheiden ein paar Anzeichen. */
-static bool wants_hidden(const attr_t *attrs, int count)
+/* Klassen, an denen sich auch ohne Stylesheets erkennen lässt, dass ein Element verborgen sein soll */
+bool html_class_hides(const char *classes, size_t len, bool scripts)
 {
-    static const char *const classes[] = {
-        "hidden", "screen-reader-text", "hide-if-no-js", "sr-only", "visually-hidden",
-        "d-none",
+    static const char *const hiding[] = {
+        "hidden", "screen-reader-text", "sr-only", "visually-hidden", "d-none",
         /*
          * Aufklappmenüs: Ihr Inhalt ist in einem normalen Browser verborgen,
          * bis man sie anklickt. Ohne Stylesheets stünden sie in voller Länge
@@ -437,17 +448,29 @@ static bool wants_hidden(const attr_t *attrs, int count)
         "dropdown-menu", "dropdown-content", "vector-dropdown-content",
         "vector-sticky-header", "vector-pinnable-header", NULL,
     };
+    attr_t class = { "class", classes ? classes : "", 5, classes ? len : 0 };
+    /* Sprungmarken wie "Zum Inhalt springen" bleiben - sie sind hier nützlich. */
+    if (has_token(&class, "screen-reader-shortcut") || has_token(&class, "skip-link"))
+        return false;
+    for (int i = 0; hiding[i]; i++) {
+        if (has_token(&class, hiding[i]))
+            return true;
+    }
+    /* "nur zeigen, wenn Skripte laufen": gilt eben dann nicht */
+    return !scripts && has_token(&class, "hide-if-no-js");
+}
+
+/* Soll das Element unsichtbar sein? Ohne Stylesheets entscheiden ein paar Anzeichen. */
+static bool wants_hidden(const attr_t *attrs, int count, bool scripts)
+{
     if (find_attr(attrs, count, "hidden") || attr_is(attrs, count, "aria-hidden", "true"))
         return true;
 
     const attr_t *class = find_attr(attrs, count, "class");
-    /* Sprungmarken wie "Zum Inhalt springen" bleiben - sie sind hier nützlich. */
+    if (class && html_class_hides(class->value, class->value_len, scripts))
+        return true;
     if (has_token(class, "screen-reader-shortcut") || has_token(class, "skip-link"))
         return false;
-    for (int i = 0; classes[i]; i++) {
-        if (has_token(class, classes[i]))
-            return true;
-    }
 
     const attr_t *style = find_attr(attrs, count, "style");
     if (style) {                        /* "display: none" ohne Leerraum suchen */
@@ -464,6 +487,11 @@ static bool wants_hidden(const attr_t *attrs, int count)
         }
     }
     return false;
+}
+
+size_t html_decode_text(const char *text, size_t len, char *out, size_t size)
+{
+    return decode_text(text, len, out, size);
 }
 
 /* --- Zeilen bauen ---------------------------------------------------------------------------- */
@@ -904,6 +932,7 @@ static void place(parser_t *ps, const char *bytes, size_t n, int width, int widg
         span->widget = (int16_t)widget;
         span->image = -1;
         span->image_row = 0;
+        span->node = ps->node_id;
         memcpy(page->pool + page->pool_len, bytes, n);
         page->pool_len += n;
         line->count++;
@@ -1047,6 +1076,12 @@ static void place_note(parser_t *ps, const char *text)
 
 /* --- Formulare -------------------------------------------------------------------------------- */
 
+/* Laufen die Skripte der Seite mit? */
+static bool scripts_on(const parser_t *ps)
+{
+    return ps->text && ps->text->scripts;
+}
+
 static int add_widget(parser_t *ps, widget_kind_t kind, const attr_t *attrs, int count)
 {
     page_t *page = ps->page;
@@ -1056,9 +1091,13 @@ static int add_widget(parser_t *ps, widget_kind_t kind, const attr_t *attrs, int
     widget_t *w = &page->widgets[page->widget_count];
     memset(w, 0, sizeof(*w));
     w->kind = kind;
+    w->node = ps->node_id;
     w->form = ps->form;
     w->name = attr_text(attrs, count, "name");
     w->value = attr_text(attrs, count, "value");
+    w->placeholder = attr_text(attrs, count, "placeholder");
+    if (w->placeholder)
+        claude_plain_text(w->placeholder);
     w->checked = find_attr(attrs, count, "checked") != NULL;
     w->line = -1;
     /* Abgeschaltete Felder werden nicht gesendet - am einfachsten: ohne Namen */
@@ -1100,8 +1139,13 @@ static void start_input(parser_t *ps, const attr_t *attrs, int count)
     if (same_word(t, n, "hidden")) {
         add_widget(ps, W_HIDDEN, attrs, count);
     } else if ((same_word(t, n, "checkbox") || same_word(t, n, "radio")) && ps->form < 0 &&
-               !find_attr(attrs, count, "name")) {
-        /* Ohne Namen und Formular: ein Schalter für die Gestaltung, kein Eingabefeld */
+               !find_attr(attrs, count, "name") &&
+               (!scripts_on(ps) || find_attr(attrs, count, "role"))) {
+        /*
+         * Ohne Namen und Formular: ein Schalter für die Gestaltung, kein
+         * Eingabefeld. Mit Skripten kann es doch eines sein - außer es gibt
+         * sich selbst als etwas anderes aus (role="button": Aufklappmenüs).
+         */
     } else if (same_word(t, n, "checkbox") || same_word(t, n, "radio")) {
         index = add_widget(ps, lower(t[0]) == 'c' ? W_CHECKBOX : W_RADIO, attrs, count);
         if (index >= 0 && !ps->page->widgets[index].value)
@@ -1122,6 +1166,18 @@ static void start_input(parser_t *ps, const attr_t *attrs, int count)
             place_note(ps, "[Datei auswählen: hier nicht möglich]");
     } else if (same_word(t, n, "button") || same_word(t, n, "reset")) {
         /* Knöpfe, die nur mit Skripten etwas tun */
+        if (!scripts_on(ps))
+            return;
+        index = add_widget(ps, W_BUTTON, attrs, count);
+        if (index < 0)
+            return;
+        widget_t *w = &ps->page->widgets[index];
+        const char *label = w->value && w->value[0] ? w->value
+                          : same_word(t, n, "reset") ? "Zurücksetzen" : "Knopf";
+        w->label = duplicate(label, strlen(label));
+        if (w->label)
+            claude_plain_text(w->label);
+        show_widget(ps, index, count_chars(label, strlen(label)) + 4);
     } else {
         index = add_widget(ps, same_word(t, n, "password") ? W_PASSWORD : W_TEXT, attrs,
                            count);
@@ -1185,21 +1241,117 @@ static void finish_select(parser_t *ps)
 
 static void finish_button(parser_t *ps)
 {
-    if (ps->button < 0)
+    if (ps->button < 0) {
+        flush_word(ps);                 /* ein weggelassener Knopf: Sein letztes Wort gehört noch dazu */
         return;
+    }
     widget_t *w = &ps->page->widgets[ps->button];
     while (ps->capture_len > 0 && ps->capture[ps->capture_len - 1] == ' ')
         ps->capture_len--;
     ps->capture[ps->capture_len] = '\0';
     claude_plain_text(ps->capture);
     const char *label = ps->capture_len ? ps->capture
-                      : w->value && w->value[0] ? w->value : "Senden";
+                      : w->value && w->value[0] ? w->value
+                      : w->kind == W_BUTTON ? "Knopf" : "Senden";
     w->label = duplicate(label, strlen(label));
     int index = ps->button;
     ps->button = -1;
     ps->capturing = false;
     ps->capture_len = 0;
     show_widget(ps, index, count_chars(label, strlen(label)) + 4);
+}
+
+/* --- HTML5: Medien, Balken ---------------------------------------------------------------------- */
+
+/*
+ * Setzt einen Hinweis für etwas, das sich hier nicht zeigen lässt - als Link
+ * auf die Datei oder Seite, wenn es eine Adresse gibt. Liefert false, wenn
+ * die Adresse fehlt oder nicht taugt (dann wurde nichts gesetzt).
+ */
+static bool media_note(parser_t *ps, const char *what, const char *address, const char *title)
+{
+    page_t *page = ps->page;
+    char *full = kmalloc(URL_SIZE);
+    char text[160];
+    bool ok = full && address && address[0] && url_resolve(ps->base, address, full, URL_SIZE) &&
+              (memcmp(full, "http://", 7) == 0 || memcmp(full, "https://", 8) == 0);
+    if (ok && page->link_count < 30000 && ENSURE(page, page->links, page->link_count, page->link_cap)) {
+        /* benannt nach dem Titel - oder dem letzten Stück der Adresse */
+        const char *name = full, *stop = full;
+        while (*stop && *stop != '?' && *stop != '#')
+            stop++;
+        for (const char *p = full; p < stop; p++) {
+            if (*p == '/' && p + 1 < stop)
+                name = p + 1;
+        }
+        int n = (int)(stop - name);
+        if (title && title[0])
+            ksnprintf(text, sizeof(text), "[%s: %.60s]", what, title);
+        else
+            ksnprintf(text, sizeof(text), "[%s: %.*s]", what, n > 60 ? 60 : n, name);
+        char *target = duplicate(full, strlen(full));
+        if (target) {
+            int link = ps->link;
+            flush_word(ps);
+            page->links[page->link_count] = target;
+            ps->link = page->link_count++;
+            text_run(ps, text, strlen(text), false);
+            flush_word(ps);
+            ps->link = link;
+            ps->space_pending = true;
+        } else {
+            ok = false;
+        }
+    } else {
+        ok = false;
+    }
+    kfree(full);
+    return ok;
+}
+
+/* Liest eine Zahl wie "0.75" oder "30" in Tausendsteln; fallback, wenn sie fehlt oder nicht taugt. */
+static long attr_milli(const attr_t *attrs, int count, const char *name, long fallback)
+{
+    const attr_t *a = find_attr(attrs, count, name);
+    long whole = 0, part = 0, scale = 100;
+    size_t i = 0;
+    if (!a || a->value_len == 0 || a->value_len > 12)
+        return fallback;
+    for (; i < a->value_len && a->value[i] >= '0' && a->value[i] <= '9'; i++)
+        whole = whole * 10 + (a->value[i] - '0');
+    if (i < a->value_len && a->value[i] == '.') {
+        for (i++; i < a->value_len && a->value[i] >= '0' && a->value[i] <= '9'; i++) {
+            part += (a->value[i] - '0') * scale;
+            scale /= 10;
+        }
+    }
+    if (i < a->value_len || whole > 1000000)
+        return fallback;
+    return whole * 1000 + part;
+}
+
+/* <progress> und <meter>: ein Balken aus zehn Kästchen und der Anteil in Prozent */
+static void place_bar(parser_t *ps, const attr_t *attrs, int count, bool meter)
+{
+    long low = meter ? attr_milli(attrs, count, "min", 0) : 0;
+    long high = attr_milli(attrs, count, "max", 1000);
+    long value = attr_milli(attrs, count, "value", -1);
+    char text[64];
+    size_t n = 0;
+    if (value < 0 || high <= low) {
+        if (!meter)
+            place_note(ps, "[läuft ...]");
+        return;
+    }
+    long percent = (value - low) * 100 / (high - low);
+    percent = percent < 0 ? 0 : percent > 100 ? 100 : percent;
+    for (int i = 0; i < 10; i++) {
+        const char *cell = i * 10 + 5 <= percent ? "\xE2\x96\x88" : "\xE2\x96\x91";
+        memcpy(text + n, cell, 3);
+        n += 3;
+    }
+    n += (size_t)ksnprintf(text + n, sizeof(text) - n, " %d %%", (int)percent);
+    text_run(ps, text, n, false);
 }
 
 /* --- Elemente ---------------------------------------------------------------------------------- */
@@ -1217,6 +1369,11 @@ static void pop(parser_t *ps)
     }
 
     ps->cur = e.saved;
+    ps->node_id = e.outer_id;
+    if (e.undo & U_SHOWN)
+        ps->hidden++;                   /* <summary> eines zugeklappten <details> ist zu Ende */
+    if (e.tag == T_SKIP)
+        ps->media_wait = false;
     if (e.undo & U_HIDDEN)
         ps->hidden--;
     if (e.undo & U_BOLD)
@@ -1424,6 +1581,7 @@ static bool place_picture(parser_t *ps, const attr_t *attrs, int count)
         }
     }
     image->link = ps->link;
+    image->node = ps->node_id;
     image->line = page->line_count - 1;
     image->rows = rows;
     image->column = column;
@@ -1511,6 +1669,8 @@ static void apply_style(parser_t *ps, tag_t tag, const css_style_t *cs)
         cur->align = tag == T_TH ? CSS_CENTER : CSS_LEFT;   /* Kopfzellen stehen mittig */
     if (tag == T_ITALIC)
         cur->italic = -1;
+    if (tag == T_UNKNOWN && same_word(ps->name, ps->name_len, "mark"))
+        cur->highlight = HTML_COLOR_SET | 0xFFF3A0;     /* hervorgehoben wie mit dem Textmarker */
     if (tag == T_A) {
         cur->color = 0;
         cur->underline = -1;
@@ -1566,15 +1726,31 @@ static void apply_style(parser_t *ps, tag_t tag, const css_style_t *cs)
 }
 
 static void element_start(parser_t *ps, tag_t tag, const attr_t *attrs, int count,
-                          bool css_hidden, int display);
+                          bool css_hidden, bool css_shown, int display);
 
 static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
 {
     close_implied(ps, tag);
 
+    /* Seiten mit Skripten: Jedes Element trägt seine Nummer; Text und Felder darin erben sie. */
+    uint32_t outer_id = ps->node_id;
+    const attr_t *hx = find_attr(attrs, count, "data-hx");
+    if (hx) {
+        uint32_t id = 0;
+        for (size_t i = 0; i < hx->value_len && i < 10 && hx->value[i] >= '0' && hx->value[i] <= '9'; i++)
+            id = id * 10 + (uint32_t)(hx->value[i] - '0');
+        /*
+         * Ein angefangenes Wort wird hier nicht abgeschlossen: Sonst könnte
+         * die Zeile mitten in "Nr.&nbsp;4" oder "[12]" umbrechen. Es zählt
+         * dann ganz zu dem Element, in dem es endet.
+         */
+        if (id)
+            ps->node_id = id;
+    }
+
     style_t saved = ps->cur;
     css_node_t node;
-    bool css_hidden = false;
+    bool css_hidden = false, css_shown = false;
     int display = 0;
     memset(&node, 0, sizeof(node));
     if (ps->text) {
@@ -1612,6 +1788,12 @@ static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
         /* Auf nichts beschnitten oder weit aus dem Bild geschoben: nicht zu sehen */
         if (((cs.has & CSS_CLIP) && cs.clipped) || cs.off_top)
             css_hidden = true;
+        /*
+         * Mit Skripten: Was die Gestaltung ausdrücklich zeigt, ist zu sehen -
+         * auch wenn sein Name nach "verborgen" klingt (so blenden Skripte
+         * Menüs ein: style.display = "block").
+         */
+        css_shown = ps->text->scripts && !css_hidden && (cs.has & CSS_DISPLAY);
 
         /*
          * Gehört das Element selbst neben den Text (float, oder align= bei
@@ -1629,6 +1811,7 @@ static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
                          tag == T_A || tag == T_UL || tag == T_OL || tag == T_P;
         if (side && can_float && !ps->no_float && !css_hidden && ps->hidden == 0 &&
             ps->in_float < FLOAT_DEPTH && ps->table_depth == 0) {
+            ps->node_id = outer_id;     /* der Kasten wird gleich für sich gelesen */
             ps->pending_float = side;
             ps->pending_clear = (cs.has & CSS_CLEAR) ? cs.clear : 0;
             ps->pending_width = (cs.has & CSS_WIDTH) ? cs.width_px : 0;
@@ -1646,26 +1829,78 @@ static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
     }
 
     int depth = ps->depth;
-    element_start(ps, tag, attrs, count, css_hidden, display);
+    element_start(ps, tag, attrs, count, css_hidden, css_shown, display);
     if (ps->depth > depth) {
         ps->stack[ps->depth - 1].node = node;
         ps->stack[ps->depth - 1].saved = saved;
+        ps->stack[ps->depth - 1].outer_id = outer_id;
     } else {
         ps->cur = saved;                /* Element ohne Inhalt: gilt nicht weiter */
+        ps->node_id = outer_id;
     }
     sync_line(ps);
 }
 
 static void element_start(parser_t *ps, tag_t tag, const attr_t *attrs, int count,
-                          bool css_hidden, int display)
+                          bool css_hidden, bool css_shown, int display)
 {
     page_t *page = ps->page;
     uint16_t undo = 0;
+    bool hide = tag == T_SKIP || css_hidden || (!css_shown && wants_hidden(attrs, count, scripts_on(ps)));
+    bool is_details = tag == T_BLOCK && same_word(ps->name, ps->name_len, "details");
+    bool is_summary = tag == T_BLOCK && same_word(ps->name, ps->name_len, "summary");
+    bool is_bar = tag == T_UNKNOWN && (same_word(ps->name, ps->name_len, "progress") ||
+                                       same_word(ps->name, ps->name_len, "meter"));
 
-    if (tag == T_SKIP || css_hidden || wants_hidden(attrs, count)) {
+    /* Video, Ton, eingebettete Seite: ein Hinweis mit Link statt des Inhalts */
+    if (tag == T_SKIP && ps->hidden == 0 && !css_hidden && !wants_hidden(attrs, count, scripts_on(ps))) {
+        bool video = same_word(ps->name, ps->name_len, "video");
+        bool sound = same_word(ps->name, ps->name_len, "audio");
+        if (video || sound) {
+            char *src = attr_text(attrs, count, "src");
+            if (!media_note(ps, sound ? "Tonaufnahme" : "Video", src, NULL)) {
+                ps->media_wait = true;  /* die Adresse steht in einer <source> darin */
+                ps->media_sound = sound;
+            }
+            kfree(src);
+        } else if (same_word(ps->name, ps->name_len, "iframe")) {
+            char *src = attr_text(attrs, count, "src"), *title = attr_text(attrs, count, "title");
+            if (title)
+                claude_plain_text(title);
+            media_note(ps, "Eingebettete Seite", src, title && title[0] ? title : NULL);
+            kfree(src);
+            kfree(title);
+        }
+    }
+    /* <dialog> ist erst zu sehen, wenn es geöffnet wurde */
+    if (tag == T_UNKNOWN && same_word(ps->name, ps->name_len, "dialog") &&
+        !find_attr(attrs, count, "open"))
+        hide = true;
+    if (is_bar && ps->hidden == 0 && !hide) {
+        place_bar(ps, attrs, count, lower(ps->name[0]) == 'm');
+        hide = true;                    /* der Ersatztext darin entfällt */
+    }
+
+    if (hide) {
         flush_word(ps);
         ps->hidden++;
         undo |= U_HIDDEN;
+    }
+    /*
+     * <details>: Zugeklappt ist nur seine Überschrift (<summary>) zu sehen.
+     * Aufklappen kann es ein Klick - das geht nur, wenn die Skripte der Seite
+     * laufen; sonst steht alles offen da.
+     */
+    bool closed = false;
+    if (is_details && !hide && scripts_on(ps) && !find_attr(attrs, count, "open")) {
+        ps->hidden++;
+        undo |= U_HIDDEN | U_DETAILS;
+    } else if (is_summary && ps->depth > 0 && (ps->stack[ps->depth - 1].undo & U_DETAILS)) {
+        closed = true;
+        if (!hide) {
+            ps->hidden--;
+            undo |= U_SHOWN;
+        }
     }
     /*
      * Laut Gestaltung ein eigener Block, obwohl das Element sonst im Textfluss
@@ -1729,6 +1964,16 @@ static void element_start(parser_t *ps, tag_t tag, const attr_t *attrs, int coun
             ps->hidden--;
         return;
     case T_VOID:
+        /* <source> in <video>/<audio>: Die erste nennt die Datei für den Hinweis */
+        if (ps->media_wait && ps->hidden == 1 && !(undo & U_HIDDEN) &&
+            same_word(ps->name, ps->name_len, "source")) {
+            char *src = attr_text(attrs, count, "src");
+            ps->hidden = 0;
+            if (media_note(ps, ps->media_sound ? "Tonaufnahme" : "Video", src, NULL))
+                ps->media_wait = false;
+            ps->hidden = 1;
+            kfree(src);
+        }
         if (undo & U_HIDDEN)
             ps->hidden--;
         return;
@@ -1755,6 +2000,11 @@ static void element_start(parser_t *ps, tag_t tag, const attr_t *attrs, int coun
             undo |= U_INLINE;           /* etwa Menüpunkte nebeneinander */
         else
             new_line(ps, false);
+        if (is_summary && ps->hidden == 0) {
+            /* ein Dreieck zeigt, ob darunter etwas aufgeklappt ist */
+            const char *mark = closed ? "\xE2\x96\xB8 " : "\xE2\x96\xBE ";
+            text_run(ps, mark, 4, false);
+        }
         break;
     case T_UL: case T_OL:
         if (ps->list_depth == 0)
@@ -1830,8 +2080,8 @@ static void element_start(parser_t *ps, tag_t tag, const attr_t *attrs, int coun
         if (href && ps->link < 0 && page->link_count < 30000 &&
             ENSURE(page, page->links, page->link_count, page->link_cap)) {
             char *target = NULL;
-            if (href[0] == '#' && href[1]) {
-                target = duplicate(href, strlen(href));
+            if ((href[0] == '#' && href[1]) || same_word(href, 11, "javascript:")) {
+                target = duplicate(href, strlen(href));     /* gilt nur in dieser Seite */
             } else {
                 char *full = kmalloc(URL_SIZE);
                 if (full && url_resolve(ps->base, href, full, URL_SIZE))
@@ -1859,6 +2109,7 @@ static void element_start(parser_t *ps, tag_t tag, const attr_t *attrs, int coun
         if (full && url_resolve(ps->base, action ? action : "", full, URL_SIZE))
             form->action = duplicate(full, strlen(full));
         form->post = attr_is(attrs, count, "method", "post");
+        form->node = ps->node_id;
         kfree(full);
         kfree(action);
         ps->form = page->form_count++;
@@ -1887,11 +2138,18 @@ static void element_start(parser_t *ps, tag_t tag, const attr_t *attrs, int coun
          * Knöpfe ohne type senden das Formular ab; type="button" braucht
          * Skripte - ebenso jeder Knopf, der zu keinem Formular gehört.
          */
-        if (!attr_is(attrs, count, "type", "button") &&
-            !attr_is(attrs, count, "type", "reset") &&
-            (ps->form >= 0 || find_attr(attrs, count, "form"))) {
-            ps->button = add_widget(ps, W_SUBMIT, attrs, count);
+        bool sends = !attr_is(attrs, count, "type", "button") &&
+                     !attr_is(attrs, count, "type", "reset") &&
+                     (ps->form >= 0 || find_attr(attrs, count, "form"));
+        if (sends || scripts_on(ps)) {
+            ps->button = add_widget(ps, sends ? W_SUBMIT : W_BUTTON, attrs, count);
             if (ps->button >= 0) {
+                widget_t *w = &page->widgets[ps->button];
+                /* Knöpfe nur mit einem Bildchen: Dann steht ihr Zweck oft hier */
+                if (!sends && !w->value)
+                    w->value = attr_text(attrs, count, "aria-label");
+                if (!sends && !w->value)
+                    w->value = attr_text(attrs, count, "title");
                 ps->capturing = true;
                 ps->capture_len = 0;
             }
@@ -1907,6 +2165,7 @@ static void element_start(parser_t *ps, tag_t tag, const attr_t *attrs, int coun
     if (ps->depth < STACK_MAX) {
         ps->stack[ps->depth].tag = (uint8_t)tag;
         ps->stack[ps->depth].undo = undo;
+        ps->stack[ps->depth].outer_id = ps->node_id;
         ps->depth++;
     } else if (undo & U_HIDDEN) {
         ps->hidden--;                   /* zu tief verschachtelt: nichts merken */
