@@ -692,10 +692,15 @@ static bool header_forbidden(const char *name, size_t len)
         if (k == len && !names[i][k])
             return true;
     }
-    return (len >= 6 && (name[0] | 32) == 'p' && (name[1] | 32) == 'r' && (name[2] | 32) == 'o' &&
-            (name[3] | 32) == 'x' && (name[4] | 32) == 'y' && name[5] == '-') ||
-           (len >= 4 && (name[0] | 32) == 's' && (name[1] | 32) == 'e' && (name[2] | 32) == 'c' &&
-            name[3] == '-');
+    static const char *const prefixes[] = { "proxy-", "sec-", "access-control-", NULL };
+    for (int i = 0; prefixes[i]; i++) {
+        size_t k = 0;
+        while (k < len && prefixes[i][k] && (name[k] | 32) == prefixes[i][k])
+            k++;
+        if (!prefixes[i][k])
+            return true;
+    }
+    return false;
 }
 
 /*
@@ -735,55 +740,504 @@ static char *request_headers(const char *text, size_t len)
     return out;
 }
 
+/* --- Daten nachladen: was ein Skript von welchem Server holen und sehen darf ------------------------ */
+
+static char fold(char c)
+{
+    return c >= 'A' && c <= 'Z' ? (char)(c + 32) : c;
+}
+
+static bool same_text(const char *a, size_t an, const char *b)
+{
+    size_t bn = strlen(b);
+    if (an != bn)
+        return false;
+    for (size_t i = 0; i < an; i++) {
+        if (fold(a[i]) != fold(b[i]))
+            return false;
+    }
+    return true;
+}
+
 /*
- * dom.request(methode, adresse, kopfzeilen, inhalt): fragt beim Server der
- * Seite an und liefert [status, art, text] - oder null, wenn es nicht ging
- * (fremder Server, keine Verbindung, Seite ohne Netz).
+ * Der Wert der Kopfzeile name in einem Block aus Zeilen "Name: Wert" (Ende
+ * mit \n oder \r\n), ohne Leerraum am Rand; NULL, wenn es sie nicht gibt.
+ */
+static const char *header_find(const char *block, const char *name, size_t *len)
+{
+    for (const char *line = block; line && *line;) {
+        const char *end = line;
+        while (*end && *end != '\n')
+            end++;
+        const char *colon = line;
+        while (colon < end && *colon != ':')
+            colon++;
+        if (colon < end && same_text(line, (size_t)(colon - line), name)) {
+            const char *v = colon + 1, *e = end;
+            while (v < e && (*v == ' ' || *v == '\t'))
+                v++;
+            while (e > v && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r'))
+                e--;
+            *len = (size_t)(e - v);
+            return v;
+        }
+        line = *end ? end + 1 : end;
+    }
+    return NULL;
+}
+
+/* Steht token in der Liste "a, b, c"? (Groß/Klein ist gleich.) */
+static bool listed(const char *list, size_t list_len, const char *token, size_t token_len)
+{
+    for (size_t at = 0; at < list_len;) {
+        size_t end = at;
+        while (end < list_len && list[end] != ',')
+            end++;
+        size_t from = at, to = end;
+        while (from < to && list[from] == ' ')
+            from++;
+        while (to > from && list[to - 1] == ' ')
+            to--;
+        if (to - from == token_len) {
+            size_t i = 0;
+            while (i < token_len && fold(list[from + i]) == fold(token[i]))
+                i++;
+            if (i == token_len)
+                return true;
+        }
+        at = end + 1;
+    }
+    return false;
+}
+
+static bool is_star(const char *value, size_t len)
+{
+    return len == 1 && value[0] == '*';
+}
+
+/*
+ * Zeigt die Adresse auf den eigenen Rechner oder ins eigene Netz (Router,
+ * Drucker ...)? Solche Ziele darf eine Seite aus dem Internet nicht ansprechen.
+ * Erkannt wird das am Namen: Zahlenadressen der privaten Bereiche, localhost.
+ */
+static bool private_host(const char *url)
+{
+    const char *h = url;
+    while (*h && !(h[0] == ':' && h[1] == '/' && h[2] == '/'))
+        h++;
+    if (!*h)
+        return false;
+    h += 3;
+    size_t n = 0;
+    if (h[0] == '[') {
+        /* IPv6: ::1, fc00::/7, fe80::/10 */
+        return (h[1] == ':' && h[2] == ':' && h[3] == '1' && h[4] == ']') ||
+               ((fold(h[1]) == 'f') && (fold(h[2]) == 'c' || fold(h[2]) == 'd')) ||
+               (fold(h[1]) == 'f' && fold(h[2]) == 'e' && (fold(h[3]) >= '8' && fold(h[3]) <= 'b'));
+    }
+    while (h[n] && h[n] != '/' && h[n] != ':' && h[n] != '?' && h[n] != '#')
+        n++;
+    while (n > 0 && h[n - 1] == '.')
+        n--;                            /* "localhost." ist derselbe Rechner */
+    if (same_text(h, n, "localhost") || (n > 10 && same_text(h + n - 10, 10, ".localhost")) ||
+        (n > 6 && same_text(h + n - 6, 6, ".local")))
+        return true;
+    /* a.b.c.d */
+    unsigned part[4] = { 0, 0, 0, 0 };
+    int parts = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (h[i] == '.') {
+            if (++parts > 3)
+                return false;
+        } else if (h[i] >= '0' && h[i] <= '9') {
+            part[parts] = part[parts] * 10 + (unsigned)(h[i] - '0');
+            if (part[parts] > 255)
+                return false;
+        } else {
+            return false;               /* ein Name, keine Zahlenadresse */
+        }
+    }
+    if (parts != 3)
+        return false;
+    return part[0] == 10 || part[0] == 127 || part[0] == 0 || (part[0] == 192 && part[1] == 168) ||
+           (part[0] == 172 && part[1] >= 16 && part[1] <= 31) || (part[0] == 169 && part[1] == 254);
+}
+
+static bool starts(const char *text, const char *prefix)
+{
+    size_t n = strlen(prefix);
+    return strlen(text) >= n && memcmp(text, prefix, n) == 0;
+}
+
+/* Hängt Text an einen Puffer an, in dem genug Platz ist */
+static void put(char *out, size_t *n, const char *text)
+{
+    size_t len = strlen(text);
+    memcpy(out + *n, text, len + 1);
+    *n += len;
+}
+
+/* Gehört die Kopfzeile zu denen, die jede Seite an jeden Server schicken darf? */
+static bool simple_header(const char *name, size_t n, const char *value, size_t vn)
+{
+    if (vn > 128)
+        return false;
+    if (same_text(name, n, "accept") || same_text(name, n, "accept-language") ||
+        same_text(name, n, "content-language"))
+        return true;
+    if (!same_text(name, n, "content-type"))
+        return false;
+    size_t end = 0;
+    while (end < vn && value[end] != ';')
+        end++;
+    while (end > 0 && value[end - 1] == ' ')
+        end--;
+    return same_text(value, end, "application/x-www-form-urlencoded") ||
+           same_text(value, end, "multipart/form-data") || same_text(value, end, "text/plain");
+}
+
+/*
+ * Sammelt die Namen der Kopfzeilen einer Anfrage, die über das Übliche
+ * hinausgehen (klein geschrieben, mit Komma getrennt); true, wenn es keine gibt.
+ */
+static bool only_simple_headers(const char *lines, char *names, size_t size)
+{
+    size_t out = 0;
+    names[0] = '\0';
+    for (const char *line = lines; *line;) {
+        const char *end = line;
+        while (*end && *end != '\n')
+            end++;
+        const char *colon = line;
+        while (colon < end && *colon != ':')
+            colon++;
+        const char *v = colon < end ? colon + 1 : end, *e = end;
+        while (v < e && *v == ' ')
+            v++;
+        while (e > v && (e[-1] == '\r' || e[-1] == ' '))
+            e--;
+        size_t n = (size_t)(colon - line);
+        if (colon < end && !simple_header(line, n, v, (size_t)(e - v)) && out + n + 2 < size &&
+            !listed(names, out, line, n)) {
+            if (out)
+                names[out++] = ',';
+            for (size_t i = 0; i < n; i++)
+                names[out++] = fold(line[i]);
+            names[out] = '\0';
+        }
+        line = *end ? end + 1 : end;
+    }
+    return out == 0;
+}
+
+/* Streicht aus den Kopfzeilen einer Anfrage (je mit \r\n) alle, die ihren Inhalt beschreiben. */
+static void drop_content_headers(char *lines)
+{
+    char *out = lines;
+    for (const char *line = lines; *line;) {
+        const char *end = line;
+        while (*end && *end != '\n')
+            end++;
+        if (*end)
+            end++;
+        size_t n = (size_t)(end - line);
+        bool content = n >= 8 && same_text(line, 8, "content-");
+        if (!content) {
+            memmove(out, line, n);
+            out += n;
+        }
+        line = end;
+    }
+    *out = '\0';
+}
+
+/* Erlaubt die Antwort des fremden Servers der Seite mit diesem Ursprung den Zugriff? */
+static bool cors_allowed(const char *headers, const char *origin, bool credentials)
+{
+    size_t len = 0;
+    const char *v = headers ? header_find(headers, "access-control-allow-origin", &len) : NULL;
+    if (!v)
+        return false;
+    if (is_star(v, len))
+        return !credentials;            /* "jeder" gilt nicht, wenn Cookies im Spiel sind */
+    if (!same_text(v, len, origin))
+        return false;
+    if (!credentials)
+        return true;
+    v = header_find(headers, "access-control-allow-credentials", &len);
+    return v && len == 4 && memcmp(v, "true", 4) == 0;
+}
+
+static void reply_free(script_reply_t *reply)
+{
+    kfree(reply->body);
+    kfree(reply->headers);
+    memset(reply, 0, sizeof(*reply));
+}
+
+/* Ein Austausch mit dem Server; die Wartezeit zählt nicht gegen das Skript. */
+static bool exchange(js_state *J, script_t *s, const char *method, const char *url,
+                     const char *lines, const char *body, size_t body_len, bool credentials,
+                     script_reply_t *reply)
+{
+    uint64_t before = time_ms();
+    memset(reply, 0, sizeof(*reply));
+    unsigned flags = (credentials ? SCRIPT_COOKIES : 0) | (s->host.private_page ? 0 : SCRIPT_PUBLIC_ONLY);
+    bool ok = s->host.request(s->host.ctx, method, url, lines, body, body_len, flags, reply);
+    uint64_t waited = time_ms() - before;
+    if (J->deadline)
+        J->deadline += waited;
+    if (s->boot_until)
+        s->boot_until += waited;
+    if (!ok)
+        reply_free(reply);
+    return ok;
+}
+
+/*
+ * Die Voranfrage: Ehe eine Seite einem fremden Server etwas Ungewöhnliches
+ * schickt (PUT, DELETE, eigene Kopfzeilen), fragt der Browser ihn mit OPTIONS,
+ * ob er das von dieser Seite annimmt.
+ */
+static bool preflight(js_state *J, script_t *s, const char *url, const char *origin,
+                      const char *method, const char *names, bool credentials)
+{
+    char *lines = kmalloc(strlen(origin) + strlen(names) + 160);
+    script_reply_t reply;
+    if (!lines)
+        return false;
+    size_t n = 0;
+    put(lines, &n, "Origin: ");
+    put(lines, &n, origin);
+    put(lines, &n, "\r\nAccess-Control-Request-Method: ");
+    put(lines, &n, method);
+    put(lines, &n, "\r\n");
+    if (names[0]) {
+        put(lines, &n, "Access-Control-Request-Headers: ");
+        put(lines, &n, names);
+        put(lines, &n, "\r\n");
+    }
+    bool ok = exchange(J, s, "OPTIONS", url, lines, NULL, 0, false, &reply);
+    kfree(lines);
+    if (!ok)
+        return false;
+    ok = reply.status >= 200 && reply.status < 300 && cors_allowed(reply.headers, origin, credentials);
+    size_t len = 0;
+    const char *allowed;
+    if (ok && strcmp(method, "GET") != 0 && strcmp(method, "HEAD") != 0 && strcmp(method, "POST") != 0) {
+        allowed = header_find(reply.headers, "access-control-allow-methods", &len);
+        ok = allowed && (listed(allowed, len, method, strlen(method)) || (is_star(allowed, len) && !credentials));
+    }
+    if (ok && names[0]) {
+        allowed = header_find(reply.headers, "access-control-allow-headers", &len);
+        ok = allowed != NULL;
+        for (const char *name = names; ok && *name;) {
+            const char *end = name;
+            while (*end && *end != ',')
+                end++;
+            ok = listed(allowed, len, name, (size_t)(end - name)) || (is_star(allowed, len) && !credentials);
+            name = *end ? end + 1 : end;
+        }
+    }
+    reply_free(&reply);
+    return ok;
+}
+
+/* Die Kopfzeilen der Antwort, soweit das Skript sie sehen darf (Zeilen "name: wert\n") */
+static char *visible_headers(const script_reply_t *reply, bool foreign, bool credentials)
+{
+    static const char *const always[] = { "cache-control", "content-language", "content-length",
+                                          "content-type", "expires", "last-modified", "pragma", NULL };
+    const char *all = reply->headers ? reply->headers : "";
+    size_t expose_len = 0;
+    const char *expose = foreign ? header_find(all, "access-control-expose-headers", &expose_len) : NULL;
+    char *out = kmalloc(strlen(all) + 2);
+    size_t n = 0;
+    if (!out)
+        return NULL;
+    for (const char *line = all; *line;) {
+        const char *end = line;
+        while (*end && *end != '\n')
+            end++;
+        const char *colon = line;
+        while (colon < end && *colon != ':')
+            colon++;
+        size_t name = (size_t)(colon - line);
+        bool show = colon < end && !same_text(line, name, "set-cookie") && !same_text(line, name, "set-cookie2");
+        if (show && foreign) {
+            show = false;
+            for (int i = 0; always[i] && !show; i++)
+                show = same_text(line, name, always[i]);
+            if (!show && expose)
+                show = listed(expose, expose_len, line, name) || (is_star(expose, expose_len) && !credentials);
+        }
+        if (show) {
+            for (const char *p = line; p < end; p++) {
+                if (*p != '\r')
+                    out[n++] = p < colon ? fold(*p) : *p;
+            }
+            out[n++] = '\n';
+        }
+        line = *end ? end + 1 : end;
+    }
+    out[n] = '\0';
+    return out;
+}
+
+enum { MODE_CORS, MODE_SAME_ORIGIN, MODE_NO_CORS };
+enum { CRED_OMIT, CRED_SAME_ORIGIN, CRED_INCLUDE };
+
+/*
+ * XMLHttpRequest und fetch: request(verfahren, adresse, kopfzeilen, inhalt,
+ * cookies, art) -> [status, typ, text, adresse, kopfzeilen, sicht, umgeleitet]
+ * oder null, wenn die Anfrage nicht erlaubt ist oder scheitert.
+ *
+ * Zum Server der Seite geht alles. Einen fremden Server darf ein Skript
+ * fragen, die Antwort aber nur sehen, wenn der Server es dieser Seite
+ * ausdrücklich erlaubt (Access-Control-Allow-Origin); die Cookies des
+ * Benutzers gehen dorthin nur auf ausdrücklichen Wunsch und mit eigener
+ * Erlaubnis des Servers mit. Weiterleitungen werden hier verfolgt und bei
+ * jedem Schritt neu geprüft.
  */
 static bool request(js_state *J, script_t *s)
 {
-    const char *method, *target, *headers = "", *body = NULL;
-    size_t method_len, target_len, headers_len = 0, body_len = 0;
-    if (!arg_text(J, 0, &method, &method_len) || !arg_text(J, 1, &target, &target_len))
+    static const char *const methods[] = { "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", NULL };
+    const char *given, *target, *headers = "", *body = NULL, *method = NULL;
+    size_t given_len, target_len, headers_len = 0, body_len = 0;
+    double number = 0;
+    if (!arg_text(J, 0, &given, &given_len) || !arg_text(J, 1, &target, &target_len))
         return false;
     if (js_arg(J, 2)->t > JS_T_NULL && !arg_text(J, 2, &headers, &headers_len))
         return false;
     if (js_arg(J, 3)->t > JS_T_NULL && !arg_text(J, 3, &body, &body_len))
         return false;
-    bool post = method_len == 4 && memcmp(method, "POST", 4) == 0;
-    bool get = method_len == 3 && memcmp(method, "GET", 3) == 0;
-    char *url = kmalloc(URL_SIZE);
-    char *lines = request_headers(headers, headers_len);
+    int credentials = CRED_SAME_ORIGIN, mode = MODE_CORS;
+    if (js_arg(J, 4)->t == JS_T_NUM && js_to_number(J, ARGI(4), &number))
+        credentials = number == 0 ? CRED_OMIT : number == 2 ? CRED_INCLUDE : CRED_SAME_ORIGIN;
+    if (js_arg(J, 5)->t == JS_T_NUM && js_to_number(J, ARGI(5), &number))
+        mode = number == 1 ? MODE_SAME_ORIGIN : number == 2 ? MODE_NO_CORS : MODE_CORS;
+    for (int i = 0; methods[i] && !method; i++) {
+        if (same_text(given, given_len, methods[i]))
+            method = methods[i];
+    }
+
+    char *url = kmalloc(URL_SIZE), *next = kmalloc(URL_SIZE), *origin = kmalloc(URL_SIZE);
+    char *from = kmalloc(URL_SIZE);     /* die Adresse vor der letzten Weiterleitung */
+    char *lines = request_headers(headers, headers_len), *sent = NULL, *names = kmalloc(1024);
     script_reply_t reply;
     memset(&reply, 0, sizeof(reply));
-    bool ok = s->host.request && url && lines && (get || post) && headers_len < 8192 &&
-              body_len <= REQUEST_BYTES && url_resolve(s->url, target, url, URL_SIZE) &&
-              same_origin(s->url, url);
+    bool ok = s->host.request && method && url && next && origin && from && lines && names &&
+              headers_len < 8192 && body_len <= REQUEST_BYTES &&
+              url_resolve(s->url, target, url, URL_SIZE);
+    bool foreign = false, redirected = false, opaque = false, with_cookies = false;
     if (ok) {
-        uint64_t before = time_ms();
-        ok = s->host.request(s->host.ctx, s->url, post ? "POST" : "GET", url, lines,
-                             post ? body : NULL, post ? body_len : 0, &reply);
-        /* die Wartezeit auf den Server zählt nicht gegen das Skript */
-        uint64_t waited = time_ms() - before;
-        if (J->deadline)
-            J->deadline += waited;
-        if (s->boot_until)
-            s->boot_until += waited;
+        size_t n = origin_of(s->url);
+        for (size_t i = 0; i < n; i++)
+            origin[i] = fold(s->url[i]);
+        origin[n] = '\0';
+        if (strcmp(method, "GET") == 0 || strcmp(method, "HEAD") == 0)
+            body = NULL;
+        sent = kmalloc(strlen(lines) + strlen(origin) + 16);
+        ok = sent != NULL;
     }
+    for (int hop = 0; ok; hop++) {
+        ok = hop < 8 && (starts(url, "http://") || starts(url, "https://"));
+        if (!ok)
+            break;
+        if (!same_origin(s->url, url)) {
+            /* über einen fremden Server zu einem dritten: Der soll nicht glauben, die Seite
+               habe ihn gezielt angesprochen - die Herkunft heißt dann "null" */
+            if (foreign && !same_origin(from, url))
+                strlcpy(origin, "null", URL_SIZE);
+            foreign = true;             /* ab hier gilt die Antwort als die eines fremden Servers */
+        }
+        /* nichts im eigenen Netz von einer Seite aus dem Internet (hier am Namen erkannt; an der
+           Adresse, zu der wirklich verbunden wird, prüft es der Browser noch einmal) */
+        if (!s->host.private_page && private_host(url)) {
+            ok = false;
+            break;
+        }
+        /* nichts Fremdes, wenn die Seite das ausschließt; nichts Unverschlüsseltes von einer
+           verschlüsselten Seite aus */
+        if (foreign && (mode == MODE_SAME_ORIGIN || (starts(s->url, "https://") && !starts(url, "https://")))) {
+            ok = false;
+            break;
+        }
+        with_cookies = credentials == CRED_INCLUDE || (credentials == CRED_SAME_ORIGIN && !foreign);
+        bool simple = only_simple_headers(lines, names, 1024) &&
+                      (strcmp(method, "GET") == 0 || strcmp(method, "HEAD") == 0 || strcmp(method, "POST") == 0);
+        if (foreign && mode == MODE_NO_CORS && !simple) {
+            ok = false;
+            break;
+        }
+        if (foreign && mode == MODE_CORS && !simple &&
+            !preflight(J, s, url, origin, method, names, with_cookies)) {
+            ok = false;
+            break;
+        }
+        size_t sent_len = 0;
+        put(sent, &sent_len, lines);
+        if (foreign) {
+            put(sent, &sent_len, "Origin: ");
+            put(sent, &sent_len, origin);
+            put(sent, &sent_len, "\r\n");
+        }
+        ok = exchange(J, s, method, url, sent, body, body ? body_len : 0, with_cookies, &reply);
+        if (!ok)
+            break;
+        if (foreign && mode == MODE_CORS && !cors_allowed(reply.headers, origin, with_cookies)) {
+            ok = false;
+            break;
+        }
+        size_t len = 0;
+        const char *location = reply.headers ? header_find(reply.headers, "location", &len) : NULL;
+        bool redirect = (reply.status >= 301 && reply.status <= 303) || reply.status == 307 ||
+                        reply.status == 308;
+        if (!redirect || !location || len == 0 || len >= URL_SIZE)
+            break;
+        /* weitergeschickt: dem Ziel folgen - und es im nächsten Durchgang wie jede Adresse prüfen */
+        memcpy(next, location, len);
+        next[len] = '\0';
+        strlcpy(from, url, URL_SIZE);
+        ok = url_resolve(from, next, url, URL_SIZE);
+        if (reply.status == 303 || ((reply.status == 301 || reply.status == 302) && strcmp(method, "POST") == 0)) {
+            if (strcmp(method, "HEAD") != 0)
+                method = "GET";
+            body = NULL;
+            drop_content_headers(lines);    /* ohne Inhalt auch keine Angaben zum Inhalt */
+        }
+        reply_free(&reply);
+        redirected = true;
+    }
+    if (ok && foreign && mode == MODE_NO_CORS)
+        opaque = true;                  /* abgeschickt, aber die Antwort bleibt dem Skript verborgen */
+    char *shown = ok && !opaque ? visible_headers(&reply, foreign, with_cookies) : NULL;
+    if (ok && !opaque && (!shown || reply.length > JS_STRING_MAX / 2))
+        ok = false;
+    if (ok) {
+        js_object *out = js_array_new(J, 7);
+        js_push(J, js_obj(out));
+        reply.content_type[sizeof(reply.content_type) - 1] = '\0';
+        const char *type = opaque ? "" : reply.content_type;
+        js_array_push(J, out, js_num(opaque ? 0 : reply.status));
+        js_array_push(J, out, js_str(js_string_new(J, type, strlen(type))));
+        js_array_push(J, out, js_str(js_string_new(J, !opaque && reply.body ? reply.body : "",
+                                                   !opaque && reply.body ? reply.length : 0)));
+        js_array_push(J, out, js_str(js_string_new(J, opaque ? "" : url, opaque ? 0 : strlen(url))));
+        js_array_push(J, out, js_str(js_string_new(J, shown ? shown : "", shown ? strlen(shown) : 0)));
+        js_array_push(J, out, js_str(js_intern_cstr(J, opaque ? "opaque" : foreign ? "cors" : "basic")));
+        js_array_push(J, out, js_bool(redirected && !opaque));
+    }
+    reply_free(&reply);
+    kfree(shown);
     kfree(url);
+    kfree(next);
+    kfree(origin);
+    kfree(from);
     kfree(lines);
-    if (!ok || reply.length > JS_STRING_MAX / 2) {
-        kfree(reply.body);
-        return js_push(J, js_null());
-    }
-    js_object *out = js_array_new(J, 3);
-    js_push(J, js_obj(out));
-    js_array_push(J, out, js_num(reply.status));
-    reply.content_type[sizeof(reply.content_type) - 1] = '\0';
-    js_array_push(J, out, js_str(js_string_new(J, reply.content_type, strlen(reply.content_type))));
-    js_array_push(J, out, js_str(js_string_new(J, reply.body ? reply.body : "", reply.body ? reply.length : 0)));
-    kfree(reply.body);
-    return true;
+    kfree(sent);
+    kfree(names);
+    return ok ? !J->fatal : js_push(J, js_null());
 }
 
 static bool dom_fn(js_state *J, int argc)
@@ -1174,7 +1628,7 @@ static const struct {
     { "url", 0, D_URL }, { "resolve", 2, D_RESOLVE }, { "wish", 3, D_WISH }, { "alert", 1, D_ALERT },
     { "confirm", 1, D_CONFIRM }, { "write", 1, D_WRITE }, { "script", 0, D_SCRIPT }, { "size", 0, D_SIZE },
     { "protos", 1, D_PROTOS }, { "dispatcher", 1, D_DISPATCHER }, { "shown", 1, D_SHOWN },
-    { "computed", 1, D_COMPUTED }, { "request", 4, D_REQUEST },
+    { "computed", 1, D_COMPUTED }, { "request", 6, D_REQUEST },
 };
 
 /* --- Anlegen ------------------------------------------------------------------------------------- */
@@ -1318,7 +1772,7 @@ static char *fetch_script(script_t *s, const char *address, size_t *len)
     if (!s->host.fetch || s->fetch_ms >= s->fetch_limit)
         return NULL;
     uint64_t before = time_ms();
-    char *code = s->host.fetch(s->host.ctx, address, len);
+    char *code = s->host.fetch(s->host.ctx, address, !s->host.private_page, len);
     uint64_t waited = time_ms() - before;
     s->fetch_ms += waited;
     if (s->boot_until)

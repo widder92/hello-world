@@ -625,11 +625,12 @@ static const char start_page[] =
     "<li>Verschlüsselte Verbindungen (https) mit Prüfung des Servers</li>"
     "<li>Dateien, die keine Webseiten sind, bei den eigenen Dateien speichern</li>"
     "<li>JavaScript ausführen, wenn du es einschaltest (Knopf oben rechts) - auch "
-    "Skripte mit den neueren Sprachmitteln (async/await, Klassen, Module)</li></ul>"
+    "Skripte mit den neueren Sprachmitteln (async/await, Klassen, Module) und solche, "
+    "die Daten von anderen Servern nachladen</li></ul>"
     "<h2>Was er nicht kann</h2>"
     "<ul><li>Videos, Ton und gezeichnete Flächen (Canvas)</li>"
-    "<li>Seiten, deren Skripte ihre Inhalte von einem anderen Server holen, und große "
-    "Web-Anwendungen</li><li>Abstände, Rahmen und frei platzierte Elemente einer Seite</li>"
+    "<li>Große Web-Anwendungen (Karten, Videoportale)</li>"
+    "<li>Abstände, Rahmen und frei platzierte Elemente einer Seite</li>"
     "<li>Dateien hochladen</li></ul>"
     "<h2>Bedienung</h2>"
     "<ul><li>Pfeiltasten, Bild auf/ab, Pos1/Ende: blättern</li>"
@@ -839,7 +840,7 @@ static void save_settings(void)
 }
 
 /* Holt eine Skriptdatei der Seite (nur im Helfer, während die Seite lädt). */
-static char *script_fetch(void *ctx, const char *url, size_t *len)
+static char *script_fetch(void *ctx, const char *url, bool public_only, size_t *len)
 {
     browser_t *b = ctx;
     http_response_t response;
@@ -853,6 +854,7 @@ static char *script_fetch(void *ctx, const char *url, size_t *len)
         .headers = headers.data,
         .max_body = SCRIPT_FILE_MAX,
         .timeout_ms = 10000,
+        .public_only = public_only,
     };
     bool ok = !headers.failed && http_request(url, &options, &response);
     if (headers.data)
@@ -870,93 +872,67 @@ static char *script_fetch(void *ctx, const char *url, size_t *len)
 
 static void draw(browser_t *b);
 
-/* Beginnen zwei Adressen mit demselben "schema://rechner[:port]"? */
-static bool same_server(const char *a, const char *b)
-{
-    int slashes = 0;
-    for (size_t i = 0; a[i] && b[i]; i++) {
-        if (lower(a[i]) != lower(b[i]))
-            return false;
-        if (a[i] == '/' && ++slashes == 3)
-            return true;
-        if (slashes == 2 && (a[i + 1] == '\0' || a[i + 1] == '?' || a[i + 1] == '#'))
-            return b[i + 1] == '\0' || b[i + 1] == '/' || b[i + 1] == '?' || b[i + 1] == '#';
-        if (slashes == 2 && (b[i + 1] == '\0' || b[i + 1] == '?' || b[i + 1] == '#'))
-            return a[i + 1] == '/';
-    }
-    return false;
-}
-
 /*
- * Ein Skript lädt Daten nach oder sendet welche (XMLHttpRequest, fetch) - nur
- * an den Server seiner Seite, auch über Weiterleitungen hinweg. Die Cookies
- * der Seite gehen mit. Währenddessen wartet das Skript - und, wenn es im
- * Fenster läuft, auch das Fenster.
+ * Ein Skript lädt Daten nach oder sendet welche (XMLHttpRequest, fetch): ein
+ * einzelner Austausch mit dem Server. Ob das Skript diesen Server überhaupt
+ * fragen und die Antwort sehen darf, hat der Aufrufer geprüft (dom_js.c);
+ * er folgt auch Weiterleitungen. SCRIPT_COOKIES: Die Cookies des Benutzers
+ * gehen mit, und Cookies der Antwort werden angenommen. SCRIPT_PUBLIC_ONLY:
+ * nur zu öffentlichen Adressen. Währenddessen wartet das Skript - und, wenn
+ * es im Fenster läuft, auch das Fenster.
  */
-static bool script_request(void *ctx, const char *page, const char *method, const char *url,
-                           const char *headers, const char *body, size_t body_len,
+static bool script_request(void *ctx, const char *method, const char *url, const char *headers,
+                           const char *body, size_t body_len, unsigned flags,
                            script_reply_t *reply)
 {
     browser_t *b = ctx;
-    char *at = kmalloc(URL_SIZE), *next = kmalloc(URL_SIZE);
+    bool credentials = flags & SCRIPT_COOKIES;
     http_extra_t *extra = kmalloc(sizeof(*extra));
-    bool post = strcmp(method, "POST") == 0, done = false;
+    bool done = false;
 
-    if (at && next && extra && !b->closing) {
+    if (extra && !b->closing) {
         if (!b->script_loading) {       /* im Fenster: sagen, worauf gewartet wird */
             set_status(b, false, "Die Seite lädt Daten nach ...");
             draw(b);
         }
-        strlcpy(at, url, URL_SIZE);
-        for (int hop = 0; hop < 6 && same_server(page, at); hop++) {
-            http_response_t response;
-            strbuf_t lines = { 0 };
-            cookies_header(b, at, &lines);
-            sb_append(&lines, "Accept-Language: de,en;q=0.7\r\n");
-            if (headers)
-                sb_append(&lines, headers);
-            http_options_t options = {
-                .method = post ? "POST" : "GET",
-                .headers = lines.data,
-                .body = post ? body : NULL,
-                .body_len = post ? body_len : 0,
-                .max_body = SCRIPT_FILE_MAX,
-                .timeout_ms = 15000,
-                .extra = extra,
-            };
-            bool ok = !lines.failed && http_request(at, &options, &response);
-            if (lines.data)
-                memset(lines.data, 0, lines.len);       /* enthält Anmelde-Cookies */
-            sb_free(&lines);
-            if (!ok) {
-                kfree(extra->cookies);
-                extra->cookies = NULL;
-                break;
-            }
-            cookies_store(b, at, extra->cookies);
-            kfree(extra->cookies);
-            extra->cookies = NULL;
-            bool redirect = (response.status >= 301 && response.status <= 303) ||
-                            response.status == 307 || response.status == 308;
-            if (redirect && extra->location[0] && url_resolve(at, extra->location, next, URL_SIZE)) {
-                kfree(response.body);
-                if (response.status != 307 && response.status != 308)
-                    post = false;
-                strlcpy(at, next, URL_SIZE);
-                continue;
-            }
+        http_response_t response;
+        strbuf_t lines = { 0 };
+        if (credentials)
+            cookies_header(b, url, &lines);
+        sb_append(&lines, "Accept-Language: de,en;q=0.7\r\n");
+        if (headers)
+            sb_append(&lines, headers);
+        http_options_t options = {
+            .method = method,
+            .headers = lines.data,
+            .body = body,
+            .body_len = body ? body_len : 0,
+            .max_body = SCRIPT_FILE_MAX,
+            .timeout_ms = 15000,
+            .extra = extra,
+            .keep_headers = true,
+            .public_only = (flags & SCRIPT_PUBLIC_ONLY) != 0,
+        };
+        bool ok = !lines.failed && http_request(url, &options, &response);
+        if (lines.data)
+            memset(lines.data, 0, lines.len);           /* enthält Anmelde-Cookies */
+        sb_free(&lines);
+        if (ok) {
+            if (credentials)
+                cookies_store(b, url, extra->cookies);
             reply->status = response.status;
             reply->body = response.body;
             reply->length = response.length;
+            reply->headers = extra->headers;
+            extra->headers = NULL;
             strlcpy(reply->content_type, response.content_type, sizeof(reply->content_type));
             done = true;
-            break;
         }
+        kfree(extra->cookies);
+        kfree(extra->headers);
         if (!b->script_loading)
             set_status(b, false, "");
     }
-    kfree(at);
-    kfree(next);
     kfree(extra);
     return done;
 }
@@ -1511,6 +1487,7 @@ static void worker(void *arg)
              * der Quelltext, den das Abbild liefert.
              */
             script_host_t sh = script_host(b);
+            sh.private_page = extra->peer_private;
             script = script_create(content, length, url, &sh);
         }
         if (script) {

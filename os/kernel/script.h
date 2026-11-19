@@ -17,12 +17,16 @@
 
 typedef struct script script_t;
 
+enum { SCRIPT_COOKIES = 1, SCRIPT_PUBLIC_ONLY = 2 };
+
 /* Antwort auf eine Anfrage eines Skripts */
 typedef struct {
     int status;
     char *body;                         /* mit kmalloc angelegt */
     size_t length;
     char content_type[64];
+    char *headers;                      /* alle Kopfzeilen der Antwort außer den Cookies, je
+                                           "Name: Wert\n"; mit kmalloc angelegt oder NULL */
 } script_reply_t;
 
 typedef struct {
@@ -31,16 +35,21 @@ typedef struct {
      * mit kmalloc angelegten Text oder NULL. Wird nur während script_boot()
      * gerufen.
      */
-    char *(*fetch)(void *ctx, const char *url, size_t *len);
+    char *(*fetch)(void *ctx, const char *url, bool public_only, size_t *len);
     /*
-     * Holt oder sendet Daten im Auftrag eines Skripts (XMLHttpRequest, fetch).
-     * url ist vollständig und liegt beim selben Server wie die Seite (page);
-     * das gilt auch für Weiterleitungen. headers: zusätzliche Kopfzeilen, je
-     * mit \r\n (oder NULL). Liefert false, wenn keine Antwort zustande kam.
+     * Ein einzelner Austausch mit einem Server im Auftrag eines Skripts
+     * (XMLHttpRequest, fetch): url ist vollständig; Weiterleitungen folgt
+     * diese Funktion NICHT - das und die Prüfung, ob ein Skript die Antwort
+     * eines fremden Servers überhaupt sehen darf, erledigt der Aufrufer
+     * (dom_js.c). headers: zusätzliche Kopfzeilen, je mit \r\n (oder NULL).
+     * flags: SCRIPT_COOKIES - die Cookies des Benutzers für diesen Server
+     * gehen mit, und Cookies der Antwort werden angenommen (sonst weder noch);
+     * SCRIPT_PUBLIC_ONLY - nur verbinden, wenn der Server eine öffentliche
+     * Adresse hat (auch bei fetch oben). Liefert false, wenn keine Antwort
+     * zustande kam.
      */
-    bool (*request)(void *ctx, const char *page, const char *method, const char *url,
-                    const char *headers, const char *body, size_t body_len,
-                    script_reply_t *reply);
+    bool (*request)(void *ctx, const char *method, const char *url, const char *headers,
+                    const char *body, size_t body_len, unsigned flags, script_reply_t *reply);
     /* console.log und Fehlermeldungen der Skripte */
     void (*log)(void *ctx, const char *text);
     /* Rückfragen; ohne sie zeigt alert nichts, und confirm antwortet mit Nein */
@@ -49,6 +58,13 @@ typedef struct {
     /* true: Das Fenster wird geschlossen - laufende Skripte sollen sofort enden. */
     bool (*cancelled)(void *ctx);
     void *ctx;
+    /*
+     * Die Seite kam von einem Rechner im eigenen Netz: Dann dürfen ihre
+     * Skripte auch dorthin Anfragen schicken. Die Skripte einer Seite aus dem
+     * Internet erreichen nur öffentliche Adressen - sonst könnte jede Webseite
+     * den Router oder den Drucker zu Hause ansprechen.
+     */
+    bool private_page;
     int width, height;                  /* Größe des Fensters für die Skripte */
     uint32_t budget_ms;                 /* Zeit je Skript (0: die übliche) - für Tests */
 } script_host_t;

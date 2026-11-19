@@ -710,7 +710,8 @@
         appVersion: '5.0 (HelloOS)', platform: 'HelloOS', product: 'Gecko', vendor: '', language: 'de-DE',
         languages: ['de-DE', 'de'], onLine: true, cookieEnabled: true, hardwareConcurrency: 1,
         maxTouchPoints: 0, doNotTrack: '1', plugins: [], mimeTypes: [],
-        javaEnabled: function () { return false; }, sendBeacon: function () { return false; }
+        javaEnabled: function () { return false; },
+        sendBeacon: function (url, data) { return !!request('POST', url, {}, data === undefined ? '' : data, 1, 2); }
     };
     window.history = {
         length: 1, state: null, scrollRestoration: 'auto',
@@ -917,8 +918,14 @@
                         304: 'Not Modified', 400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden',
                         404: 'Not Found', 500: 'Internal Server Error', 502: 'Bad Gateway', 503: 'Service Unavailable' };
 
-    /* Stellt die Anfrage; liefert { status, type, text, url } oder null. Nur zum Server der Seite. */
-    function request(method, url, headers, body) {
+    /*
+     * Stellt die Anfrage; liefert { status, type, text, url, headers, kind,
+     * redirected } oder null. credentials: 0 ohne Cookies, 1 nur zum Server der
+     * Seite, 2 immer; mode: 0 auch fremde Server (mit deren Erlaubnis), 1 nur
+     * der eigene, 2 fremde ohne Einblick in die Antwort. Die Regeln dafür
+     * setzt der Browser durch, nicht dieses Skript.
+     */
+    function request(method, url, headers, body, credentials, mode) {
         var lines = [], hasType = false, payload = null;
         for (var k in headers) { lines.push(k + ': ' + headers[k]); if (k.toLowerCase() === 'content-type') hasType = true; }
         if (body !== null && body !== undefined && method !== 'GET' && method !== 'HEAD') {
@@ -931,8 +938,19 @@
             }
         }
         var full = dom.resolve(text(url));
-        var reply = dom.request(method, full, lines.join('\n'), payload);
-        return reply ? { status: reply[0], type: reply[1], text: reply[2], url: full } : null;
+        var reply = dom.request(method, full, lines.join('\n'), payload,
+                                credentials === undefined ? 1 : credentials, mode || 0);
+        return reply ? { status: reply[0], type: reply[1], text: reply[2], url: reply[3], headers: reply[4],
+                         kind: reply[5], redirected: reply[6] } : null;
+    }
+    /* Die Kopfzeilen einer Antwort ("name: wert" je Zeile) als Headers */
+    function replyHeaders(lines) {
+        var h = new Headers();
+        text(lines).split('\n').forEach(function (line) {
+            var i = line.indexOf(':');
+            if (i > 0) h.append(line.slice(0, i), line.slice(i + 1).trim());
+        });
+        return h;
     }
 
     function XMLHttpRequest() {
@@ -962,9 +980,13 @@
     };
     X.overrideMimeType = function () {};
     X.getResponseHeader = function (name) {
-        return this.readyState >= 2 && String(name).toLowerCase() === 'content-type' && this._type ? this._type : null;
+        return this.readyState >= 2 && this._heads ? this._heads.get(name) : null;
     };
-    X.getAllResponseHeaders = function () { return this.readyState >= 2 && this._type ? 'content-type: ' + this._type + '\r\n' : ''; };
+    X.getAllResponseHeaders = function () {
+        var out = '';
+        if (this.readyState >= 2 && this._heads) this._heads.forEach(function (v, k) { out += k + ': ' + v + '\r\n'; });
+        return out;
+    };
     X.abort = function () {
         this._run++;
         if (this.readyState > 1 && this.readyState < 4) { this.readyState = 4; fire(this, 'abort', false); fire(this, 'loadend', false); }
@@ -973,7 +995,7 @@
     X.send = function (body) {
         if (this.readyState !== 1) throw new DOMException('The object is in an invalid state.', 'InvalidStateError');
         var self = this, run = ++this._run;
-        var reply = request(this._m, this._u, this._h, body);
+        var reply = request(this._m, this._u, this._h, body, this.withCredentials ? 2 : 1, 0);
         function finish() {
             if (self._run !== run) return;          /* abgebrochen oder neu geöffnet */
             if (!reply) {
@@ -984,6 +1006,7 @@
             }
             self.status = reply.status; self.statusText = statusNames[reply.status] || '';
             self._type = reply.type; self.responseURL = reply.url;
+            hide(self, '_heads', replyHeaders(reply.headers));
             xhrState(self, 2); xhrState(self, 3);
             self.responseText = reply.text;
             self.response = reply.text;
@@ -1005,6 +1028,11 @@
     }
     Response.prototype.text = function () { this.bodyUsed = true; return Promise.resolve(this._t); };
     Response.prototype.json = function () { var t = this._t; this.bodyUsed = true; return new Promise(function (ok) { ok(JSON.parse(t)); }); };
+    /* als Bytes: der Text in UTF-8 (echte Binärdaten kommen hier nicht unversehrt an) */
+    Response.prototype.arrayBuffer = function () {
+        var t = this._t; this.bodyUsed = true;
+        return new Promise(function (ok) { ok(new TextEncoder().encode(t).buffer); });
+    };
     Response.prototype.clone = function () { return new Response(this._t, { status: this.status, statusText: this.statusText, headers: this.headers, url: this.url }); };
     window.Response = Response;
 
@@ -1014,9 +1042,19 @@
             var method = String(init && init.method || input && input.method || 'GET').toUpperCase();
             var headers = {}, given = new Headers(init && init.headers || input && input.headers);
             given.forEach(function (v, k) { headers[k] = v; });
-            var reply = request(method, url, headers, init && init.body);
+            var want = init && init.credentials || input && input.credentials;
+            var mode = init && init.mode || input && input.mode;
+            var signal = init && init.signal;
+            if (signal && signal.aborted) { reject(new DOMException('The operation was aborted.', 'AbortError')); return; }
+            var reply = request(method, url, headers, init && init.body !== undefined ? init.body : input && input._body,
+                                want === 'omit' ? 0 : want === 'include' ? 2 : 1,
+                                mode === 'same-origin' ? 1 : mode === 'no-cors' ? 2 : 0);
             if (!reply) { reject(new TypeError('Failed to fetch')); return; }
-            resolve(new Response(reply.text, { status: reply.status, headers: reply.type ? { 'content-type': reply.type } : {}, url: reply.url }));
+            var response = new Response(reply.text, { status: reply.status, headers: replyHeaders(reply.headers), url: reply.url });
+            response.type = reply.kind;
+            response.redirected = reply.redirected;
+            if (reply.kind === 'opaque') { response.ok = false; response.statusText = ''; }
+            resolve(response);
         });
     };
     function AbortController() { this.signal = new EventTarget(); this.signal.aborted = false; }

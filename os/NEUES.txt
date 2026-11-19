@@ -1,3 +1,8 @@
+HelloOS 0.23
+- Browser: Daten von anderen Servern. Skripte dürfen jetzt auch von einem zweiten Server nachladen (fetch, XMLHttpRequest) - mit den Schutzregeln der großen Browser: Die Antwort sieht ein Skript nur, wenn der fremde Server es dieser Seite erlaubt; deine Cookies gehen dorthin nur mit dessen ausdrücklicher Erlaubnis; vor Ungewöhnlichem (PUT, DELETE, eigene Kopfzeilen) wird der Server erst gefragt. Viele Seiten, die bisher leer blieben, zeigen damit ihre Inhalte.
+- Schutz fürs Heimnetz: Die Skripte einer Seite aus dem Internet erreichen nur öffentliche Adressen - nicht deinen Router, Drucker oder andere Geräte zu Hause.
+- Noch nicht möglich: Abstände, Rahmen und frei platzierte Elemente; Zeichenflächen, Video und Ton; Tabs. JavaScript bleibt ausgeliefert ausgeschaltet; die Skripte laufen weiterhin ohne Schutzwand zum System.
+
 HelloOS 0.22
 - Browser: Module. Skripte, die als Module geladen werden (script type="module", import/export, import() zur Laufzeit, Übersetzungstabellen), laufen jetzt - so liefern viele aktuelle Seiten ihre Skripte aus.
 - Browser: Nachfordern. Fügt eine Seite nach dem Laden weitere Skriptdateien ein, werden sie geholt und ausgeführt; fügt ein Skript Stylesheets ein oder ändert sie, wird die Gestaltung der Seite neu zusammengesetzt.
@@ -13,11 +18,3 @@ HelloOS 0.20
 - Browser: Spalten und Raster. Seiten, die ihre Teile nebeneinander anordnen (flex, grid), sehen jetzt so aus: Kopfzeile mit Menü rechts, Inhalt neben der Seitenleiste, Karten in Reihen. Große Überschriften behalten in Spalten und Tabellen ihre Größe.
 - Browser: bedienen wie gewohnt - Knopf "Vor" (Alt+Pfeil rechts), Lesezeichen mit dem Stern neben der Adresse (Strg+D; Liste mit Strg+B und auf der Startseite), Verlauf des Fensters, Suchen auf der Seite (Strg+F), Schriftgröße in vier Stufen (Strg und +, -, 0), Quelltext der Seite (Strg+U).
 - Noch nicht möglich: Abstände, Rahmen, frei platzierte Elemente und Hintergrundbilder; Tabs; Video und Ton.
-
-HelloOS 0.19
-- Browser: JavaScript. HelloOS hat jetzt eine eigene JavaScript-Maschine; der Knopf rechts oben im Browser schaltet sie ein und aus (ausgeliefert: aus). Damit funktionieren Seiten mit einfachen und älteren Skripten: Menüs zum Aufklappen, Formularprüfung, Zähler und Uhren, Knöpfe ohne Formular, jQuery-Seiten, Nachladen von Daten (XMLHttpRequest, fetch) - und in der WordPress-Verwaltung zum Beispiel "Quick Edit".
-- Noch nicht möglich: große Web-Anwendungen (Google Maps, YouTube, der Block-Editor von WordPress), die neuesten Sprachmittel (async/await, Module), Zeichenflächen, Video und Ton.
-- Sicherheit: Skripte laufen ohne Schutzwand zum System. Die Maschine prüft jeden Zugriff und begrenzt Zeit und Speicher - schalte JavaScript aber nur für Seiten ein, denen du traust.
-- Browser: HTML5-Elemente - aufklappbare Abschnitte, Fortschrittsbalken, Hinweistexte in leeren Feldern, markierter Text; für Video, Ton und eingebettete Seiten erscheint ein Hinweis mit Link.
-- Das System verwaltet seinen Arbeitsspeicher schneller: Anfordern und Freigeben dauern nicht mehr länger, je mehr belegt ist.
-- Kleinigkeiten: Links auf eine Stelle derselben Seite springen dorthin, statt die Seite neu zu laden.

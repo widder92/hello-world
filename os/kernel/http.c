@@ -10,6 +10,7 @@
 #define HOST_MAX      128
 #define LINE_MAX      2304
 #define REDIRECTS_MAX 5
+#define HEADERS_MAX   (32 * 1024)          /* so viel an Kopfzeilen einer Antwort wird aufgehoben */
 #define TIMEOUT_MS    15000
 
 /* --- Verbindung: wahlweise direkt über TCP oder verschlüsselt über TLS --------- */
@@ -22,13 +23,38 @@ typedef struct {
     uint32_t timeout_ms;
 } stream_t;
 
-static bool stream_open(stream_t *s, const char *host, uint16_t port,
-                        bool secure, char *error, size_t error_size)
+/*
+ * Private Bereiche (10.x, 172.16-31.x, 192.168.x), dieser Rechner (127.x),
+ * Adressen ohne Router (169.254.x), die Bereiche der Netzbetreiber (100.64-127.x)
+ * und alles, was keine Adresse eines einzelnen Rechners ist.
+ */
+bool http_private_address(uint32_t ip)
+{
+    uint32_t a = ip >> 24, b = (ip >> 16) & 0xFF;
+    return a == 0 || a == 10 || a == 127 || (a == 100 && b >= 64 && b <= 127) ||
+           (a == 169 && b == 254) || (a == 172 && b >= 16 && b <= 31) ||
+           (a == 192 && b == 168) || a >= 224 || ip == net_local_ip();
+}
+
+/*
+ * public_only: Die Verbindung kommt nur zustande, wenn der Name auf eine
+ * öffentliche Adresse zeigt - entschieden an der Adresse, zu der tatsächlich
+ * verbunden wird, nicht am Namen (der kann auf alles zeigen).
+ */
+static bool stream_open(stream_t *s, const char *host, uint16_t port, bool secure,
+                        bool public_only, bool *private_peer, char *error, size_t error_size)
 {
     ip4_t ip;
     memset(s, 0, sizeof(*s));
     if (!net_resolve(host, &ip)) {
         ksnprintf(error, error_size, "Name nicht auflösbar: %s", host);
+        return false;
+    }
+    bool private = http_private_address(ip);
+    if (private_peer)
+        *private_peer = private;
+    if (public_only && private) {
+        ksnprintf(error, error_size, "%s liegt im eigenen Netz", host);
         return false;
     }
     s->tcp = tcp_connect(ip, port, 8000);
@@ -257,7 +283,9 @@ static bool request(const char *url, const http_options_t *options,
         strlcpy(out->error, "Nicht genug Speicher", sizeof(out->error));
         goto done;
     }
-    if (!stream_open(s, u.host, u.port, u.secure, out->error, sizeof(out->error)))
+    if (!stream_open(s, u.host, u.port, u.secure, options->public_only,
+                     options->extra ? &options->extra->peer_private : NULL,
+                     out->error, sizeof(out->error)))
         goto done;
     s->timeout_ms = options->timeout_ms;
 
@@ -313,6 +341,23 @@ static bool request(const char *url, const http_options_t *options,
         if (line[0] == '\0')
             break;
         const char *value;
+        if (options->extra && options->keep_headers && !header_value(line, "set-cookie") &&
+            options->extra->headers_len + strlen(line) + 2 <= HEADERS_MAX) {
+            /* für Skripte (fetch, XMLHttpRequest): alle Kopfzeilen außer den Cookies aufheben */
+            http_extra_t *extra = options->extra;
+            size_t add = strlen(line) + 1;
+            char *grown = kmalloc(extra->headers_len + add + 1);
+            if (grown) {
+                if (extra->headers_len)
+                    memcpy(grown, extra->headers, extra->headers_len);
+                memcpy(grown + extra->headers_len, line, add - 1);
+                extra->headers_len += add;
+                grown[extra->headers_len - 1] = '\n';
+                grown[extra->headers_len] = '\0';
+                kfree(extra->headers);
+                extra->headers = grown;
+            }
+        }
         if ((value = header_value(line, "content-length")) != NULL) {
             content_length = 0;
             for (; *value >= '0' && *value <= '9'; value++)
@@ -365,8 +410,8 @@ static bool request(const char *url, const http_options_t *options,
     location[0] = '\0';
 
     bool complete;
-    if (out->status == 204 || out->status == 304)
-        complete = true;
+    if (out->status == 204 || out->status == 304 || strcmp(options->method, "HEAD") == 0)
+        complete = true;                /* Antworten ohne Inhalt */
     else if (chunked)
         complete = read_chunked(s, &body, line);
     else

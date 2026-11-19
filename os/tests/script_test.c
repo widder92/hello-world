@@ -92,9 +92,16 @@ static bool on_confirm(void *ctx, const char *text)
     return ++confirms % 2 == 1;         /* abwechselnd Ja und Nein */
 }
 
-static char *on_fetch(void *ctx, const char *url, size_t *len)
+static bool page_is_private;            /* die nächste Seite kommt "aus dem eigenen Netz" */
+static unsigned public_only_seen, public_only_missing;
+
+static char *on_fetch(void *ctx, const char *url, bool public_only, size_t *len)
 {
     (void)ctx;
+    if (public_only)
+        public_only_seen++;
+    else
+        public_only_missing++;
     const char *code = NULL;
     if (strcmp(url, "https://a.de/lib.js") == 0)
         code = "var ausDatei = 'geladen'; function ausDateiFn(x) { return x * 2; }";
@@ -158,22 +165,83 @@ static char request_seen[1200];
 static int request_count;
 static uint64_t cancel_at;              /* ab dann gilt: Das Fenster wird geschlossen */
 
-static bool on_request(void *ctx, const char *page, const char *method, const char *url,
-                       const char *headers, const char *body, size_t body_len, script_reply_t *reply)
+static char request_log[3000];          /* alle Anfragen seit dem letzten Leeren: "VERFAHREN adresse[+cookies];" */
+
+/*
+ * Der Server der Tests - ein einzelner Austausch, wie ihn der Browser liefert.
+ * a.de ist der Server der Seite; fremd.de antwortet je nach Pfad mit oder
+ * ohne Erlaubnis für fremde Seiten.
+ */
+static bool on_request(void *ctx, const char *method, const char *url, const char *headers,
+                       const char *body, size_t body_len, unsigned flags, script_reply_t *reply)
 {
     (void)ctx;
     (void)body_len;
+    bool credentials = flags & SCRIPT_COOKIES;
+    if (flags & SCRIPT_PUBLIC_ONLY)
+        public_only_seen++;
+    else
+        public_only_missing++;
     request_count++;
-    snprintf(request_seen, sizeof(request_seen), "%s %s <%s> [%s] von %s", method, url, headers,
-             body ? body : "-", page);
+    snprintf(request_seen, sizeof(request_seen), "%s %s <%s> [%s]%s", method, url, headers,
+             body ? body : "-", credentials ? " +cookies" : "");
+    size_t used = strlen(request_log);
+    snprintf(request_log + used, sizeof(request_log) - used, "%s %s%s;", method, url,
+             credentials ? "+cookies" : "");
     if (strstr(url, "/fehlt"))
         return false;
     const char *text = strstr(url, "/daten") ? "{\"a\":1}" : "Text vom Server";
+    const char *type = strstr(url, "/daten") ? "application/json" : "text/plain";
+    char extra[600] = "";
     reply->status = strstr(url, "/verboten") ? 403 : 200;
+    if (strcmp(url, "https://a.de/weiter") == 0) {
+        reply->status = 302;
+        strcpy(extra, "Location: https://fremd.de/offen\n");
+    } else if (strcmp(url, "https://a.de/umweg") == 0) {
+        reply->status = 307;
+        strcpy(extra, "Location: https://fremd.de/hin\n");
+    } else if (strcmp(url, "https://fremd.de/hin") == 0) {
+        reply->status = 302;
+        strcpy(extra, "Location: https://dritter.de/ziel\nAccess-Control-Allow-Origin: https://a.de\n");
+    } else if (strcmp(url, "https://dritter.de/ziel") == 0) {
+        /* erlaubt a.de ausdrücklich - aber gefragt wird hier auf Geheiß von fremd.de */
+        strcpy(extra, strstr(headers, "Origin: null\r\n") ? "Access-Control-Allow-Origin: null\n"
+                                                           : "Access-Control-Allow-Origin: https://a.de\nX-Getaeuscht: ja\n");
+    } else if (strcmp(url, "https://a.de/im-haus") == 0) {
+        reply->status = 303;
+        strcpy(extra, "Location: /daten\n");
+    } else if (strcmp(url, "https://a.de/kopf") == 0) {
+        strcpy(extra, "X-Eigen-Antwort: sichtbar\nSet-Cookie: geheim=1\n");
+    } else if (strncmp(url, "https://fremd.de/", 17) == 0) {
+        const char *path = url + 16;
+        bool options = strcmp(method, "OPTIONS") == 0;
+        if (strcmp(path, "/offen") == 0)
+            strcpy(extra, "Access-Control-Allow-Origin: *\nX-Verborgen: nein\n");
+        else if (strcmp(path, "/zeig") == 0)
+            strcpy(extra, "Access-Control-Allow-Origin: https://a.de\nAccess-Control-Expose-Headers: X-Zeig\n"
+                          "X-Zeig: ja\nX-Verborgen: nein\n");
+        else if (strcmp(path, "/mitcookies") == 0)
+            strcpy(extra, "Access-Control-Allow-Origin: https://a.de\nAccess-Control-Allow-Credentials: true\n");
+        else if (strcmp(path, "/stern") == 0)
+            strcpy(extra, "Access-Control-Allow-Origin: *\nAccess-Control-Allow-Credentials: true\n");
+        else if (strcmp(path, "/anderer") == 0)
+            strcpy(extra, "Access-Control-Allow-Origin: https://jemand-anders.de\n");
+        else if (strcmp(path, "/api") == 0)
+            strcpy(extra, options ? "Access-Control-Allow-Origin: https://a.de\nAccess-Control-Allow-Methods: PUT, DELETE\n"
+                                    "Access-Control-Allow-Headers: X-Eigen, Content-Type\n"
+                                  : "Access-Control-Allow-Origin: https://a.de\n");
+        else if (strcmp(path, "/streng") == 0)
+            strcpy(extra, options ? "Access-Control-Allow-Origin: https://a.de\nAccess-Control-Allow-Methods: GET\n"
+                                  : "Access-Control-Allow-Origin: https://a.de\n");
+        if (options)
+            text = "";
+    }
+    char all[900];
+    snprintf(all, sizeof(all), "Content-Type: %s\n%s", type, extra);
     reply->body = strdup(text);
     reply->length = strlen(text);
-    snprintf(reply->content_type, sizeof(reply->content_type), "%s",
-             strstr(url, "/daten") ? "application/json" : "text/plain");
+    reply->headers = strdup(all);
+    snprintf(reply->content_type, sizeof(reply->content_type), "%s", type);
     return true;
 }
 
@@ -208,7 +276,7 @@ static script_t *load_styled(const char *html, css_sheet_t **css, uint32_t budge
 static script_t *load(const char *html, uint32_t budget)
 {
     script_host_t host = { .fetch = on_fetch, .request = on_request, .log = on_log, .alert = on_alert,
-                           .confirm = on_confirm, .cancelled = on_cancelled,
+                           .confirm = on_confirm, .cancelled = on_cancelled, .private_page = page_is_private,
                            .width = 900, .height = 600, .budget_ms = budget };
     script_t *s = script_create(html, strlen(html), "https://a.de/pfad/seite.html?x=1#teil", &host);
     if (s)
@@ -599,6 +667,7 @@ int main(int argc, char **argv)
 
         /* Daten nachladen */
         request_count = 0;
+        request_log[0] = '\0';
         script_eval(s, "var x = new XMLHttpRequest(); x.open('POST', '/daten?q=1'); x.setRequestHeader('X-Eigen', 'ja');"
                        "x.setRequestHeader('Cookie', 'boese=1'); x.setRequestHeader('X-Zwei', 'a\\r\\nHost: boese');"
                        "x.onreadystatechange = function () { seen.push(x.readyState); };"
@@ -612,11 +681,12 @@ int main(int argc, char **argv)
               strstr(request_seen, "Content-Type: text/plain"), "Anfrage: Adresse aufgelöst, eigene Kopfzeile, Inhalt");
         check(!strstr(request_seen, "boese"), "verbotene und zerbrochene Kopfzeilen kommen nicht durch");
         request_count = 0;
+        request_log[0] = '\0';
         script_eval(s, "fetch('https://b.de/geheim').then(function () { zeig('ERLAUBT'); }, function (e) { zeig('abgelehnt ' + e.name); });"
                        "var y = new XMLHttpRequest(); y.open('GET', '//a.de.b.de/x'); y.onerror = function () { seen.push('auch'); }; y.send();");
         run_timers(s, 3);
-        check(request_count == 0 && page_has(s, "> abgelehnt TypeError</p>"),
-              "fremder Server: abgelehnt, ohne dass etwas hinausgeht");
+        check(request_count == 2 && page_has(s, "> abgelehnt TypeError</p>") && !strstr(request_log, "+cookies"),
+              "fremder Server ohne Erlaubnis: Das Skript sieht die Antwort nicht, und Cookies gingen nicht mit");
         script_eval(s, "fetch('/daten', { headers: { 'X-Drei': '3' } }).then(function (r) { return r.ok && r.headers.get('content-type') === 'application/json' ? r.json() : null; })"
                        ".then(function (d) { zeig('json ' + d.a); });");
         run_timers(s, 3);
@@ -770,6 +840,111 @@ int main(int argc, char **argv)
         check(page_has(s, ">dyn Hallo du 3</p>"), "await und import() ganz außen im Modul");
         check(page_has(s, ">e1 SyntaxError e2 mit Absicht e3 TypeError</p>"),
               "import(): fehlender Export, Fehler im Modul, unbekannte Angabe - jeweils als gescheitertes Promise");
+        script_destroy(s);
+    }
+
+    /* Daten von fremden Servern: nur mit deren Erlaubnis, Cookies nur auf Wunsch, Voranfrage */
+    static const char page_cors[] =
+        "<html><head><title>C</title></head><body><p id=aus>-</p><script>\n"
+        "function zeig(t) { document.getElementById('aus').textContent = t; }\n"
+        "async function probe(name, url, init) {\n"
+        "  try { const r = await fetch(url, init); const t = await r.text();\n"
+        "    return name + ':' + r.status + ':' + r.type + ':' + t.slice(0, 9) + ':' + [...r.headers.keys()].join(',') + (r.redirected ? ':umgeleitet' : ''); }\n"
+        "  catch (e) { return name + ':' + e.name; }\n"
+        "}\n"
+        "async function alle(liste) { const out = []; for (const p of liste) out.push(await probe(...p)); zeig(out.join(' | ')); }\n"
+        "</script></body></html>";
+    s = load(page_cors, 0);
+    check(s != NULL, "Seite für Anfragen an fremde Server geladen");
+    if (s) {
+        request_log[0] = '\0';
+        script_eval(s, "alle([['offen', 'https://fremd.de/offen'], ['zu', 'https://fremd.de/zu'], ['anderer', 'https://fremd.de/anderer'],"
+                       " ['zeig', 'https://fremd.de/zeig'], ['eigen', '/kopf']])");
+        run_timers(s, 5);
+        check(page_has(s, ">offen:200:cors:Text vom :content-type | zu:TypeError | anderer:TypeError | "
+                          "zeig:200:cors:Text vom :content-type,x-zeig | eigen:200:basic:Text vom :content-type,x-eigen-antwort</p>"),
+              "fremder Server: Antwort nur mit Erlaubnis sichtbar; Kopfzeilen nur die üblichen und die freigegebenen; Cookies nie");
+        check(!strstr(request_log, "fremd.de/offen+cookies") && strstr(request_log, "GET https://a.de/kopf+cookies;") &&
+              strstr(request_seen, "GET https://a.de/kopf <") && !strstr(request_seen, "Origin:"),
+              "Cookies gehen nur an den Server der Seite; dorthin ohne Origin-Zeile");
+        request_log[0] = '\0';
+        script_eval(s, "alle([['mit', 'https://fremd.de/mitcookies', { credentials: 'include' }], ['stern', 'https://fremd.de/stern', { credentials: 'include' }],"
+                       " ['ohne', 'https://fremd.de/mitcookies', { credentials: 'omit' }], ['nur-eigen', 'https://fremd.de/offen', { mode: 'same-origin' }]])");
+        run_timers(s, 5);
+        check(page_has(s, ">mit:200:cors:Text vom :content-type | stern:TypeError | ohne:200:cors:Text vom :content-type | nur-eigen:TypeError</p>"),
+              "Cookies zum fremden Server nur auf Wunsch und mit dessen ausdrücklicher Erlaubnis (\"*\" genügt dann nicht)");
+        check(strstr(request_log, "GET https://fremd.de/mitcookies+cookies;") && strstr(request_log, "GET https://fremd.de/mitcookies;") &&
+              !strstr(request_log, "fremd.de/offen"), "mode same-origin: Es geht nichts hinaus");
+        request_log[0] = '\0';
+        script_eval(s, "alle([['put', 'https://fremd.de/api', { method: 'PUT', headers: { 'X-Eigen': '1', 'Content-Type': 'application/json' }, body: '{}' }],"
+                       " ['streng', 'https://fremd.de/streng', { method: 'DELETE' }], ['kopf', 'https://fremd.de/streng', { headers: { 'X-Fremd': '1' } }],"
+                       " ['einfach', 'https://fremd.de/api', { method: 'POST', body: 'a=1' }]])");
+        run_timers(s, 5);
+        check(page_has(s, ">put:200:cors:Text vom :content-type | streng:TypeError | kopf:TypeError | einfach:200:cors:Text vom :content-type</p>"),
+              "Ungewöhnliches (PUT, eigene Kopfzeilen) erst nach Rückfrage beim fremden Server");
+        check(strstr(request_log, "OPTIONS https://fremd.de/api;PUT https://fremd.de/api;OPTIONS https://fremd.de/streng;"
+                                  "OPTIONS https://fremd.de/streng;POST https://fremd.de/api;") &&
+              !strstr(request_log, "DELETE"),
+              "Voranfrage: OPTIONS zuerst; ohne Erlaubnis geht die eigentliche Anfrage nicht hinaus");
+        request_count = 0;
+        script_eval(s, "fetch('https://fremd.de/api', { method: 'PUT', headers: { 'X-Eigen': '1' }, body: 'x' })");
+        run_timers(s, 3);
+        check(strstr(request_seen, "PUT https://fremd.de/api <") && strstr(request_seen, "Origin: https://a.de\r\n") &&
+              strstr(request_seen, "[x]"), "die eigentliche Anfrage nennt ihre Herkunft (Origin)");
+        request_log[0] = '\0';
+        script_eval(s, "alle([['weiter', '/weiter'], ['haus', '/im-haus', { method: 'POST', body: 'x' }], ['dunkel', 'https://fremd.de/zu', { mode: 'no-cors' }],"
+                       " ['router', 'https://192.168.1.1/'], ['klartext', 'http://fremd.de/offen'], ['datei', 'file:///etc/passwd']])");
+        run_timers(s, 5);
+        check(page_has(s, ">weiter:200:cors:Text vom :content-type:umgeleitet | haus:200:basic:{\"a\":1}:content-type:umgeleitet | "
+                          "dunkel:0:opaque:: | router:TypeError | klartext:TypeError | datei:TypeError</p>"),
+              "Weiterleitungen werden verfolgt und neu geprüft; kein Blick ins eigene Netz, nichts Unverschlüsseltes, keine Dateien");
+        check(strstr(request_log, "GET https://a.de/weiter+cookies;GET https://fremd.de/offen;POST https://a.de/im-haus+cookies;"
+                                  "GET https://a.de/daten+cookies;GET https://fremd.de/zu;") &&
+              !strstr(request_log, "192.168") && !strstr(request_log, "http://fremd.de") && !strstr(request_log, "file:"),
+              "nach der Weiterleitung zum fremden Server ohne Cookies; 303 macht aus POST ein GET");
+        script_eval(s, "var x = new XMLHttpRequest(); x.open('DELETE', '/kopf'); x.onload = function () {"
+                       " zeig(x.status + ' ' + x.getResponseHeader('X-Eigen-Antwort') + ' ' + x.getResponseHeader('Set-Cookie') + ' ' + /x-eigen-antwort: sichtbar/.test(x.getAllResponseHeaders())); }; x.send();");
+        run_timers(s, 3);
+        check(page_has(s, ">200 sichtbar null true</p>") && strstr(request_seen, "DELETE https://a.de/kopf <"),
+              "XMLHttpRequest: weitere Verfahren (DELETE) und die Kopfzeilen der Antwort");
+        script_eval(s, "(async function () { const r = await fetch('https://fremd.de/offen');"
+                       " const b = new Uint8Array(await r.arrayBuffer()); const c = new AbortController(); c.abort();"
+                       " let ab = '-'; try { await fetch('/kopf', { signal: c.signal }); } catch (e) { ab = e.name; }"
+                       " zeig(b.length + ' ' + b[0] + ' ' + new TextDecoder().decode(b).slice(0, 4) + ' ' + ab); })()");
+        run_timers(s, 3);
+        check(page_has(s, ">15 84 Text AbortError</p>"), "fetch: Antwort als Bytes; ein schon abgebrochenes Signal bricht ab");
+        /* über einen fremden Server zu einem dritten: Die Herkunft heißt dann "null" */
+        request_log[0] = '\0';
+        script_eval(s, "alle([['umweg', '/umweg', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: 'x' }]])");
+        run_timers(s, 3);
+        check(page_has(s, ">umweg:200:cors:Text vom :content-type:umgeleitet</p>") &&
+              strstr(request_log, "POST https://a.de/umweg+cookies;POST https://fremd.de/hin;GET https://dritter.de/ziel;") &&
+              strstr(request_seen, "Origin: null\r\n") && !strstr(request_seen, "Content-Type") && strstr(request_seen, "[-]"),
+              "Umweg über einen fremden Server: Herkunft \"null\"; nach 302 ohne Inhalt und ohne dessen Kopfzeilen");
+        /* eine Seite aus dem Internet: nichts im eigenen Netz, auch nicht unter harmlosem Namen */
+        request_log[0] = '\0';
+        public_only_missing = 0;
+        script_eval(s, "alle([['selbst', 'https://localhost./x'], ['drucker', 'https://drucker.local/'], ['zehn', 'https://10.1.2.3:8080/'],"
+                       " ['v6', 'https://[::1]/'], ['offen', 'https://fremd.de/offen']])");
+        run_timers(s, 3);
+        check(page_has(s, ">selbst:TypeError | drucker:TypeError | zehn:TypeError | v6:TypeError | offen:200:cors:Text vom :content-type</p>") &&
+              strcmp(request_log, "GET https://fremd.de/offen;") == 0 && public_only_missing == 0,
+              "Seite aus dem Internet: keine Anfrage ins eigene Netz; alle anderen nur an öffentliche Adressen");
+        script_destroy(s);
+    }
+    /* eine Seite aus dem eigenen Netz darf dort auch nachladen */
+    page_is_private = true;
+    s = load(page_cors, 0);
+    page_is_private = false;
+    check(s != NULL, "Seite aus dem eigenen Netz geladen");
+    if (s) {
+        request_log[0] = '\0';
+        public_only_seen = 0;
+        script_eval(s, "alle([['zehn', 'https://10.1.2.3:8080/offen-nicht'], ['eigen', '/kopf']])");
+        run_timers(s, 3);
+        check(page_has(s, ">zehn:TypeError | eigen:200:basic:Text vom :content-type,x-eigen-antwort</p>") &&
+              strstr(request_log, "GET https://10.1.2.3:8080/offen-nicht;") && public_only_seen == 0,
+              "Seite aus dem eigenen Netz: Anfragen dorthin gehen hinaus (und brauchen wie überall die Erlaubnis des Servers)");
         script_destroy(s);
     }
 

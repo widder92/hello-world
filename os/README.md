@@ -535,9 +535,30 @@ Abbild steht; ändern Skripte es, setzt der Browser die Seite neu.
 - Zeitgeber (`setTimeout`, `setInterval`), `alert` und `confirm` (als Kasten
   über der Seite; Esc unterdrückt weitere Meldungen der Seite),
   `location.href = …`, `history.back()`.
-- **Daten nachladen** mit `XMLHttpRequest` und `fetch` – nur vom Server der
-  Seite selbst. Während ein Skript auf die Antwort wartet, wartet auch das
-  Fenster.
+- **Daten nachladen** mit `XMLHttpRequest` und `fetch` – vom Server der
+  Seite und (seit 0.23) **auch von anderen Servern**, mit den Regeln, die
+  große Browser dafür haben („CORS"):
+  - Die Antwort eines fremden Servers bekommt das Skript nur zu sehen, wenn
+    der Server es dieser Seite erlaubt (`Access-Control-Allow-Origin`). Von
+    den Kopfzeilen der Antwort sieht es nur die üblichen und die, die der
+    Server freigibt.
+  - Die Cookies des Benutzers gehen zu einem fremden Server nur mit, wenn
+    das Skript es verlangt (`credentials: 'include'`, `withCredentials`)
+    **und** der Server genau diese Seite dafür zulässt – „für alle" (`*`)
+    reicht dann nicht.
+  - Vor allem Ungewöhnlichen (`PUT`, `DELETE`, `PATCH`, eigene Kopfzeilen,
+    JSON als Inhalt) fragt der Browser den fremden Server erst mit `OPTIONS`,
+    ob er das von dieser Seite annimmt.
+  - Weiterleitungen werden verfolgt und bei jedem Schritt neu geprüft; geht
+    es über einen fremden Server zu einem dritten, heißt die Herkunft dort
+    `null`.
+  - Von einer verschlüsselten Seite aus geht nichts Unverschlüsseltes hinaus.
+  - `mode: 'no-cors'` schickt eine einfache Anfrage ab, ohne dass das Skript
+    die Antwort sieht (`navigator.sendBeacon` ebenso).
+
+  Während ein Skript auf die Antwort wartet, wartet auch das Fenster.
+
+  ![Eine Testseite fragt einen zweiten Server: erlaubte Antworten kommen an, nicht erlaubte bleiben verborgen](docs/screenshot-zweiter-server.png)
 - Ein- und Ausblenden: Skripte erfahren, was laut Stylesheet zu sehen ist
   (`getComputedStyle(…).display`, `offsetWidth`), und was sie per
   `style.display` zeigen, erscheint.
@@ -559,11 +580,10 @@ Abbild steht; ändern Skripte es, setzt der Browser die Seite neu.
 - Maße und Positionen: Wo ein Element steht und wie groß es ist, erfahren
   Skripte nicht (sichtbare Elemente melden eine angenommene Größe). Menüs,
   die unter dem Mauszeiger aufklappen, und alles mit Ziehen gehen nicht.
-- **Daten** von fremden Servern nachladen (`fetch`, `XMLHttpRequest` zu einer
-  anderen Adresse als der der Seite) ist gesperrt – viele Seiten holen ihre
-  Inhalte so von einem zweiten Server und bleiben deshalb leer. Auch andere
-  Verfahren als GET und POST gibt es dabei nicht. Skriptdateien und Module
-  werden nacheinander geholt; solange wartet das Fenster.
+- Beim Nachladen: Antworten kommen als Ganzes, nicht als Strom
+  (`response.body`), und als Text (`text()`, `json()`) – Binärdaten wie
+  Bilder (`blob()`) gehen nicht. Skriptdateien, Module und Daten werden
+  nacheinander geholt; solange wartet das Fenster.
 - Tempo: Die Maschine deutet den Quelltext Schritt für Schritt, statt ihn zu
   übersetzen – grob hundertmal langsamer als ein großer Browser. Ein Skript
   darf zehn Sekunden rechnen, alle Skripte einer Seite beim Laden zusammen
@@ -573,11 +593,10 @@ Abbild steht; ändern Skripte es, setzt der Browser die Seite neu.
 
 Unterm Strich: Menüs zum Aufklappen, Formularprüfung, „Mehr anzeigen",
 jQuery- und React-Seiten, die WordPress-Verwaltung funktionieren, auch wenn
-sie die neuesten Sprachmittel benutzen, ihre Skripte als Module laden oder
-erst später nachfordern. Seiten, die ihre Inhalte von einem zweiten Server
-holen oder Zeichenflächen, Maße und Positionen brauchen, und große
-Web-Anwendungen (Google Maps, YouTube, der Block-Editor von WordPress) noch
-nicht.
+sie die neuesten Sprachmittel benutzen, ihre Skripte als Module laden, erst
+später nachfordern oder ihre Inhalte von einem zweiten Server holen. Seiten,
+die Zeichenflächen, Maße und Positionen brauchen, und große Web-Anwendungen
+(Google Maps, YouTube, der Block-Editor von WordPress) noch nicht.
 
 **Wie Generatoren und `async` hier funktionieren.** Die Maschine führt den
 Programmbaum direkt aus; wo eine Funktion gerade steht, steckt also im
@@ -595,6 +614,17 @@ zehntausenden absichtlich beschädigten Skripten und Seiten getestet – aber
 ein Fehler in ihr könnte einer bösartigen Seite mehr erlauben als in einem
 großen Browser. Darum ist JavaScript ausgeschaltet, bis du es einschaltest;
 für Seiten, denen du nicht traust, lass es aus.
+
+**Das Heimnetz.** Die Skripte einer Seite aus dem Internet erreichen nur
+öffentliche Adressen – nicht den Router, den Drucker oder andere Geräte zu
+Hause (10.x, 172.16–31.x, 192.168.x, 169.254.x, `localhost` und den eigenen
+Rechner). Entschieden wird das an der Adresse, zu der wirklich verbunden
+wird, nicht am Namen: Ein harmlos klingender Name, der auf den Router zeigt,
+hilft einer Seite also nicht, und eine Weiterleitung dorthin auch nicht.
+Seiten, die selbst von einem Gerät im Heimnetz kommen, dürfen dort
+nachladen. Die Sperre gilt für alles, was Skripte holen (Daten,
+Skriptdateien, Module) – noch nicht für Bilder und Stylesheets, die eine
+Seite einbindet.
 
 ### WordPress im Browser von HelloOS
 
@@ -1034,7 +1064,7 @@ gehalten. Naheliegende nächste Schritte:
 - Programme aus Dateien laden (ELF), mehrere Prozessorkerne
 - Symbole auf dem Desktop, ein Dateimanager, Fenster an den Kanten ziehen und minimieren
 - im Browser: Abstände und Rahmen (auch Tabellenlinien), frei platzierte Elemente, Raster mit benannten Flächen, WebP- und SVG-Bilder, Hintergrundbilder, Tabs
-- JavaScript: Daten von fremden Servern nachladen (mit den üblichen Schutzregeln dafür), weitere HTTP-Verfahren (PUT, DELETE); Zeichenflächen (Canvas); Maße und Positionen der Elemente; eine Schutzwand zwischen Skripten und System (dafür braucht es den User-Modus)
+- JavaScript: Zeichenflächen (Canvas); Maße und Positionen der Elemente; eine Schutzwand zwischen Skripten und System (dafür braucht es den User-Modus)
 - echte Schrift auch in Terminal, Editor und Eingabefeldern; Hinting für schärfere kleine Schrift
 
 ## Die ältere 32-Bit-Version

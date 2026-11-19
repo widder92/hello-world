@@ -147,6 +147,9 @@ check: | $(BUILD)
 	    -Wno-format-truncation \
 	    -o $(BUILD)/web_test tests/web_test.c kernel/html.c kernel/url.c kernel/css.c
 	$(BUILD)/web_test
+	cc -O1 -g -fsanitize=address,undefined -Wall -Wextra -Wno-builtin-declaration-mismatch \
+	    -o $(BUILD)/http_test tests/http_test.c kernel/http.c
+	$(BUILD)/http_test
 	cc -O1 -g -fsanitize=address,undefined -Wall -o $(BUILD)/block_test tests/block_test.c
 	$(BUILD)/block_test
 	cc -O1 -g -fsanitize=address,undefined -Wall -Wextra -o $(BUILD)/heap_test \
