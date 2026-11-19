@@ -36,14 +36,14 @@ static bool buffer_get(js_state *J, js_object *o, js_string *key, bool *found);
 static void view_free(js_state *J, js_object *o);
 static void buffer_free(js_state *J, js_object *o);
 
-static const js_host_class buffer_class = { "ArrayBuffer", buffer_get, NULL, buffer_free };
+static const js_host_class buffer_class = { "ArrayBuffer", buffer_get, NULL, buffer_free, NULL };
 static const js_host_class view_classes[T_KINDS] = {
-    { "Int8Array", view_get, view_put, view_free }, { "Uint8Array", view_get, view_put, view_free },
-    { "Uint8ClampedArray", view_get, view_put, view_free },
-    { "Int16Array", view_get, view_put, view_free }, { "Uint16Array", view_get, view_put, view_free },
-    { "Int32Array", view_get, view_put, view_free }, { "Uint32Array", view_get, view_put, view_free },
-    { "Float32Array", view_get, view_put, view_free },
-    { "Float64Array", view_get, view_put, view_free }, { "DataView", view_get, view_put, view_free },
+    { "Int8Array", view_get, view_put, view_free, NULL }, { "Uint8Array", view_get, view_put, view_free, NULL },
+    { "Uint8ClampedArray", view_get, view_put, view_free, NULL },
+    { "Int16Array", view_get, view_put, view_free, NULL }, { "Uint16Array", view_get, view_put, view_free, NULL },
+    { "Int32Array", view_get, view_put, view_free, NULL }, { "Uint32Array", view_get, view_put, view_free, NULL },
+    { "Float32Array", view_get, view_put, view_free, NULL },
+    { "Float64Array", view_get, view_put, view_free, NULL }, { "DataView", view_get, view_put, view_free, NULL },
 };
 
 static js_object *buffer_of(const js_value *v)

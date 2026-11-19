@@ -307,6 +307,21 @@ js_string *js_intern_cstr(js_state *J, const char *text)
     return js_intern(J, text, strlen(text));
 }
 
+js_string *js_symbol_new(js_state *J, const char *text, size_t len, int kind)
+{
+    js_string *s = string_raw(J, len);
+    if (s == J->empty)
+        return s;                       /* Speichermangel: die Ausführung endet ohnehin */
+    if (len)
+        memcpy(s->data, text, len);
+    string_measure(s);
+    s->symbol = (uint8_t)kind;
+    /* ein eigener Streuwert: Symbole stehen in den Suchtabellen der Objekte wie Namen */
+    J->rng = J->rng * 1664525u + 1013904223u;
+    s->hash = J->rng | 1;
+    return s;
+}
+
 js_string *js_index_name(js_state *J, uint32_t index)
 {
     char text[12];
@@ -563,10 +578,32 @@ static void mark_object(js_state *J, js_object *o)
 
 static void mark_value(js_state *J, const js_value *v)
 {
-    if (v->t == JS_T_STR)
+    if (v->t == JS_T_STR || v->t == JS_T_SYM)
         v->u.s->gc.mark = 1;
     else if (v->t == JS_T_OBJ)
         mark_object(J, v->u.o);
+}
+
+void js_gc_mark(js_state *J, const js_value *v)
+{
+    mark_value(J, v);
+}
+
+bool js_gc_weak(js_state *J, js_object *o)
+{
+    if (J->weak_count == J->weak_cap) {
+        size_t cap = J->weak_cap ? J->weak_cap * 2 : 64;
+        js_object **list = kmalloc(cap * sizeof(js_object *));
+        if (!list)
+            return false;
+        if (J->weak_count)
+            memcpy(list, J->weak, J->weak_count * sizeof(js_object *));
+        kfree(J->weak);
+        J->weak = list;
+        J->weak_cap = cap;
+    }
+    J->weak[J->weak_count++] = o;
+    return true;
 }
 
 static void mark_children(js_state *J, js_object *o)
@@ -593,12 +630,21 @@ static void mark_children(js_state *J, js_object *o)
     case JS_C_NATIVE:
         mark_object(J, o->u.n.data);
         break;
-    case JS_C_BOOLEAN: case JS_C_NUMBER: case JS_C_STRING: case JS_C_DATE:
+    case JS_C_BOOLEAN: case JS_C_NUMBER: case JS_C_STRING: case JS_C_DATE: case JS_C_SYMBOL:
+    case JS_C_SIGNAL:
         mark_value(J, &o->u.prim);
         break;
     case JS_C_REGEXP:
         if (o->u.re.source)
             o->u.re.source->gc.mark = 1;
+        break;
+    case JS_C_HOST:
+        if (o->u.host.cls && o->u.host.cls->mark)
+            o->u.host.cls->mark(J, o);
+        break;
+    case JS_C_PROXY:
+        mark_object(J, o->u.px.target);
+        mark_object(J, o->u.px.handler);
         break;
     default:
         break;
@@ -666,7 +712,10 @@ void js_gc_run(js_state *J)
     mark_value(J, &J->exception);
     js_object *roots[] = { J->global, J->registry, J->dummy, J->object_proto, J->function_proto,
                            J->array_proto, J->string_proto, J->number_proto, J->boolean_proto,
-                           J->error_proto, J->date_proto, J->regexp_proto };
+                           J->error_proto, J->date_proto, J->regexp_proto, J->symbol_proto,
+                           J->iterator_proto, J->array_iter_proto, J->string_iter_proto,
+                           J->array_values, J->string_values, J->map_entries, J->set_values,
+                           J->generator_proto };
     for (unsigned i = 0; i < sizeof(roots) / sizeof(roots[0]); i++)
         mark_object(J, roots[i]);
     for (int i = 0; i < 8; i++)
@@ -674,14 +723,32 @@ void js_gc_run(js_state *J)
     if (J->label)
         J->label->gc.mark = 1;
     J->empty->gc.mark = 1;
+    js_co_mark_roots(J);
+    J->weak_count = 0;
     while (J->gray_count > 0 && !J->fatal)
         mark_children(J, (js_object *)J->gray[--J->gray_count]);
+    /*
+     * Schwache Sammlungen: Ein Wert lebt nur, solange sein Schlüssel lebt.
+     * Das kann sich fortpflanzen (der Wert hält den Schlüssel eines anderen
+     * Eintrags), also wiederholen, bis nichts mehr dazukommt.
+     */
+    for (bool again = true; again && !J->fatal;) {
+        again = false;
+        for (size_t i = 0; i < J->weak_count; i++)
+            again |= js_coll_trace_weak(J, J->weak[i]);
+        while (J->gray_count > 0 && !J->fatal)
+            mark_children(J, (js_object *)J->gray[--J->gray_count]);
+    }
     if (J->fatal) {
         /* Markieren abgebrochen: nichts wegräumen, nur die Marken löschen */
         for (js_gc *g = J->all; g; g = g->next)
             g->mark = 0;
+        J->weak_count = 0;
         return;
     }
+    for (size_t i = 0; i < J->weak_count; i++)
+        js_coll_sweep_weak(J, J->weak[i]);
+    J->weak_count = 0;
     free_all(J, false);
     J->gc_runs++;
     /*
@@ -814,13 +881,15 @@ const char *js_typeof(const js_value *v)
     case JS_T_BOOL: return "boolean";
     case JS_T_NUM: return "number";
     case JS_T_STR: return "string";
+    case JS_T_SYM: return "symbol";
     default: return js_is_callable(v) ? "function" : "object";
     }
 }
 
 bool js_is_callable(const js_value *v)
 {
-    return v->t == JS_T_OBJ && (v->u.o->cls == JS_C_FUNCTION || v->u.o->cls == JS_C_NATIVE);
+    return v->t == JS_T_OBJ && (v->u.o->cls == JS_C_FUNCTION || v->u.o->cls == JS_C_NATIVE ||
+                                (v->u.o->cls == JS_C_PROXY && v->u.o->u.px.callable));
 }
 
 bool js_is_array(const js_value *v)
@@ -895,6 +964,24 @@ bool js_to_primitive(js_state *J, int index, int hint)
     if (J->stack[index].t != JS_T_OBJ)
         return true;
     js_object *o = J->stack[index].u.o;
+    /* Das Objekt bestimmt selbst, was aus ihm wird: [Symbol.toPrimitive](hint) */
+    if (js_lookup(o, J->sym[SYM_toPrimitive], NULL)) {
+        if (!js_get(J, index, J->sym[SYM_toPrimitive]))
+            return false;
+        if (js_is_callable(js_top(J, 0))) {
+            js_push(J, J->stack[index]);
+            js_push(J, js_str(js_intern_cstr(J, hint == 0 ? "default" : hint == 1 ? "number"
+                                                                                    : "string")));
+            if (!js_call(J, 1))
+                return false;
+            if (js_top(J, 0)->t == JS_T_OBJ)
+                return js_throw(J, JS_E_TYPE, "Cannot convert object to primitive value");
+            J->stack[index] = *js_top(J, 0);
+            js_pop(J, 1);
+            return true;
+        }
+        js_pop(J, 1);
+    }
     if (hint == 0)
         hint = o->cls == JS_C_DATE ? 2 : 1;
     for (int round = 0; round < 2; round++) {
@@ -926,6 +1013,8 @@ bool js_to_number(js_state *J, int index, double *out)
         case JS_T_BOOL: *out = v->u.b ? 1 : 0; return true;
         case JS_T_NUM: *out = v->u.n; return true;
         case JS_T_STR: *out = js_string_to_number(v->u.s); return true;
+        case JS_T_SYM:
+            return js_throw(J, JS_E_TYPE, "Cannot convert a Symbol value to a number");
         default:
             if (!js_to_primitive(J, index, 1))
                 return false;
@@ -955,6 +1044,8 @@ bool js_to_string(js_state *J, int index)
         case JS_T_NULL: *v = js_str(J->k[K_null]); return true;
         case JS_T_BOOL: *v = js_str(J->k[v->u.b ? K_true : K_false]); return true;
         case JS_T_NUM: *v = js_str(js_number_string(J, v->u.n)); return true;
+        case JS_T_SYM:
+            return js_throw(J, JS_E_TYPE, "Cannot convert a Symbol value to a string");
         default:
             if (!js_to_primitive(J, index, 2))
                 return false;
@@ -978,6 +1069,9 @@ bool js_to_object(js_state *J, int index)
     case JS_T_NUM:
         o = js_object_new(J, JS_C_NUMBER, J->number_proto);
         break;
+    case JS_T_SYM:
+        o = js_object_new(J, JS_C_SYMBOL, J->symbol_proto);
+        break;
     default:
         o = js_object_new(J, JS_C_STRING, J->string_proto);
         break;
@@ -997,6 +1091,12 @@ bool js_to_key(js_state *J, int index, js_string **key)
             *key = js_index_name(J, (uint32_t)n);
             return true;
         }
+    }
+    if (v->t == JS_T_OBJ && !js_to_primitive(J, index, 2))
+        return false;
+    if (J->stack[index].t == JS_T_SYM) {
+        *key = J->stack[index].u.s;
+        return true;
     }
     if (!js_to_string(J, index))
         return false;
@@ -1031,6 +1131,10 @@ bool js_loose_equal(js_state *J, int a, int b, bool *out)
             *out = x_nullish && y_nullish;
             return true;
         }
+        if ((x->t == JS_T_SYM && y->t != JS_T_OBJ) || (y->t == JS_T_SYM && x->t != JS_T_OBJ)) {
+            *out = false;               /* ein Symbol gleicht nur sich selbst */
+            return true;
+        }
         if (x->t == JS_T_OBJ) {
             if (!js_to_primitive(J, a, 0))
                 return false;
@@ -1059,7 +1163,14 @@ static const char *const key_names[K_COUNT] = {
     "undefined", "null", "true", "false", "object", "function", "number", "string", "boolean",
     "", "index", "input", "lastIndex", "stack", "get", "set", "value", "writable",
     "enumerable", "configurable", "callee", "join", "toJSON", "then", "done", "next", "this",
-    "source", "global", "ignoreCase", "multiline", "line", "cause",
+    "source", "global", "ignoreCase", "multiline", "line", "cause", "return", "throw",
+    "description",
+};
+
+static const char *const symbol_names[SYM_COUNT] = {
+    "Symbol.iterator", "Symbol.asyncIterator", "Symbol.hasInstance", "Symbol.toPrimitive",
+    "Symbol.toStringTag", "Symbol.species", "Symbol.unscopables", "Symbol.isConcatSpreadable",
+    "Symbol.match", "Symbol.matchAll", "Symbol.replace", "Symbol.search", "Symbol.split",
 };
 
 js_state *js_create(const js_host_t *host)
@@ -1097,6 +1208,14 @@ js_state *js_create(const js_host_t *host)
         js_destroy(J);
         return NULL;
     }
+    for (int i = 0; i < SYM_COUNT; i++) {
+        J->sym[i] = js_symbol_new(J, symbol_names[i], strlen(symbol_names[i]), JS_SYM_PUBLIC);
+        J->sym[i]->gc.pinned = 1;
+    }
+    for (int i = 0; i < H_COUNT; i++) {
+        J->hid[i] = js_symbol_new(J, "", 0, JS_SYM_PRIVATE);
+        J->hid[i]->gc.pinned = 1;
+    }
     J->object_proto = js_object_new(J, JS_C_OBJECT, NULL);
     J->function_proto = js_object_new(J, JS_C_OBJECT, J->object_proto);
     J->global = js_object_new(J, JS_C_OBJECT, J->object_proto);
@@ -1116,12 +1235,14 @@ void js_destroy(js_state *J)
     if (!J)
         return;
     free_all(J, true);
+    js_co_free(J);
     while (J->arena) {
         js_arena *next = J->arena->next;
         kfree(J->arena);
         J->arena = next;
     }
     kfree(J->gray);
+    kfree(J->weak);
     kfree(J->names);
     if (J->stack)
         kfree(J->stack - STACK_GUARD);

@@ -1,3 +1,9 @@
+HelloOS 0.21
+- Browser: JavaScript auf heutigem Stand. Die eigene JavaScript-Maschine versteht jetzt auch die neueren Sprachmittel: async/await, Generatoren, Symbole und Iteratoren, Klassen mit privaten Feldern (#x) und static-Blöcken, Proxy und Reflect, echte Map/Set/WeakMap, f`...`-Vorlagen, Zahlen wie 1_000, reguläre Ausdrücke mit benannten Gruppen und Rückwärtsblick, Intl (Zahlen und Daten nach Landesart, deutsch und englisch), structuredClone, TextEncoder.
+- Damit laufen deutlich mehr Seiten: Skripte, die bisher als Ganzes ausgelassen wurden, weil sie eines dieser Sprachmittel enthielten, werden jetzt ausgeführt. Getestet unter anderem mit jQuery 3.7, React 18 und den über 60 Skripten der WordPress-Verwaltung.
+- Noch nicht möglich: Skripte, die als Module geladen werden (import/export), und Skripte, die eine Seite erst nach dem Laden nachfordert - das betrifft viele große, aktuelle Seiten. JavaScript bleibt ausgeliefert ausgeschaltet (Knopf rechts oben im Browser); die Skripte laufen weiterhin ohne Schutzwand zum System.
+- Kleinigkeiten: Die Suche auf der Seite (Strg+F) hinterlegt jetzt nur das gefundene Wort, nicht die ganze Zeile.
+
 HelloOS 0.20
 - Browser: Spalten und Raster. Seiten, die ihre Teile nebeneinander anordnen (flex, grid), sehen jetzt so aus: Kopfzeile mit Menü rechts, Inhalt neben der Seitenleiste, Karten in Reihen. Große Überschriften behalten in Spalten und Tabellen ihre Größe.
 - Browser: bedienen wie gewohnt - Knopf "Vor" (Alt+Pfeil rechts), Lesezeichen mit dem Stern neben der Adresse (Strg+D; Liste mit Strg+B und auf der Startseite), Verlauf des Fensters, Suchen auf der Seite (Strg+F), Schriftgröße in vier Stufen (Strg und +, -, 0), Quelltext der Seite (Strg+U).

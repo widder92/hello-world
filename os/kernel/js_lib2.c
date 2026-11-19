@@ -412,7 +412,8 @@ static bool json_write(json_out *out, bool *skipped)
     if (out->depth > 200 || JS_STACK_HERE() < J->stack_floor || J->top + 100 > JS_STACK_SIZE)
         return js_throw(J, JS_E_TYPE, "Converting circular structure to JSON");
     /* toJSON, falls vorhanden (etwa bei Date) */
-    if (J->stack[slot].t == JS_T_OBJ && js_lookup(J->stack[slot].u.o, J->k[K_toJSON], NULL)) {
+    if (J->stack[slot].t == JS_T_OBJ && (J->stack[slot].u.o->cls == JS_C_PROXY ||
+                                         js_lookup(J->stack[slot].u.o, J->k[K_toJSON], NULL))) {
         if (!js_get(J, slot, J->k[K_toJSON]))
             return false;
         if (js_is_callable(js_top(J, 0))) {
@@ -436,15 +437,44 @@ static bool json_write(json_out *out, bool *skipped)
             return json_put(out, "null", 4);
         return json_put(out, number, (size_t)js_number_to_text(v->u.n, number));
     case JS_T_STR: return json_quote(out, v->u.s);
-    case JS_T_UNDEF: *skipped = true; return true;
+    case JS_T_UNDEF: case JS_T_SYM: *skipped = true; return true;
     default: break;
     }
     js_object *o = v->u.o;
-    if (o->cls == JS_C_FUNCTION || o->cls == JS_C_NATIVE) {
+    if (js_is_callable(v)) {
         *skipped = true;
         return true;
     }
     out->depth++;
+    if (o->cls == JS_C_PROXY) {
+        js_object *real = js_proxy_unwrap(o);
+        if (!real)
+            return js_throw(J, JS_E_TYPE, "Cannot perform 'get' on a proxy that has been revoked");
+        if (real->cls == JS_C_ARRAY) {
+            /* ein Proxy vor einem Feld: Länge und Glieder über den Proxy erfragen */
+            double length;
+            if (!js_get(J, slot, J->k[K_length]) || !js_to_number(J, J->top - 1, &length))
+                return false;
+            js_pop(J, 1);
+            if (!json_put(out, "[", 1))
+                return false;
+            uint32_t n = length > 0 && length < JS_ARRAY_MAX ? (uint32_t)length : 0;
+            for (uint32_t i = 0; i < n; i++) {
+                bool none;
+                if ((i && !json_put(out, ",", 1)) || !json_newline(out, out->depth))
+                    return false;
+                if (!js_get_index(J, slot, i) || !json_write(out, &none))
+                    return false;
+                js_pop(J, 1);
+                if (none && !json_put(out, "null", 4))
+                    return false;
+            }
+            out->depth--;
+            if (n && !json_newline(out, out->depth))
+                return false;
+            return json_put(out, "]", 1);
+        }
+    }
     if (o->cls == JS_C_ARRAY) {
         if (!json_put(out, "[", 1))
             return false;
@@ -1162,197 +1192,7 @@ bool js_timers_run(js_state *J, uint32_t budget_ms)
 
 /* --- Der in JavaScript geschriebene Teil ------------------------------------------------------------ */
 
-static const char prelude[] =
-"(function (global) {\n"
-"  function hide(o, name, value) {\n"
-"    Object.defineProperty(o, name, { value: value, writable: true, configurable: true });\n"
-"  }\n"
-"  var symbols = 0;\n"
-"  function Symbol(d) { return '@@' + (d === undefined ? '' : d) + '#' + (++symbols); }\n"
-"  Symbol.iterator = '@@iterator'; Symbol.asyncIterator = '@@asyncIterator';\n"
-"  Symbol.toStringTag = '@@toStringTag'; Symbol.hasInstance = '@@hasInstance';\n"
-"  Symbol.toPrimitive = '@@toPrimitive'; Symbol.species = '@@species';\n"
-"  Symbol['for'] = function (key) { return '@@for:' + key; };\n"
-"  global.Symbol = Symbol;\n"
-"\n"
-"  var GONE = {};\n"
-"  function keyOf(k) {\n"
-"    var t = typeof k;\n"
-"    return t === 'string' ? 's' + k : t === 'number' ? 'n' + k\n"
-"         : t === 'boolean' || k === null || k === undefined ? 'c' + k : null;\n"
-"  }\n"
-"  function Map(init) {\n"
-"    hide(this, '_k', []); hide(this, '_v', []); hide(this, '_i', Object.create(null));\n"
-"    hide(this, 'size', 0);\n"
-"    if (init != null) {\n"
-"      var items = Array.from(init);\n"
-"      for (var i = 0; i < items.length; i++) this.set(items[i][0], items[i][1]);\n"
-"    }\n"
-"  }\n"
-"  var M = Map.prototype;\n"
-"  hide(M, '_find', function (k) {\n"
-"    var h = keyOf(k);\n"
-"    if (h !== null) { var i = this._i[h]; return i === undefined ? -1 : i; }\n"
-"    return this._k.indexOf(k);\n"
-"  });\n"
-"  hide(M, '_pack', function () {\n"
-"    var k = [], v = [], index = Object.create(null);\n"
-"    for (var i = 0; i < this._k.length; i++) {\n"
-"      if (this._k[i] === GONE) continue;\n"
-"      var h = keyOf(this._k[i]);\n"
-"      if (h !== null) index[h] = k.length;\n"
-"      k.push(this._k[i]); v.push(this._v[i]);\n"
-"    }\n"
-"    this._k = k; this._v = v; this._i = index;\n"
-"  });\n"
-"  M.get = function (k) { var i = this._find(k); return i < 0 ? undefined : this._v[i]; };\n"
-"  M.has = function (k) { return this._find(k) >= 0; };\n"
-"  M.set = function (k, v) {\n"
-"    var i = this._find(k);\n"
-"    if (i >= 0) { this._v[i] = v; return this; }\n"
-"    var h = keyOf(k);\n"
-"    if (h !== null) this._i[h] = this._k.length;\n"
-"    this._k.push(k); this._v.push(v); this.size++;\n"
-"    return this;\n"
-"  };\n"
-"  M['delete'] = function (k) {\n"
-"    var i = this._find(k);\n"
-"    if (i < 0) return false;\n"
-"    var h = keyOf(k);\n"
-"    if (h !== null) delete this._i[h];\n"
-"    this._k[i] = GONE; this._v[i] = undefined; this.size--;\n"
-"    if (this._k.length > 32 && this.size * 2 < this._k.length) this._pack();\n"
-"    return true;\n"
-"  };\n"
-"  M.clear = function () { this._k = []; this._v = []; this._i = Object.create(null); this.size = 0; };\n"
-"  M.forEach = function (fn, self) {\n"
-"    for (var i = 0; i < this._k.length; i++)\n"
-"      if (this._k[i] !== GONE) fn.call(self, this._v[i], this._k[i], this);\n"
-"  };\n"
-"  M.keys = function () {\n"
-"    var out = [];\n"
-"    for (var i = 0; i < this._k.length; i++) if (this._k[i] !== GONE) out.push(this._k[i]);\n"
-"    return out;\n"
-"  };\n"
-"  M.values = function () {\n"
-"    var out = [];\n"
-"    for (var i = 0; i < this._k.length; i++) if (this._k[i] !== GONE) out.push(this._v[i]);\n"
-"    return out;\n"
-"  };\n"
-"  M.entries = function () {\n"
-"    var out = [];\n"
-"    for (var i = 0; i < this._k.length; i++)\n"
-"      if (this._k[i] !== GONE) out.push([this._k[i], this._v[i]]);\n"
-"    return out;\n"
-"  };\n"
-"  hide(M, '__items__', M.entries);\n"
-"  global.Map = Map; global.WeakMap = Map;\n"
-"\n"
-"  function Set(init) {\n"
-"    hide(this, '_m', new Map()); hide(this, 'size', 0);\n"
-"    if (init != null) {\n"
-"      var items = Array.from(init);\n"
-"      for (var i = 0; i < items.length; i++) this.add(items[i]);\n"
-"    }\n"
-"  }\n"
-"  var S = Set.prototype;\n"
-"  S.add = function (v) { this._m.set(v, v); this.size = this._m.size; return this; };\n"
-"  S.has = function (v) { return this._m.has(v); };\n"
-"  S['delete'] = function (v) { var r = this._m['delete'](v); this.size = this._m.size; return r; };\n"
-"  S.clear = function () { this._m.clear(); this.size = 0; };\n"
-"  S.forEach = function (fn, self) {\n"
-"    var set = this;\n"
-"    this._m.forEach(function (v) { fn.call(self, v, v, set); });\n"
-"  };\n"
-"  S.values = S.keys = function () { return this._m.keys(); };\n"
-"  S.entries = function () { return this._m.keys().map(function (v) { return [v, v]; }); };\n"
-"  hide(S, '__items__', S.values);\n"
-"  global.Set = Set; global.WeakSet = Set;\n"
-"\n"
-"  function Promise(executor) {\n"
-"    if (!(this instanceof Promise)) throw new TypeError('Promise needs new');\n"
-"    if (typeof executor !== 'function') throw new TypeError('Promise needs a function');\n"
-"    hide(this, '_s', 0); hide(this, '_v', undefined); hide(this, '_c', []);\n"
-"    var self = this, done = false;\n"
-"    function resolve(v) { if (!done) { done = true; settle(self, v); } }\n"
-"    function reject(e) { if (!done) { done = true; finish(self, 2, e); } }\n"
-"    try { executor(resolve, reject); } catch (e) { reject(e); }\n"
-"  }\n"
-"  function settle(p, v) {\n"
-"    if (v === p) return finish(p, 2, new TypeError('Chaining cycle detected for promise'));\n"
-"    if (v !== null && (typeof v === 'object' || typeof v === 'function')) {\n"
-"      var then;\n"
-"      try { then = v.then; } catch (e) { return finish(p, 2, e); }\n"
-"      if (typeof then === 'function') {\n"
-"        var called = false;\n"
-"        queueMicrotask(function () {\n"
-"          try {\n"
-"            then.call(v, function (x) { if (!called) { called = true; settle(p, x); } },\n"
-"                         function (e) { if (!called) { called = true; finish(p, 2, e); } });\n"
-"          } catch (e) { if (!called) { called = true; finish(p, 2, e); } }\n"
-"        });\n"
-"        return;\n"
-"      }\n"
-"    }\n"
-"    finish(p, 1, v);\n"
-"  }\n"
-"  function finish(p, state, v) {\n"
-"    p._s = state; p._v = v;\n"
-"    var waiting = p._c;\n"
-"    p._c = [];\n"
-"    for (var i = 0; i < waiting.length; i++) schedule(p, waiting[i]);\n"
-"  }\n"
-"  function schedule(p, h) {\n"
-"    queueMicrotask(function () {\n"
-"      var fn = p._s === 1 ? h.ok : h.fail, r;\n"
-"      if (typeof fn !== 'function') {\n"
-"        if (p._s === 1) h.resolve(p._v); else h.reject(p._v);\n"
-"        return;\n"
-"      }\n"
-"      try { r = fn(p._v); } catch (e) { h.reject(e); return; }\n"
-"      h.resolve(r);\n"
-"    });\n"
-"  }\n"
-"  var P = Promise.prototype;\n"
-"  P.then = function (ok, fail) {\n"
-"    var p = this, h = { ok: ok, fail: fail };\n"
-"    var next = new Promise(function (res, rej) { h.resolve = res; h.reject = rej; });\n"
-"    if (p._s === 0) p._c.push(h); else schedule(p, h);\n"
-"    return next;\n"
-"  };\n"
-"  P['catch'] = function (fail) { return this.then(undefined, fail); };\n"
-"  P['finally'] = function (fn) {\n"
-"    return this.then(\n"
-"      function (v) { return Promise.resolve(fn()).then(function () { return v; }); },\n"
-"      function (e) { return Promise.resolve(fn()).then(function () { throw e; }); });\n"
-"  };\n"
-"  Promise.resolve = function (v) {\n"
-"    return v instanceof Promise ? v : new Promise(function (res) { res(v); });\n"
-"  };\n"
-"  Promise.reject = function (e) { return new Promise(function (_, rej) { rej(e); }); };\n"
-"  Promise.all = function (list) {\n"
-"    return new Promise(function (res, rej) {\n"
-"      var items = Array.from(list), out = [], left = items.length;\n"
-"      if (!left) return res(out);\n"
-"      items.forEach(function (item, i) {\n"
-"        Promise.resolve(item).then(function (v) { out[i] = v; if (--left === 0) res(out); }, rej);\n"
-"      });\n"
-"    });\n"
-"  };\n"
-"  Promise.allSettled = function (list) {\n"
-"    return Promise.all(Array.from(list).map(function (item) {\n"
-"      return Promise.resolve(item).then(\n"
-"        function (v) { return { status: 'fulfilled', value: v }; },\n"
-"        function (e) { return { status: 'rejected', reason: e }; });\n"
-"    }));\n"
-"  };\n"
-"  Promise.race = function (list) {\n"
-"    return new Promise(function (res, rej) {\n"
-"      Array.from(list).forEach(function (item) { Promise.resolve(item).then(res, rej); });\n"
-"    });\n"
-"  };\n"
-"  global.Promise = Promise;\n"
-"})(this);\n";
+#include "jslib.inc"                    /* jslib.js als Zeichenfeld jslib_js (vom Makefile erzeugt) */
 
 /* --- Einrichten ------------------------------------------------------------------------------------ */
 
@@ -1416,6 +1256,8 @@ void js_lib2_init(js_state *J)
     js_def_native(J, G, "clearImmediate", timer_clear, 1, 0);
     js_def_native(J, G, "queueMicrotask", queue_microtask, 1, 0);
 
-    if (!J->fatal && !js_run(J, prelude, sizeof(prelude) - 1, "prelude", 0))
+    js_coll_init(J);
+    js_co_init(J);
+    if (!J->fatal && !js_run(J, jslib_js, sizeof(jslib_js) - 1, "jslib", 0))
         js_fatal(J, "Die eingebauten Skripte ließen sich nicht einrichten");
 }

@@ -8,11 +8,13 @@
 const fs = require("fs"), path = require("path"), vm = require("vm");
 const dir = path.join(__dirname, "js");
 let checks = 0, failures = 0;
-for (const name of fs.readdirSync(dir).filter(n => n.endsWith(".js")).sort()) {
+
+/* Ein Skript nach dem anderen - jedes bekommt Zeit für seine Zeitgeber, ehe das nächste rechnet. */
+function runOne(name) {
     const sandbox = {
         HELLOOS: false, console: { log() {} }, setTimeout, setInterval, clearTimeout, clearInterval,
         queueMicrotask, requestAnimationFrame: fn => { setTimeout(fn, 16); return 1; },
-        gc() {},
+        gc() {}, TextEncoder, TextDecoder, structuredClone,
         assert(ok, what) {
             checks++;
             if (!ok) { failures++; console.log(`ERWARTUNG FALSCH in ${name}: ${what}`); }
@@ -31,8 +33,12 @@ for (const name of fs.readdirSync(dir).filter(n => n.endsWith(".js")).sort()) {
         failures++;
         console.log(`ERWARTUNG FALSCH in ${name}: Node bricht ab mit ${e}`);
     }
+    return new Promise(done => setTimeout(done, 450));
 }
-setTimeout(() => {
+
+(async () => {
+    for (const name of fs.readdirSync(dir).filter(n => n.endsWith(".js")).sort())
+        await runOne(name);
     console.log(`${checks} Erwartungen unter Node geprüft, ${failures} falsch`);
     process.exit(failures ? 1 : 0);
-}, 400);
+})();

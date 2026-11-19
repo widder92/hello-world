@@ -4,10 +4,12 @@
  * Sie liest den Quelltext in einen Baum (js_parse.c) und führt ihn direkt aus
  * (js_run.c). Alle Zwischenwerte liegen auf einem eigenen Stapel; der
  * Speicher wird von Zeit zu Zeit bereinigt (js_core.c). Unterstützt wird
- * ECMAScript 5 und ein großer Teil dessen, was seit 2015 dazukam: let/const,
- * Pfeilfunktionen, Klassen, Vorlagen-Zeichenketten, Zerlegung
- * (destructuring), Spread, for-of, "?." und "??". Es fehlen Generatoren,
- * async/await, Module, Symbol und Proxy.
+ * ECMAScript 5 und fast alles, was seit 2015 dazukam: let/const,
+ * Pfeilfunktionen, Klassen (auch mit privaten Mitgliedern),
+ * Vorlagen-Zeichenketten, Zerlegung (destructuring), Spread, Symbole und
+ * Iteratoren (js_sym.c), Map/Set (js_coll.c), Generatoren und async/await
+ * (js_co.c), Proxy und Reflect (js_proxy.c). Es fehlen Module (import/export)
+ * und "with"; große Ganzzahlen (10n) sind gewöhnliche Zahlen.
  *
  * Weil die Skripte von fremden Seiten kommen, hat alles Grenzen: Speicher,
  * Rechenschritte, Zeit, Verschachtelung. Wer eine davon überschreitet, wird

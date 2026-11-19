@@ -17,6 +17,12 @@
 #include <string.h>
 #undef strlcpy
 
+/*
+ * Das Prüfwerkzeug soll lokale Variablen auf dem echten Stack lassen: Die
+ * Koroutinen der Maschine kopieren Stücke davon um (kernel/js_co.c).
+ */
+const char *__asan_default_options(void) { return "detect_stack_use_after_return=0"; }
+
 void *kmalloc(size_t n) { return malloc(n ? n : 1); }
 void *kzalloc(size_t n) { return calloc(1, n ? n : 1); }
 void kfree(void *p) { free(p); }
@@ -33,7 +39,13 @@ static bool quiet, echo;
 static uint64_t fake_now = 1000;
 static const char *current;
 
-static uint64_t ticks(void *ctx) { (void)ctx; return fake_now += 0; }
+/*
+ * Die Uhr der Tests steht still, solange ein Skript rechnet - außer im
+ * Zufallstest: Dort vergeht mit jeder Nachfrage eine Millisekunde, damit auch
+ * ein verstümmeltes Skript mit einer Endlosschleife an seine Zeitgrenze stößt.
+ */
+static bool clock_runs;
+static uint64_t ticks(void *ctx) { (void)ctx; return clock_runs ? ++fake_now : fake_now; }
 static int64_t wall(void *ctx) { (void)ctx; return 1794670200000LL + (int64_t)fake_now; }
 static void print(void *ctx, const char *text)
 {
@@ -185,6 +197,7 @@ int main(int argc, char **argv)
         int rounds = atoi(argv[2]);
         unsigned seed = argc > 3 ? (unsigned)atoi(argv[3]) : 4711;
         quiet = true;
+        clock_runs = true;
         for (int r = 0; r < rounds && count > 0; r++) {
             size_t len;
             char path[400];

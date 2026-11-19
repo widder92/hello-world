@@ -6,10 +6,11 @@
 typedef struct js_string js_string;
 typedef struct js_object js_object;
 typedef struct js_node js_node;
+typedef struct js_costate js_costate;
 
 /* --- Werte ------------------------------------------------------------------------------- */
 
-enum { JS_T_UNDEF, JS_T_NULL, JS_T_BOOL, JS_T_NUM, JS_T_STR, JS_T_OBJ };
+enum { JS_T_UNDEF, JS_T_NULL, JS_T_BOOL, JS_T_NUM, JS_T_STR, JS_T_OBJ, JS_T_SYM };
 
 typedef struct {
     uint8_t t;
@@ -31,11 +32,20 @@ typedef struct js_gc {
 
 #define JS_NO_INDEX 0xFFFFFFFFu
 
-/* Zeichenketten: unveränderlich, UTF-8; "chars" zählt Zeichen (Codepunkte) */
+/*
+ * Zeichenketten: unveränderlich, UTF-8; "chars" zählt Zeichen (Codepunkte).
+ *
+ * Auch Symbole sind so abgelegt: Der Text ist ihre Beschreibung, und weil sie
+ * nie in der Namenstabelle stehen, gleicht keines einem anderen. Als Name
+ * einer Eigenschaft taugen sie damit wie jede eingetragene Zeichenkette.
+ */
+enum { JS_SYM_NONE, JS_SYM_PUBLIC, JS_SYM_PRIVATE };
+
 struct js_string {
     js_gc gc;
     uint8_t ascii;                      /* nur ASCII: Zeichen i ist Byte i */
     uint8_t interned;                   /* steht in der Namenstabelle: Zeigervergleich genügt */
+    uint8_t symbol;                     /* JS_SYM_*: Symbol - oder privater Name einer Klasse (#x) */
     uint32_t len;                       /* Bytes */
     uint32_t chars;
     uint32_t hash;
@@ -57,7 +67,9 @@ typedef struct {
 
 enum {
     JS_C_OBJECT, JS_C_ARRAY, JS_C_FUNCTION, JS_C_NATIVE, JS_C_ERROR, JS_C_BOOLEAN, JS_C_NUMBER,
-    JS_C_STRING, JS_C_DATE, JS_C_REGEXP, JS_C_SCOPE, JS_C_HOST,
+    JS_C_STRING, JS_C_DATE, JS_C_REGEXP, JS_C_SCOPE, JS_C_HOST, JS_C_SYMBOL,
+    JS_C_SIGNAL,                        /* unterwegs wie eine Ausnahme: erzwungene Rückkehr aus einem Generator */
+    JS_C_PROXY,
 };
 
 /* Eingebaute Funktion: Argumente über js_arg(), Ergebnis mit js_push*(); false: Ausnahme */
@@ -71,9 +83,12 @@ typedef struct js_host_class {
     bool (*put)(js_state *J, js_object *o, js_string *key, const js_value *v, bool *done);
     /* Räumt auf, was am Objekt hängt, wenn es verschwindet (oder NULL) */
     void (*finalize)(js_state *J, js_object *o);
+    /* Meldet der Speicherbereinigung mit js_gc_mark(), was das Objekt sonst noch hält (oder NULL) */
+    void (*mark)(js_state *J, js_object *o);
 } js_host_class;
 
-enum { JS_F_ARROW = 1, JS_F_CLASS = 2, JS_F_DERIVED = 4, JS_F_NOEXT = 8, JS_F_CTOR = 16 };
+enum { JS_F_ARROW = 1, JS_F_CLASS = 2, JS_F_DERIVED = 4, JS_F_NOEXT = 8, JS_F_CTOR = 16,
+       JS_F_GENERATOR = 32, JS_F_ASYNC = 64 };
 
 struct js_object {
     js_gc gc;
@@ -91,6 +106,7 @@ struct js_object {
         js_value prim;                  /* Boolean, Number, String, Date (Zahl) */
         struct { void *prog; js_string *source; uint8_t flags; } re;
         struct { const js_host_class *cls; void *ptr; uint32_t id; } host;
+        struct { js_object *target, *handler; bool callable; } px;     /* Proxy; beide NULL: widerrufen */
     } u;
 };
 
@@ -100,7 +116,8 @@ enum {
     /* Ausdrücke */
     N_NUM, N_STR, N_TEMPLATE, N_REGEX, N_IDENT, N_THIS, N_NULL, N_TRUE, N_FALSE, N_ARRAY, N_OBJECT,
     N_PROP, N_FUNC, N_CLASS, N_MEMBER, N_INDEX, N_CALL, N_NEW, N_UNARY, N_UPDATE, N_BINARY,
-    N_LOGICAL, N_ASSIGN, N_COND, N_SEQ, N_SPREAD, N_SUPER, N_HOLE, N_CHAIN,
+    N_LOGICAL, N_ASSIGN, N_COND, N_SEQ, N_SPREAD, N_SUPER, N_HOLE, N_CHAIN, N_YIELD, N_AWAIT,
+    N_NEWTARGET, N_TAGGED,
     /* Muster zum Zerlegen */
     N_ARRAY_PAT, N_OBJECT_PAT, N_DEFAULT, N_REST,
     /* Anweisungen */
@@ -127,6 +144,9 @@ enum {
     NF_SHORTHAND = 1024,
     NF_FIELD = 2048,                    /* Klassen: Feld statt Methode */
     NF_SPREAD = 4096,                   /* Aufruf oder Feld enthält "..." */
+    NF_DELEGATE = 8192,                 /* yield* */
+    NF_AWAIT = 16384,                   /* for await (... of ...) */
+    NF_PRIVATE = 32768,                 /* der Name ist ein privater einer Klasse (#x) */
 };
 
 typedef struct js_fninfo {
@@ -138,6 +158,7 @@ typedef struct js_fninfo {
     int nvars, nfuncs, nparams;
     uint8_t flags;                      /* JS_F_ARROW, JS_F_CLASS, JS_F_DERIVED */
     bool expr_body, uses_arguments, simple_params;
+    bool uses_new_target;
     js_node *fields;                    /* Klassen: Felder, die jedes neue Objekt bekommt */
     const char *source;                 /* Quelltext der Funktion (für toString) */
     uint32_t source_len;
@@ -153,6 +174,7 @@ struct js_node {
         double num;
         js_string *str;
         js_fninfo *fn;
+        js_object *obj;                 /* N_TAGGED: das Feld der Textstücke, einmal je Stelle im Quelltext */
     } u;
 };
 
@@ -174,7 +196,22 @@ enum {
     K_undefined, K_null, K_true, K_false, K_object, K_function, K_number, K_string, K_boolean,
     K_empty, K_index, K_input, K_lastIndex, K_stack, K_get, K_set, K_value, K_writable,
     K_enumerable, K_configurable, K_callee, K_join, K_toJSON, K_then, K_done, K_next, K_this,
-    K_source, K_global, K_ignoreCase, K_multiline, K_line, K_cause, K_COUNT
+    K_source, K_global, K_ignoreCase, K_multiline, K_line, K_cause, K_return, K_throw,
+    K_description, K_COUNT
+};
+
+/*
+ * Verborgene Namen: Eigenschaften, an die kein Skript herankommt. Eingebaute
+ * Objekte (Iteratoren, Generatoren ...) halten darin ihren Zustand; die
+ * Speicherbereinigung sieht ihn wie jede andere Eigenschaft.
+ */
+enum { H_target, H_index, H_kind, H_data, H_extra, H_newtarget, H_COUNT };
+
+/* Die Symbole, nach denen die Sprache selbst fragt */
+enum {
+    SYM_iterator, SYM_asyncIterator, SYM_hasInstance, SYM_toPrimitive, SYM_toStringTag,
+    SYM_species, SYM_unscopables, SYM_isConcatSpreadable, SYM_match, SYM_matchAll, SYM_replace,
+    SYM_search, SYM_split, SYM_COUNT
 };
 
 struct js_state {
@@ -192,10 +229,14 @@ struct js_state {
     bool gc_stress;                     /* für Tests: bei jeder Gelegenheit aufräumen */
     js_gc **gray;                       /* Arbeitsliste beim Markieren */
     size_t gray_count, gray_cap;
+    js_object **weak;                   /* schwache Sammlungen, die beim Markieren auftauchten */
+    size_t weak_count, weak_cap;
 
     js_string **names;                  /* Namenstabelle */
     uint32_t name_count, name_cap;
     js_string *k[K_COUNT];
+    js_string *sym[SYM_COUNT];
+    js_string *hid[H_COUNT];
     js_string *empty;                   /* "" - auch Ersatz bei Speichermangel */
 
     js_arena *arena;                    /* Programmbäume und ihr Quelltext */
@@ -203,7 +244,10 @@ struct js_state {
 
     js_object *global, *registry, *dummy;
     js_object *object_proto, *function_proto, *array_proto, *string_proto, *number_proto,
-              *boolean_proto, *error_proto, *date_proto, *regexp_proto;
+              *boolean_proto, *error_proto, *date_proto, *regexp_proto, *symbol_proto,
+              *iterator_proto, *array_iter_proto, *string_iter_proto, *generator_proto;
+    /* die eingebauten [Symbol.iterator]-Funktionen */
+    js_object *array_values, *string_values, *map_entries, *set_values;
     js_object *error_protos[8];
 
     /* Ausnahmen und Ergebnisse von Anweisungen */
@@ -220,6 +264,9 @@ struct js_state {
     uint64_t steps, deadline;
     uintptr_t stack_floor;              /* tiefer darf der C-Stack nicht wachsen */
     int depth;
+
+    js_costate *co;                     /* Koroutinen (js_co.c); NULL, solange keine lief */
+    js_object *new_target;              /* für den nächsten Aufruf mit super(...): wer mit "new" gemeint war */
 
     char error[400];
     uint32_t rng;
@@ -245,6 +292,8 @@ js_string *js_intern(js_state *J, const char *text, size_t len);
 js_string *js_intern_string(js_state *J, js_string *s);
 js_string *js_intern_cstr(js_state *J, const char *text);
 js_string *js_index_name(js_state *J, uint32_t index);
+/* Ein neues Symbol mit dieser Beschreibung (kind: JS_SYM_PUBLIC oder JS_SYM_PRIVATE) */
+js_string *js_symbol_new(js_state *J, const char *text, size_t len, int kind);
 /* Byte-Stelle des Zeichens mit der Nummer index (höchstens len) */
 uint32_t js_string_offset(const js_string *s, uint32_t index);
 uint32_t js_utf8_decode(const char *p, const char *end, int *size);
@@ -267,6 +316,13 @@ void js_def_accessor(js_state *J, js_object *o, const char *name, js_native_fn g
                      js_native_fn set, int magic);
 
 void js_gc_run(js_state *J);
+/* Für die mark-Rückrufe fremder Objekte: Dieser Wert wird noch gebraucht. */
+void js_gc_mark(js_state *J, const js_value *v);
+/*
+ * Meldet eine schwache Sammlung an: Sie wird nach dem Markieren gesondert
+ * behandelt. false: nicht möglich (kein Speicher) - dann gilt sie als stark.
+ */
+bool js_gc_weak(js_state *J, js_object *o);
 static inline void js_checkpoint(js_state *J)
 {
     if (J->heap >= J->gc_at || J->gc_stress)
@@ -280,6 +336,9 @@ static inline js_value js_bool(bool b) { js_value v; v.t = JS_T_BOOL; v.u.o = NU
 static inline js_value js_num(double n) { js_value v; v.t = JS_T_NUM; v.u.n = n; return v; }
 static inline js_value js_str(js_string *s) { js_value v; v.t = JS_T_STR; v.u.s = s; return v; }
 static inline js_value js_obj(js_object *o) { js_value v; v.t = JS_T_OBJ; v.u.o = o; return v; }
+static inline js_value js_sym(js_string *s) { js_value v; v.t = JS_T_SYM; v.u.s = s; return v; }
+/* Der Name einer Eigenschaft als Wert: Zeichenkette oder Symbol */
+static inline js_value js_key_value(js_string *s) { return s->symbol ? js_sym(s) : js_str(s); }
 
 /* Stapel */
 bool js_push(js_state *J, js_value v);
@@ -364,12 +423,98 @@ bool js_get_index(js_state *J, int obj, uint32_t index);
 bool js_instanceof(js_state *J, const js_value *v, const js_value *ctor, bool *out);
 bool js_exec_program(js_state *J, js_fninfo *program);
 js_object *js_function_new(js_state *J, js_node *fn, js_object *scope);
-bool js_own_keys(js_state *J, js_object *o, bool only_enumerable, js_object *out);
+/*
+ * Die eigenen Namen eines Objekts in ein Feld: which ist eine Summe aus
+ * JS_KEYS_ENUM (nur aufzählbare), JS_KEYS_SYMBOLS (statt der Zeichenketten
+ * die Symbole) und JS_KEYS_BOTH (beides). Private Namen kommen nie vor.
+ */
+enum { JS_KEYS_ENUM = 1, JS_KEYS_SYMBOLS = 2, JS_KEYS_BOTH = 4 };
+bool js_own_keys(js_state *J, js_object *o, int which, js_object *out);
 bool js_iterate(js_state *J, int index, js_object *out);    /* Wert -> Feld seiner Glieder */
+
+/*
+ * Für Koroutinen (js_co.c): führt den Rumpf der Funktion f in env aus. Der
+ * Stapel beginnt mit [f, this]. false: Ausnahme (oder Abbruch).
+ */
+bool js_exec_body(js_state *J, js_object *f, js_object *env, js_value *result);
+
+/* Stapel: [fn, this, arg0 ... argN-1] -> [ergebnis]; construct: wie mit "new" */
+bool js_call_mode(js_state *J, int argc, bool construct);
+/* "name in objekt" und "delete objekt.name" für beliebige Objekte (auch Proxys) */
+bool js_has_property(js_state *J, js_object *o, js_string *key, bool *found);
+bool js_delete_property(js_state *J, js_object *o, js_string *key, bool *done);
 
 /* Vor jedem Einstieg von außen: Grenzen setzen. Danach: Fehler abholen (false: es gab einen). */
 void js_enter(js_state *J, uint32_t budget_ms);
 bool js_leave(js_state *J, bool ok);
+
+/* --- js_sym.c: Symbole und das Durchlaufen ------------------------------------------------------- */
+
+void js_sym_init(js_state *J);
+/* "Symbol(beschreibung)" auf den Stapel */
+bool js_push_symbol_text(js_state *J, const js_string *sym);
+
+/*
+ * Einen Wert Glied für Glied durchlaufen, wie es for-of tut: über
+ * [Symbol.iterator]() und next() - für echte Felder und Zeichenketten auf
+ * kurzem Weg. js_iter_open() legt zwei Hilfswerte auf den Stapel, die bis zum
+ * Ende dort bleiben müssen.
+ */
+typedef struct {
+    int slot;                           /* Stapelplatz der beiden Hilfswerte */
+    uint8_t kind, what;
+    bool done;                          /* erschöpft oder gescheitert: nichts mehr zu schließen */
+    uint32_t at, epoch;
+    uint64_t seq;
+} js_iter;
+
+bool js_iter_open(js_state *J, int index, js_iter *it);
+/* Legt das nächste Glied auf den Stapel - oder meldet done (dann liegt nichts da). */
+bool js_iter_next(js_state *J, js_iter *it, bool *done);
+/*
+ * Vorzeitiges Ende: ruft return() des Iterators. failing: Es ist schon eine
+ * Ausnahme unterwegs; sie bleibt bestehen, was immer return() tut.
+ */
+bool js_iter_close(js_state *J, js_iter *it, bool failing);
+/* Ein Ergebnis von next(): { value, done } auf den Stapel */
+bool js_push_iter_result(js_state *J, js_value value, bool done);
+
+/* --- js_co.c: Generatoren und async/await ------------------------------------------------------------ */
+
+void js_co_init(js_state *J);
+void js_co_free(js_state *J);
+void js_co_mark_roots(js_state *J);
+bool js_co_active(const js_state *J);   /* läuft gerade eine Koroutine? */
+/* Aufruf einer Generator- oder async-Funktion; der Stapel bei base: [funktion, this, ...] */
+bool js_co_call(js_state *J, int base, js_object *env, js_value *result);
+bool js_co_yield(js_state *J, bool delegating);     /* [wert] -> [hereingereichter wert] */
+bool js_co_await(js_state *J);                      /* [wert] -> [ergebnis] */
+
+/* --- js_proxy.c: Proxy und Reflect -------------------------------------------------------------------- */
+
+void js_proxy_init(js_state *J);
+js_object *js_proxy_unwrap(js_object *o);           /* das Ziel hinter allen Proxys (NULL: widerrufen) */
+bool js_proxy_get(js_state *J, int index, js_string *key);
+bool js_proxy_put(js_state *J, int index, js_string *key);
+bool js_proxy_has(js_state *J, js_object *px, js_string *key, bool *result);
+bool js_proxy_delete(js_state *J, js_object *px, js_string *key, bool *done);
+bool js_proxy_keys(js_state *J, js_object *px, int which, js_object *out);
+bool js_proxy_call(js_state *J, int argc, bool construct);
+bool js_proxy_descriptor(js_state *J, js_object *px, js_string *key);
+bool js_proxy_invoke(js_state *J, js_object *px, const char *name, int extra, bool *handled);
+
+/* --- js_coll.c: Map, Set, WeakMap, WeakSet --------------------------------------------------------- */
+
+void js_coll_init(js_state *J);
+/* Für die Speicherbereinigung: Werte lebender Schlüssel markieren (true: es kam etwas dazu) ... */
+bool js_coll_trace_weak(js_state *J, js_object *o);
+/* ... und danach die Einträge mit toten Schlüsseln entfernen */
+void js_coll_sweep_weak(js_state *J, js_object *o);
+/* Der kurze Weg beim Durchlaufen: eine Map oder ein Set mit unverändertem [Symbol.iterator]? */
+bool js_coll_iterable(js_state *J, const js_value *v, int *what);
+bool js_coll_next(js_state *J, const js_value *v, int what, uint32_t *at, uint64_t *seq,
+                  uint32_t *epoch, bool *done);
+uint32_t js_coll_epoch(const js_value *v);
 
 /* --- js_lib.c, js_lib2.c, js_regex.c ------------------------------------------------------------ */
 
@@ -380,6 +525,10 @@ int64_t js_timers_due(js_state *J);
 bool js_timers_run(js_state *J, uint32_t budget_ms);
 
 void js_lib_init(js_state *J);
+/* Die Beschreibung der eigenen Eigenschaft key des Objekts an Platz index auf den Stapel (oder undefined) */
+bool js_own_descriptor(js_state *J, int index, js_string *key);
+/* Legt eine Eigenschaft nach der Beschreibung an Platz desc an (wie Object.defineProperty) */
+bool js_define_descriptor(js_state *J, js_object *o, js_string *key, int desc);
 void js_regex_init(js_state *J);
 void js_typed_init(js_state *J);        /* js_typed.c: ArrayBuffer, typisierte Felder, DataView */
 void js_regex_free(js_state *J, js_object *o);

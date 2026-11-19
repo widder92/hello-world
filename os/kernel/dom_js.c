@@ -58,7 +58,7 @@ static script_t *script_of(js_state *J)
 
 /* --- Knoten als Objekte ------------------------------------------------------------------------ */
 
-static const js_host_class node_class = { "Node", NULL, NULL, NULL };
+static const js_host_class node_class = { "Node", NULL, NULL, NULL, NULL };
 
 static dom_node *node_of(const js_value *v)
 {
@@ -384,7 +384,7 @@ static bool style_put(js_state *J, js_object *o, js_string *key, const js_value 
     return ok ? true : js_fatal(J, "Nicht genug Speicher für das Skript");
 }
 
-static const js_host_class style_class = { "CSSStyleDeclaration", style_get, style_put, NULL };
+static const js_host_class style_class = { "CSSStyleDeclaration", style_get, style_put, NULL, NULL };
 
 /* berechnete Stile (getComputedStyle): weiter unten */
 static const js_host_class computed_class;
@@ -554,7 +554,7 @@ static bool computed_put(js_state *J, js_object *o, js_string *key, const js_val
     return true;
 }
 
-static const js_host_class computed_class = { "CSSStyleDeclaration", computed_get, computed_put, NULL };
+static const js_host_class computed_class = { "CSSStyleDeclaration", computed_get, computed_put, NULL, NULL };
 
 static bool dataset_get(js_state *J, js_object *o, js_string *key, bool *found)
 {
@@ -580,7 +580,7 @@ static bool dataset_put(js_state *J, js_object *o, js_string *key, const js_valu
     return true;
 }
 
-static const js_host_class dataset_class = { "DOMStringMap", dataset_get, dataset_put, NULL };
+static const js_host_class dataset_class = { "DOMStringMap", dataset_get, dataset_put, NULL, NULL };
 
 /* --- Die Grundfunktionen für domlib.js ------------------------------------------------------------ */
 

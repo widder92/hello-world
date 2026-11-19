@@ -16,6 +16,12 @@
 #include <string.h>
 #undef strlcpy
 
+/*
+ * Das Prüfwerkzeug soll lokale Variablen auf dem echten Stack lassen: Die
+ * Koroutinen der Maschine kopieren Stücke davon um (kernel/js_co.c).
+ */
+const char *__asan_default_options(void) { return "detect_stack_use_after_return=0"; }
+
 void *kmalloc(size_t n) { return malloc(n ? n : 1); }
 void *kzalloc(size_t n) { return calloc(1, n ? n : 1); }
 void kfree(void *p) { free(p); }
@@ -590,6 +596,59 @@ int main(int argc, char **argv)
         script_destroy(s);
         css_free(use_css);
     }
+    /* Die neueren Sprachmittel auf einer Seite: async/await mit fetch, Generatoren, Klassen, Proxy */
+    static const char page_modern[] =
+        "<html><head><title>M</title></head><body><ul id=liste></ul><p id=stand>-</p><button id=knopf>k</button>"
+        "<script>\n"
+        "const liste = document.getElementById('liste');\n"
+        "function zeile(t) { const li = document.createElement('li'); li.textContent = t; liste.appendChild(li); }\n"
+        "function* zahlen(n) { for (let i = 1; i <= n; i++) yield i; }\n"
+        "zeile('gen ' + [...zahlen(4)].join(''));\n"
+        "class Lager { #dinge = new Map(); static #anzahl = 0; static { Lager.name2 = 'L'; }\n"
+        "  lege(k, v) { this.#dinge.set(k, v); Lager.#anzahl++; return this; }\n"
+        "  get groesse() { return this.#dinge.size; } static get anzahl() { return Lager.#anzahl; }\n"
+        "  *[Symbol.iterator]() { yield* this.#dinge.keys(); } }\n"
+        "const lager = new Lager().lege('a', 1).lege('b', 2);\n"
+        "zeile('klasse ' + lager.groesse + Lager.anzahl + [...lager].join('') + Lager.name2);\n"
+        "const zustand = new Proxy({ n: 0 }, { set(t, k, v) { t[k] = v; document.getElementById('stand').textContent = k + '=' + v; return true; } });\n"
+        "document.getElementById('knopf').addEventListener('click', async () => { zustand.n++; await null; zeile('klick ' + zustand.n); });\n"
+        "async function lade() {\n"
+        "  const antwort = await fetch('/daten.json');\n"
+        "  const daten = await antwort.json();\n"
+        "  zeile('fetch ' + antwort.status + ' a=' + daten.a);\n"
+        "  try { await fetch('/fehlt'); zeile('FALSCH'); } catch (e) { zeile('fehler ' + e.constructor.name); }\n"
+        "  const teile = [];\n"
+        "  for await (const t of (async function* () { yield 'x'; yield await Promise.resolve('y'); })()) teile.push(t);\n"
+        "  return teile.join('');\n"
+        "}\n"
+        "lade().then(t => { zeile('fertig ' + t); document.title = 'geladen'; });\n"
+        "zeile('sofort');\n"
+        "</script></body></html>";
+    reported = 0;
+    errors_seen = 0;
+    s = load(page_modern, 0);
+    check(s != NULL, "Seite mit neueren Sprachmitteln geladen");
+    if (s) {
+        int ran, failed, skipped;
+        script_counts(s, &ran, &failed, &skipped);
+        check(ran == 1 && failed == 0 && skipped == 0, "das Skript lief ohne Fehler durch");
+        if (failed)
+            printf("  letzte Meldung: %s\n", last_log);
+        run_timers(s, 50);
+        check(page_has(s, ">gen 1234</li>"), "Generator auf einer Seite");
+        check(page_has(s, ">klasse 22abL</li>"), "Klasse mit privaten Feldern, static-Block und eigenem Iterator");
+        check(page_has(s, ">fetch 200 a=1</li>"), "await fetch(): die Antwort kommt an");
+        check(page_has(s, ">fehler TypeError</li>") && !page_has(s, "FALSCH"), "await auf eine gescheiterte Anfrage wirft");
+        check(page_has(s, ">fertig xy</li>") && page_has(s, ">geladen</title>"), "for await und das Ergebnis der async-Funktion");
+        script_click(s, node_with(s, "id=\"knopf\""));
+        run_timers(s, 10);
+        check(page_has(s, ">n=1</p>") && page_has(s, ">klick 1</li>"), "Klick: Proxy meldet die Änderung, der async-Rückruf läuft zu Ende");
+        script_click(s, node_with(s, "id=\"knopf\""));
+        run_timers(s, 10);
+        check(page_has(s, ">n=2</p>") && page_has(s, ">klick 2</li>"), "... und beim zweiten Klick wieder");
+        script_destroy(s);
+    }
+
     /* Das Fenster wird geschlossen: Laufende Skripte enden sofort */
     real_clock = true;
     uint64_t began = time_ms();
@@ -604,13 +663,14 @@ int main(int argc, char **argv)
     quiet = true;
     int before = failures, counted = checks;
     unsigned seed = 99;
-    size_t total = sizeof(page_dom) + sizeof(page_events) + sizeof(page_load) + sizeof(page_use);
+    size_t total = sizeof(page_dom) + sizeof(page_events) + sizeof(page_load) + sizeof(page_use) +
+                   sizeof(page_modern);
     char *broken = malloc(total * 2);
     int rounds = getenv("RUNDEN") ? atoi(getenv("RUNDEN")) : 400;
     real_clock = true;
     for (int r = 0; r < rounds; r++) {
-        const char *source = r % 4 == 0 ? page_dom : r % 4 == 1 ? page_events
-                           : r % 4 == 2 ? page_load : page_use;
+        const char *source = r % 5 == 0 ? page_dom : r % 5 == 1 ? page_events
+                           : r % 5 == 2 ? page_load : r % 5 == 3 ? page_use : page_modern;
         size_t n = strlen(source);
         memcpy(broken, source, n);
         for (int k = 0; k < 1 + r % 9; k++) {

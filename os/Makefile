@@ -92,7 +92,14 @@ $(BUILD)/%.obj: kernel/%.c | $(BUILD)
 $(BUILD)/js_%.obj: kernel/js_%.c | $(BUILD)
 	$(CC) $(JS_CFLAGS) -c $< -o $@
 
-# Der in JavaScript geschriebene Teil des Browsers wird fest eingebaut.
+# Der in JavaScript geschriebene Teil der JavaScript-Maschine und der des
+# Browsers werden fest eingebaut.
+$(BUILD)/jslib.inc: kernel/jslib.js tools/embed.py | $(BUILD)
+	$(PYTHON) tools/embed.py $< jslib_js $@
+
+$(BUILD)/js_lib2.obj: kernel/js_lib2.c $(BUILD)/jslib.inc | $(BUILD)
+	$(CC) $(JS_CFLAGS) -c $< -o $@
+
 $(BUILD)/domlib.inc: kernel/domlib.js tools/embed.py | $(BUILD)
 	$(PYTHON) tools/embed.py $< domlib_js $@
 
@@ -132,8 +139,7 @@ test: $(IMAGE)
 
 # Läuft auf dem Entwicklungsrechner; braucht die Python-Pakete "cryptography" und "Pillow".
 # Die JavaScript-Maschine: läuft auch auf dem Entwicklungsrechner
-JS_ENGINE := kernel/js_core.c kernel/js_num.c kernel/js_parse.c kernel/js_run.c \
-             kernel/js_lib.c kernel/js_lib2.c kernel/js_regex.c kernel/js_typed.c
+JS_ENGINE := $(wildcard kernel/js_*.c)
 
 check: | $(BUILD)
 	$(PYTHON) tests/crypto_test.py
@@ -159,7 +165,8 @@ check: | $(BUILD)
 	cc -O1 -g -fsanitize=address,undefined -Wall -Wextra -o $(BUILD)/css_test \
 	    tests/css_test.c kernel/css.c
 	$(BUILD)/css_test
-	cc -O1 -g -fsanitize=address,undefined -fno-math-errno -Wall -Wextra \
+	$(PYTHON) tools/embed.py kernel/jslib.js jslib_js $(BUILD)/jslib.inc
+	cc -O1 -g -fsanitize=address,undefined -fno-math-errno -Wall -Wextra -I$(BUILD) \
 	    -o $(BUILD)/js_test tests/js_test.c $(JS_ENGINE)
 	$(BUILD)/js_test
 	$(BUILD)/js_test --fuzz 4000

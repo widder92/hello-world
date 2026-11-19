@@ -91,6 +91,7 @@ static const char *class_name(const js_value *v)
     if (v->t == JS_T_BOOL) return "Boolean";
     if (v->t == JS_T_NUM) return "Number";
     if (v->t == JS_T_STR) return "String";
+    if (v->t == JS_T_SYM) return "Symbol";
     switch (v->u.o->cls) {
     case JS_C_ARRAY: return "Array";
     case JS_C_FUNCTION: case JS_C_NATIVE: return "Function";
@@ -111,6 +112,13 @@ static bool object_to_string(js_state *J, int argc)
     (void)argc;
     char text[64];
     const char *name = class_name(js_this(J));
+    /* ein Objekt kann sich selbst benennen: [Symbol.toStringTag] */
+    if (js_this(J)->t == JS_T_OBJ && js_lookup(js_this(J)->u.o, J->sym[SYM_toStringTag], NULL)) {
+        if (!js_get(J, THISI, J->sym[SYM_toStringTag]))
+            return false;
+        if (js_top(J, 0)->t == JS_T_STR)
+            name = js_top(J, 0)->u.s->data;
+    }
     size_t n = strlen(name);
     if (n > 40)
         n = 40;
@@ -144,6 +152,18 @@ static bool object_proto_fn(js_state *J, int argc)
         if (!js_to_key(J, ARGI(0), &key) || !js_to_object(J, THISI))
             return false;
         js_object *o = js_this(J)->u.o;
+        if (o->cls == JS_C_PROXY) {
+            /* ein Proxy: nach der Beschreibung der Eigenschaft fragen */
+            if (!js_proxy_descriptor(J, o, key))
+                return false;
+            bool yes = js_top(J, 0)->t == JS_T_OBJ;
+            if (yes && MAGIC == 2) {
+                if (!js_get(J, J->top - 1, J->k[K_enumerable]))
+                    return false;
+                yes = js_truthy(js_top(J, 0));
+            }
+            return js_push(J, js_bool(yes));
+        }
         bool found = has_own(J, o, key);
         if (found && MAGIC == 2) {
             js_prop *p = js_own(o, key);
@@ -197,8 +217,15 @@ static bool proto_set(js_state *J, int argc)
     return js_push(J, js_undef());
 }
 
+bool js_define_descriptor(js_state *J, js_object *o, js_string *key, int desc);
+
 /* Liest {value, get, set, writable, enumerable, configurable} und legt die Eigenschaft an */
 static bool define_from_descriptor(js_state *J, js_object *o, js_string *key, int desc)
+{
+    return js_define_descriptor(J, o, key, desc);
+}
+
+bool js_define_descriptor(js_state *J, js_object *o, js_string *key, int desc)
 {
     if (J->stack[desc].t != JS_T_OBJ)
         return js_throw(J, JS_E_TYPE, "Property description must be an object");
@@ -249,9 +276,84 @@ static bool define_from_descriptor(js_state *J, js_object *o, js_string *key, in
     return true;
 }
 
+bool js_own_descriptor(js_state *J, int index, js_string *key)
+{
+    js_object *o = J->stack[index].u.o;
+    if (o->cls == JS_C_PROXY)
+        return js_proxy_descriptor(J, o, key);
+    js_prop *p = js_own(o, key);
+    if (!p && !has_own(J, o, key))
+        return js_push(J, js_undef());
+    js_object *d = js_object_new(J, JS_C_OBJECT, J->object_proto);
+    js_push(J, js_obj(d));
+    int flags = p ? p->flags : JS_P_ALL;
+    if (p && (p->flags & JS_P_ACCESSOR)) {
+        js_define(J, d, J->k[K_get], p->v, JS_P_ALL);
+        js_define(J, d, J->k[K_set], p->set ? js_obj(p->set) : js_undef(), JS_P_ALL);
+    } else {
+        if (!js_get(J, index, key))
+            return false;
+        js_define(J, d, J->k[K_value], *js_top(J, 0), JS_P_ALL);
+        js_pop(J, 1);
+        js_define(J, d, J->k[K_writable], js_bool(flags & JS_P_WRITE), JS_P_ALL);
+    }
+    js_define(J, d, J->k[K_enumerable], js_bool(flags & JS_P_ENUM), JS_P_ALL);
+    js_define(J, d, J->k[K_configurable], js_bool(flags & JS_P_CONF), JS_P_ALL);
+    return true;
+}
+
+/*
+ * Für Object.xxx(proxy, ...): Hat der Proxy an Platz 0 die Falle name, läuft
+ * sie mit den Argumenten ab Platz 1 (extra Stück) - dann ist *handled gesetzt
+ * und ihr Ergebnis liegt auf dem Stapel. Sonst tritt das Ziel an die Stelle
+ * des Proxys.
+ */
+static bool through_proxy(js_state *J, const char *name, int extra, bool *handled)
+{
+    *handled = false;
+    for (int depth = 0; depth < 100; depth++) {
+        js_value *a = js_arg(J, 0);
+        if (a->t != JS_T_OBJ || a->u.o->cls != JS_C_PROXY)
+            return true;
+        js_object *px = a->u.o;
+        for (int i = 0; i < extra; i++)
+            js_push(J, *js_arg(J, 1 + i));
+        if (!js_proxy_invoke(J, px, name, extra, handled))
+            return false;
+        if (*handled)
+            return true;
+        js_pop(J, extra);
+        *js_arg(J, 0) = js_obj(px->u.px.target);
+    }
+    return js_throw(J, JS_E_TYPE, "Too many nested proxies");
+}
+
 static bool object_static(js_state *J, int argc)
 {
     js_value *a = js_arg(J, 0);
+    bool handled = false;
+    switch (MAGIC) {                    /* Proxys: erst die Falle fragen, dann das Ziel nehmen */
+    case 6: if (!through_proxy(J, "getPrototypeOf", 0, &handled)) return false; break;
+    case 7: if (!through_proxy(J, "setPrototypeOf", 1, &handled)) return false; break;
+    case 8: if (!through_proxy(J, "defineProperty", 2, &handled)) return false; break;
+    case 11: case 12: case 13:
+        if (!through_proxy(J, "preventExtensions", 0, &handled)) return false;
+        break;
+    case 14: case 15: case 16:
+        if (!through_proxy(J, "isExtensible", 0, &handled)) return false;
+        handled = false;                /* das Ziel gibt Auskunft */
+        while (js_arg(J, 0)->t == JS_T_OBJ && js_arg(J, 0)->u.o->cls == JS_C_PROXY &&
+               js_arg(J, 0)->u.o->u.px.target)
+            *js_arg(J, 0) = js_obj(js_arg(J, 0)->u.o->u.px.target);
+        break;
+    default: break;
+    }
+    if (handled) {
+        if (MAGIC == 6)
+            return true;
+        return js_push(J, *js_arg(J, 0));       /* setPrototypeOf, defineProperty ...: das Objekt selbst */
+    }
+    a = js_arg(J, 0);
     switch (MAGIC) {
     case 0: case 1: case 2: case 3: {   /* keys, values, entries, getOwnPropertyNames */
         if (!js_to_object(J, ARGI(0)))
@@ -272,7 +374,7 @@ static bool object_static(js_state *J, int argc)
                 return false;
             if (MAGIC == 2) {
                 js_object *pair = js_array_new(J, 2);
-                js_array_push(J, pair, js_str(key));
+                js_array_push(J, pair, js_key_value(key));
                 js_array_push(J, pair, *js_top(J, 0));
                 *js_top(J, 0) = js_obj(pair);
             }
@@ -290,7 +392,7 @@ static bool object_static(js_state *J, int argc)
                 continue;
             js_object *keys = js_array_new(J, 0);
             js_push(J, js_obj(keys));
-            if (!js_own_keys(J, js_arg(J, i)->u.o, true, keys))
+            if (!js_own_keys(J, js_arg(J, i)->u.o, JS_KEYS_ENUM | JS_KEYS_BOTH, keys))
                 return false;
             for (uint32_t k = 0; k < keys->u.arr.len; k++) {
                 js_string *key = keys->u.arr.v[k].u.s;
@@ -356,26 +458,7 @@ static bool object_static(js_state *J, int argc)
         js_string *key;
         if (!js_to_object(J, ARGI(0)) || !js_to_key(J, ARGI(1), &key))
             return false;
-        js_object *o = js_arg(J, 0)->u.o;
-        js_prop *p = js_own(o, key);
-        if (!p && !has_own(J, o, key))
-            return js_push(J, js_undef());
-        js_object *d = js_object_new(J, JS_C_OBJECT, J->object_proto);
-        js_push(J, js_obj(d));
-        int flags = p ? p->flags : JS_P_ALL;
-        if (p && (p->flags & JS_P_ACCESSOR)) {
-            js_define(J, d, J->k[K_get], p->v, JS_P_ALL);
-            js_define(J, d, J->k[K_set], p->set ? js_obj(p->set) : js_undef(), JS_P_ALL);
-        } else {
-            if (!js_get(J, ARGI(0), key))
-                return false;
-            js_define(J, d, J->k[K_value], *js_top(J, 0), JS_P_ALL);
-            js_pop(J, 1);
-            js_define(J, d, J->k[K_writable], js_bool(flags & JS_P_WRITE), JS_P_ALL);
-        }
-        js_define(J, d, J->k[K_enumerable], js_bool(flags & JS_P_ENUM), JS_P_ALL);
-        js_define(J, d, J->k[K_configurable], js_bool(flags & JS_P_CONF), JS_P_ALL);
-        return true;
+        return js_own_descriptor(J, ARGI(0), key);
     }
     case 11: case 12: case 13:          /* freeze, seal, preventExtensions */
         if (a->t == JS_T_OBJ) {
@@ -404,6 +487,13 @@ static bool object_static(js_state *J, int argc)
                 same = (1 / a->u.n) == (1 / b->u.n);
         }
         return js_push(J, js_bool(same));
+    }
+    case 19: {                          /* getOwnPropertySymbols */
+        if (!js_to_object(J, ARGI(0)))
+            return false;
+        js_object *keys = js_array_new(J, 0);
+        js_push(J, js_obj(keys));
+        return js_own_keys(J, js_arg(J, 0)->u.o, JS_KEYS_SYMBOLS, keys);
     }
     default: {                          /* fromEntries */
         js_object *items = js_array_new(J, 0), *o = js_object_new(J, JS_C_OBJECT, J->object_proto);
@@ -586,11 +676,17 @@ static js_object *this_array(js_state *J, bool mutate)
     js_object *copy = js_array_new(J, 0);
     js_push(J, js_obj(copy));
     bool like = self->t == JS_T_STR || (self->t == JS_T_OBJ && js_lookup(self->u.o, J->k[K_length], NULL)) ||
-                (self->t == JS_T_OBJ && self->u.o->cls == JS_C_HOST);
+                (self->t == JS_T_OBJ && (self->u.o->cls == JS_C_HOST || self->u.o->cls == JS_C_PROXY));
     if (like && !js_iterate(J, THISI, copy))
         return NULL;
-    if (mutate)
+    if (mutate) {
+        /* der Stand vorher: array_done() schreibt nur zurück, was sich geändert hat */
+        js_object *before = js_array_new(J, copy->u.arr.len);
+        js_define(J, copy, J->hid[H_data], js_obj(before), JS_P_WRITE);
+        if (before->cls == JS_C_ARRAY && js_array_resize(J, before, copy->u.arr.len) && copy->u.arr.len)
+            memcpy(before->u.arr.v, copy->u.arr.v, (size_t)copy->u.arr.len * sizeof(js_value));
         return copy;                    /* bleibt auf dem Stapel; array_done() schreibt zurück */
+    }
     *js_this(J) = js_obj(copy);         /* nichts Feldähnliches: leer */
     js_pop(J, 1);
     return copy;
@@ -600,6 +696,8 @@ static js_object *this_array(js_state *J, bool mutate)
  * Nach einer ändernden Methode auf etwas Feldähnlichem (push.call(obj, ...)):
  * überträgt das bearbeitete Feld in das Objekt - Glieder und length.
  */
+static bool same_value_zero(const js_value *a, const js_value *b);
+
 static bool array_done(js_state *J, js_object *a)
 {
     js_value *self = js_this(J);
@@ -609,7 +707,11 @@ static bool array_done(js_state *J, js_object *a)
     if (!js_get(J, THISI, J->k[K_length]) || !js_to_number(J, J->top - 1, &old))
         return false;
     js_pop(J, 1);
+    js_prop *snapshot = js_own(a, J->hid[H_data]);
+    js_object *before = snapshot && js_is_array(&snapshot->v) ? snapshot->v.u.o : NULL;
     for (uint32_t i = 0; i < a->u.arr.len; i++) {
+        if (before && i < before->u.arr.len && same_value_zero(&before->u.arr.v[i], &a->u.arr.v[i]))
+            continue;                   /* unverändert */
         js_push(J, *js_this(J));
         js_push(J, js_num(i));
         js_push(J, a->u.arr.v[i]);
@@ -618,12 +720,12 @@ static bool array_done(js_state *J, js_object *a)
     }
     for (double i = a->u.arr.len; i < old && i < a->u.arr.len + 100000.0; i++) {
         js_string *key;
+        bool done;
         js_push(J, js_num(i));
         bool ok = js_to_key(J, J->top - 1, &key);
         js_pop(J, 1);
-        if (!ok)
+        if (!ok || !js_delete_property(J, js_this(J)->u.o, key, &done))
             return false;
-        js_delete_own(J, js_this(J)->u.o, key);
     }
     js_push(J, js_num(a->u.arr.len));
     return js_put(J, THISI, J->k[K_length]);
@@ -639,8 +741,51 @@ static uint32_t clamp_index(double i, uint32_t len)
     return i > len ? len : (uint32_t)i;
 }
 
+/*
+ * Die Länge eines feldähnlichen Objekts (alles außer echten Feldern), wie die
+ * Regel sie liest: eine ganze Zahl zwischen 0 und 2^53 - 1.
+ */
+static bool like_length(js_state *J, double *length)
+{
+    if (!js_get(J, THISI, J->k[K_length]) || !js_to_number(J, J->top - 1, length))
+        return false;
+    js_pop(J, 1);
+    if (js_isnan(*length) || *length < 0)
+        *length = 0;
+    *length = js_trunc(*length);
+    if (*length > 9007199254740991.0)
+        *length = 9007199254740991.0;
+    return true;
+}
+
+/* Schreibt this[index] = wert, auch für Stellen jenseits dessen, was ein Feld fasst */
+static bool like_put(js_state *J, double index, js_value v)
+{
+    js_push(J, *js_this(J));
+    js_push(J, js_num(index));
+    js_push(J, v);
+    return js_put_value(J);
+}
+
 static bool array_push(js_state *J, int argc)
 {
+    if (js_this(J)->t == JS_T_OBJ && !js_is_array(js_this(J))) {
+        /* kein echtes Feld (auch ein Proxy davor): hinten anfügen, ohne alles zu kopieren */
+        double length;
+        if (!like_length(J, &length))
+            return false;
+        if (length + argc > 9007199254740991.0)
+            return js_throw(J, JS_E_TYPE, "Pushing %d elements on an array-like exceeds the maximum length",
+                            argc);
+        for (int i = 0; i < argc; i++) {
+            if (!like_put(J, length + i, *js_arg(J, i)))
+                return false;
+        }
+        js_push(J, js_num(length + argc));
+        if (!js_put(J, THISI, J->k[K_length]))
+            return false;
+        return js_push(J, js_num(length + argc));
+    }
     js_object *a = this_array(J, true);
     if (!a)
         return false;
@@ -654,6 +799,30 @@ static bool array_push(js_state *J, int argc)
 static bool array_pop_shift(js_state *J, int argc)
 {
     (void)argc;
+    if (MAGIC == 0 && js_this(J)->t == JS_T_OBJ && !js_is_array(js_this(J))) {
+        /* pop an einem feldähnlichen Objekt: das letzte Glied lesen, löschen, die Länge kürzen */
+        double length;
+        js_string *key;
+        bool done;
+        if (!like_length(J, &length))
+            return false;
+        if (length == 0) {
+            js_push(J, js_num(0));
+            return js_put(J, THISI, J->k[K_length]) && js_push(J, js_undef());
+        }
+        js_push(J, *js_this(J));
+        js_push(J, js_num(length - 1));
+        if (!js_get_value(J))
+            return false;
+        int result = J->top - 1;
+        js_push(J, js_num(length - 1));
+        if (!js_to_key(J, J->top - 1, &key) || !js_delete_property(J, js_this(J)->u.o, key, &done))
+            return false;
+        js_push(J, js_num(length - 1));
+        if (!js_put(J, THISI, J->k[K_length]))
+            return false;
+        return js_push(J, J->stack[result]);
+    }
     js_object *a = this_array(J, true);
     if (!a)
         return false;
@@ -1082,24 +1251,6 @@ static bool array_misc(js_state *J, int argc)
             i += a->u.arr.len;
         return js_push(J, i >= 0 && i < a->u.arr.len ? a->u.arr.v[(uint32_t)i] : js_undef());
     }
-    case 2: case 3: case 4: {           /* keys, values, entries: als fertige Felder */
-        js_object *out = js_array_new(J, a->u.arr.len);
-        js_push(J, js_obj(out));
-        for (uint32_t i = 0; i < a->u.arr.len; i++) {
-            js_value v = MAGIC == 2 ? js_num(i) : a->u.arr.v[i];
-            if (MAGIC == 4) {
-                js_object *pair = js_array_new(J, 2);
-                js_push(J, js_obj(pair));
-                js_array_push(J, pair, js_num(i));
-                js_array_push(J, pair, a->u.arr.v[i]);
-                v = js_obj(pair);
-                js_pop(J, 1);
-            }
-            if (!js_array_push(J, out, v))
-                return false;
-        }
-        return true;
-    }
     default:
         return js_push(J, js_undef());
     }
@@ -1108,15 +1259,18 @@ static bool array_misc(js_state *J, int argc)
 static bool array_static(js_state *J, int argc)
 {
     switch (MAGIC) {
-    case 0:
-        return js_push(J, js_bool(js_is_array(js_arg(J, 0))));
+    case 0: {                           /* isArray: auch ein Proxy vor einem Feld zählt */
+        js_value *v = js_arg(J, 0);
+        js_object *o = v->t == JS_T_OBJ ? js_proxy_unwrap(v->u.o) : NULL;
+        return js_push(J, js_bool(o && o->cls == JS_C_ARRAY));
+    }
     case 1: {                           /* from(iterable, mapFn) */
         js_object *out = js_array_new(J, 0);
         js_push(J, js_obj(out));
         js_value *src = js_arg(J, 0);
         if (src->t == JS_T_OBJ && !js_is_array(src) && src->u.o->cls != JS_C_HOST &&
-            !js_lookup(src->u.o, J->k[K_length], NULL) &&
-            !js_lookup(src->u.o, js_intern_cstr(J, "__items__"), NULL))
+            src->u.o->cls != JS_C_PROXY && !js_lookup(src->u.o, J->k[K_length], NULL) &&
+            !js_lookup(src->u.o, J->sym[SYM_iterator], NULL))
             return true;                /* nichts Aufzählbares: leeres Feld */
         if (src->t > JS_T_NULL && src->t != JS_T_NUM && src->t != JS_T_BOOL &&
             !js_iterate(J, ARGI(0), out))
@@ -1163,6 +1317,8 @@ static bool this_string(js_state *J, js_string **out)
 static bool string_ctor(js_state *J, int argc)
 {
     js_string *s = J->empty;
+    if (argc > 0 && js_arg(J, 0)->t == JS_T_SYM && !J->constructing)
+        return js_push_symbol_text(J, js_arg(J, 0)->u.s);
     if (argc > 0 && !arg_string(J, 0, &s))
         return false;
     if (!J->constructing)
@@ -2012,6 +2168,11 @@ static void inspect(js_state *J, const js_value *v, inspect_t *out, int depth, b
         if (!top)
             inspect_put(out, "\"", 1);
         return;
+    case JS_T_SYM:
+        inspect_put(out, "Symbol(", 7);
+        inspect_put(out, v->u.s->data, v->u.s->len);
+        inspect_put(out, ")", 1);
+        return;
     default:
         break;
     }
@@ -2054,7 +2215,7 @@ static void inspect(js_state *J, const js_value *v, inspect_t *out, int depth, b
     bool first = true;
     for (uint32_t i = 0; i < o->count && i < 100; i++) {
         js_prop *p = &o->props[i];
-        if (!p->key || !(p->flags & JS_P_ENUM))
+        if (!p->key || !(p->flags & JS_P_ENUM) || p->key->symbol)
             continue;
         inspect_put(out, first ? " " : ", ", first ? 1 : 2);
         first = false;
@@ -2095,7 +2256,7 @@ static const fndef object_statics[] = {
     { "seal", object_static, 1, 12 }, { "preventExtensions", object_static, 1, 13 },
     { "isFrozen", object_static, 1, 14 }, { "isSealed", object_static, 1, 15 },
     { "isExtensible", object_static, 1, 16 }, { "is", object_static, 2, 17 },
-    { "fromEntries", object_static, 1, 18 },
+    { "fromEntries", object_static, 1, 18 }, { "getOwnPropertySymbols", object_static, 1, 19 },
 };
 
 static const fndef object_methods[] = {
@@ -2125,7 +2286,6 @@ static const fndef array_methods[] = {
     { "flatMap", array_iterate, 1, IT_FLAT_MAP }, { "reduce", array_reduce, 1, 0 },
     { "reduceRight", array_reduce, 1, 1 }, { "fill", array_fill, 1, 0 },
     { "sort", array_sort, 1, 0 }, { "flat", array_misc, 0, 0 }, { "at", array_misc, 1, 1 },
-    { "keys", array_misc, 0, 2 }, { "values", array_misc, 0, 3 }, { "entries", array_misc, 0, 4 },
 };
 
 static const fndef string_methods[] = {
@@ -2277,5 +2437,7 @@ void js_lib_init(js_state *J)
     for (int i = 0; i < 6; i++)
         js_def_native(J, console, logs[i], console_log, 0, i);
 
+    js_sym_init(J);
+    js_proxy_init(J);
     js_lib2_init(J);
 }

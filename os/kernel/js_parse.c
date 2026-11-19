@@ -68,8 +68,11 @@ typedef struct fnctx {
     js_string **vars;
     js_node **funcs;
     int nvars, vars_cap, nfuncs, funcs_cap;
-    bool arrow, uses_arguments;
+    bool arrow, uses_arguments, uses_new_target;
+    bool generator, is_async;           /* hier gelten "yield" und "await" als Schlüsselwörter */
 } fnctx;
+
+#define PF_NO_PARAMS 0x100              /* für function(): gleich der Rumpf, keine Parameterliste */
 
 typedef struct {
     js_state *J;
@@ -79,6 +82,7 @@ typedef struct {
     int tk, kw, punct;
     bool nl;                            /* davor stand ein Zeilenwechsel */
     bool at_start;
+    bool private_name;                  /* TK_NAME: ein privater Name (#x); str enthält das "#" */
     const char *tk_start;
     double num;
     js_string *str;
@@ -93,7 +97,7 @@ typedef struct {
 typedef struct {
     const char *pos, *tk_start;
     int line, tk, kw, punct;
-    bool nl, at_start;
+    bool nl, at_start, private_name;
     double num;
     js_string *str;
 } lex_state;
@@ -298,6 +302,11 @@ static void lex_string(parser *p, char quote)
     p->str = p->peeking ? p->J->empty : pin(js_string_new(p->J, p->buf, p->buf_len));
 }
 
+static bool is_digit(char c)
+{
+    return c >= '0' && c <= '9';
+}
+
 static void lex_number(parser *p)
 {
     const char *s = p->pos;
@@ -307,11 +316,14 @@ static void lex_number(parser *p)
         int base = (s[1] | 32) == 'x' ? 16 : (s[1] | 32) == 'o' ? 8 : 2;
         const char *q = s + 2;
         int count = 0;
-        for (; q < p->end; q++, count++) {
+        for (; q < p->end; q++) {
             int d = hex_digit(*q);
+            if (*q == '_' && count > 0 && q + 1 < p->end && hex_digit(q[1]) >= 0)
+                continue;               /* Trennstrich zwischen Ziffern: 0xFF_FF */
             if (d < 0 || d >= base)
                 break;
             value = value * base + d;
+            count++;
         }
         if (count == 0) {
             fail(p, "Invalid number");
@@ -319,16 +331,45 @@ static void lex_number(parser *p)
         }
         p->pos = q;
     } else {
-        size_t used = 0;
-        value = js_text_to_number(s, (size_t)(p->end - s), &used);
+        /* Trennstriche (1_000_000) herausnehmen; ends[k]: so weit reicht die Quelle nach k Zeichen */
+        char clean[100];
+        uint16_t ends[100];
+        size_t n = 0, i = 0, len = (size_t)(p->end - s), used = 0;
+        bool separated = false;
+        for (; i < len && n + 1 < sizeof(clean); i++) {
+            char c = s[i];
+            if (c == '_' && i > 0 && is_digit(s[i - 1]) && i + 1 < len && is_digit(s[i + 1])) {
+                separated = true;
+                continue;
+            }
+            if (!is_digit(c) && c != '.' && (c | 32) != 'e' &&
+                !((c == '+' || c == '-') && i > 0 && (s[i - 1] | 32) == 'e'))
+                break;
+            clean[n] = c;
+            ends[n++] = (uint16_t)(i + 1);
+        }
+        if (separated) {
+            value = js_text_to_number(clean, n, &used);
+            used = used ? ends[used - 1] : 0;
+        } else {
+            value = js_text_to_number(s, len, &used);
+        }
         if (used == 0) {
             fail(p, "Invalid number");
             return;
         }
         p->pos = s + used;
     }
+    /*
+     * Große Ganzzahlen (10n): Diese Maschine kennt nur eine Art Zahl. Sie
+     * liest sie als gewöhnliche Zahl - über 2^53 hinaus also ungenau -, statt
+     * das ganze Skript abzulehnen.
+     */
+    if (p->pos < p->end && *p->pos == 'n' &&
+        !(p->pos + 1 < p->end && name_part((unsigned char)p->pos[1])))
+        p->pos++;
     if (p->pos < p->end && name_start((unsigned char)*p->pos)) {
-        fail(p, "Invalid number");      /* auch BigInt (10n) gibt es hier nicht */
+        fail(p, "Invalid number");
         return;
     }
     p->tk = TK_NUM;
@@ -396,7 +437,18 @@ static void next(parser *p)
     p->at_start = false;
     p->tk_start = p->pos;
     p->kw = KW_NONE;
+    p->private_name = false;
     unsigned char c = (unsigned char)*p->pos;
+    if (c == '#' && p->end - p->pos >= 2 && name_start((unsigned char)p->pos[1])) {
+        /* privater Name einer Klasse: "#" gehört zum Namen, so gleicht er keinem gewöhnlichen */
+        const char *s = p->pos++;
+        while (p->pos < p->end && name_part((unsigned char)*p->pos))
+            p->pos++;
+        p->tk = TK_NAME;
+        p->private_name = true;
+        p->str = p->peeking ? p->J->empty : pin(js_intern(p->J, s, (size_t)(p->pos - s)));
+        return;
+    }
     if ((c >= '0' && c <= '9') ||
         (c == '.' && p->end - p->pos >= 2 && p->pos[1] >= '0' && p->pos[1] <= '9')) {
         lex_number(p);
@@ -433,21 +485,21 @@ static void next(parser *p)
             return;
         }
     }
-    fail(p, c == '#' ? "Private fields are not supported" : "Unexpected character");
+    fail(p, "Unexpected character");
 }
 
 static void save(const parser *p, lex_state *s)
 {
     s->pos = p->pos; s->tk_start = p->tk_start; s->line = p->line; s->tk = p->tk; s->kw = p->kw;
     s->punct = p->punct; s->nl = p->nl; s->at_start = p->at_start; s->num = p->num;
-    s->str = p->str;
+    s->str = p->str; s->private_name = p->private_name;
 }
 
 static void restore(parser *p, const lex_state *s)
 {
     p->pos = s->pos; p->tk_start = s->tk_start; p->line = s->line; p->tk = s->tk; p->kw = s->kw;
     p->punct = s->punct; p->nl = s->nl; p->at_start = s->at_start; p->num = s->num;
-    p->str = s->str;
+    p->str = s->str; p->private_name = s->private_name;
 }
 
 static bool is_punct(const parser *p, int id)
@@ -463,7 +515,7 @@ static bool is_kw(const parser *p, int kw)
 /* Ein Name, der als Bezeichner taugt (keine reservierten Wörter) */
 static bool is_ident(const parser *p)
 {
-    return p->tk == TK_NAME && (p->kw == KW_NONE || p->kw > KW_RESERVED_END);
+    return p->tk == TK_NAME && !p->private_name && (p->kw == KW_NONE || p->kw > KW_RESERVED_END);
 }
 
 static bool accept(parser *p, int id)
@@ -611,16 +663,26 @@ static js_node *block(parser *p);
 
 /* --- Zeichenketten-Vorlagen und reguläre Ausdrücke -------------------------------------------- */
 
-/* Das laufende Zeichen ist "`"; liest bis hinter das schließende. */
-static js_node *template_literal(parser *p)
+/*
+ * Das laufende Zeichen ist "`"; liest bis hinter das schließende.
+ *
+ * tag: Die Vorlage gehört zu einem Aufruf f`...`. Dann entsteht N_TAGGED mit
+ * den Textstücken (b), ihrer rohen Fassung ohne ausgewertete Maskierungen (c)
+ * und den Ausdrücken dazwischen (d) - Stücke gibt es immer eines mehr.
+ */
+static js_node *template_literal(parser *p, js_node *tag)
 {
-    js_node *n = node(p, N_TEMPLATE), **tail = &n->a;
+    js_node *n = node(p, tag ? N_TAGGED : N_TEMPLATE), **tail = &n->a;
+    js_node **cooked = &n->b, **raw = &n->c, **values = &n->d;
+    n->a = tag;
     for (;;) {
         p->buf_len = 0;
         bool expr = false;
+        const char *start = p->pos, *stop;
         for (;;) {
             if (p->pos >= p->end)
                 return fail(p, "Unterminated template");
+            stop = p->pos;
             char c = *p->pos++;
             if (c == '`')
                 break;
@@ -641,7 +703,21 @@ static js_node *template_literal(parser *p)
                 continue;               /* Zeilenenden gelten als "\n" */
             buf_put(p, &c, 1);
         }
-        if (p->buf_len > 0) {
+        if (tag) {
+            js_node *part = node(p, N_STR), *rough = node(p, N_STR);
+            part->u.str = pin(js_string_new(p->J, p->buf, p->buf_len));
+            /* die rohe Fassung: der Quelltext selbst, nur die Zeilenenden vereinheitlicht */
+            p->buf_len = 0;
+            for (const char *q = start; q < stop; q++) {
+                if (*q != '\r')
+                    buf_put(p, q, 1);
+            }
+            rough->u.str = pin(js_string_new(p->J, p->buf, p->buf_len));
+            *cooked = part;
+            cooked = &part->next;
+            *raw = rough;
+            raw = &rough->next;
+        } else if (p->buf_len > 0) {
             js_node *part = node(p, N_STR);
             part->u.str = pin(js_string_new(p->J, p->buf, p->buf_len));
             *tail = part;
@@ -656,8 +732,13 @@ static js_node *template_literal(parser *p)
         if (!is_punct(p, P_RBRACE))
             return fail(p, "Unexpected token in template");
         /* nicht next(): hinter "}" geht der Text der Vorlage weiter */
-        *tail = value;
-        tail = &value->next;
+        if (tag) {
+            *values = value;
+            values = &value->next;
+        } else {
+            *tail = value;
+            tail = &value->next;
+        }
     }
     next(p);
     return n;
@@ -717,6 +798,8 @@ static js_node *property_key(parser *p, bool *computed)
     *computed = false;
     if (p->tk == TK_NAME || p->tk == TK_STR) {
         js_node *key = string_node(p, pin(js_intern_string(p->J, p->str)));
+        if (p->tk == TK_NAME && p->private_name)
+            key->flags |= NF_PRIVATE;
         next(p);
         return key;
     }
@@ -959,16 +1042,21 @@ static js_node *object_literal(parser *p)
             bool computed, plain = is_ident(p);
             js_string *name = p->str;
             /* "get x() {...}" und "set x(v) {...}" - aber nicht { get: 1 } oder { get() {} } */
+            int kind = 0;               /* JS_F_ASYNC, JS_F_GENERATOR: "async name() {}", "*name() {}" */
             if ((is_kw(p, KW_GET) || is_kw(p, KW_SET)) && !peek_punct(p, P_COLON) &&
                 !peek_punct(p, P_LPAREN) && !peek_punct(p, P_COMMA) && !peek_punct(p, P_RBRACE) &&
                 !peek_punct(p, P_ASSIGN)) {
                 item->flags |= p->kw == KW_GET ? NF_GETTER : NF_SETTER;
                 next(p);
-            } else if (is_kw(p, KW_ASYNC) && !peek_punct(p, P_COLON) && !peek_punct(p, P_LPAREN) &&
-                       !peek_punct(p, P_COMMA) && !peek_punct(p, P_RBRACE)) {
-                return fail(p, "async functions are not supported");
-            } else if (is_punct(p, P_STAR)) {
-                return fail(p, "Generators are not supported");
+            } else {
+                if (is_kw(p, KW_ASYNC) && !peek_punct(p, P_COLON) && !peek_punct(p, P_LPAREN) &&
+                    !peek_punct(p, P_COMMA) && !peek_punct(p, P_RBRACE) && !peek_punct(p, P_ASSIGN)) {
+                    kind |= JS_F_ASYNC;
+                    next(p);
+                }
+                if (accept(p, P_STAR))
+                    kind |= JS_F_GENERATOR;
+                plain = plain && !kind;
             }
             item->a = property_key(p, &computed);
             if (computed)
@@ -979,7 +1067,9 @@ static js_node *object_literal(parser *p)
                 item->b = function(p, computed ? NULL : item->a->u.str, 0, start, NULL);
             } else if (is_punct(p, P_LPAREN)) {
                 item->flags |= NF_METHOD;
-                item->b = function(p, computed ? NULL : item->a->u.str, 0, start, NULL);
+                item->b = function(p, computed ? NULL : item->a->u.str, kind, start, NULL);
+            } else if (kind) {
+                fail(p, "Unexpected token");
             } else if (accept(p, P_COLON)) {
                 item->b = assign(p);
             } else if (plain && !computed) {
@@ -1029,6 +1119,15 @@ static js_node *primary(parser *p)
         next(p);
         return n;
     case TK_NAME:
+        if (p->private_name) {
+            /* nur als "#name in objekt" */
+            n = string_node(p, p->str);
+            n->flags |= NF_PRIVATE;
+            next(p);
+            if (!is_kw(p, KW_IN))
+                return fail(p, "Unexpected private name");
+            return n;
+        }
         switch (p->kw) {
         case KW_THIS: next(p); return node(p, N_THIS);
         case KW_NULL: next(p); return node(p, N_NULL);
@@ -1038,31 +1137,35 @@ static js_node *primary(parser *p)
         case KW_FUNCTION: {
             const char *start = p->tk_start;
             next(p);
-            if (is_punct(p, P_STAR))
-                return fail(p, "Generators are not supported");
+            int kind = accept(p, P_STAR) ? JS_F_GENERATOR : 0;
             js_string *name = NULL;
             if (is_ident(p)) {
                 name = p->str;
                 next(p);
             }
-            return function(p, name, 0, start, NULL);
+            return function(p, name, kind, start, NULL);
         }
         case KW_CLASS:
             return class_node(p);
-        case KW_ASYNC:
-            if (peek_punct(p, P_LPAREN) || arrow_ahead(p))
-                break;                  /* als gewöhnlicher Name gebraucht */
-            {
-                lex_state s;
-                save(p, &s);
+        case KW_ASYNC: {
+            /* "async function ..." - alles andere mit "async" ist ein gewöhnlicher Name */
+            lex_state s;
+            const char *start = p->tk_start;
+            save(p, &s);
+            next(p);
+            if (is_kw(p, KW_FUNCTION) && !p->nl) {
                 next(p);
-                bool is_function = is_kw(p, KW_FUNCTION) && !p->nl;
-                bool is_arrow = !p->nl && arrow_ahead(p);
-                restore(p, &s);
-                if (is_function || is_arrow)
-                    return fail(p, "async functions are not supported");
+                int kind = JS_F_ASYNC | (accept(p, P_STAR) ? JS_F_GENERATOR : 0);
+                js_string *name = NULL;
+                if (is_ident(p)) {
+                    name = p->str;
+                    next(p);
+                }
+                return function(p, name, kind, start, NULL);
             }
+            restore(p, &s);
             break;
+        }
         default:
             if (p->kw != KW_NONE && p->kw < KW_RESERVED_END)
                 return fail(p, "Unexpected keyword");
@@ -1092,7 +1195,7 @@ static js_node *primary(parser *p)
         case P_LBRACKET: next(p); return array_literal(p);
         case P_LBRACE: next(p); return object_literal(p);
         case P_SLASH: case P_DIV_A: return regex_literal(p);
-        case P_BACKTICK: return template_literal(p);
+        case P_BACKTICK: return template_literal(p, NULL);
         default: break;
         }
         break;
@@ -1109,8 +1212,20 @@ static js_node *call_member(parser *p)
     bool chain = false;
     if (is_kw(p, KW_NEW)) {
         next(p);
-        if (is_punct(p, P_DOT))
-            return fail(p, "new.target is not supported");
+        if (accept(p, P_DOT)) {
+            if (p->tk != TK_NAME || p->str->len != 6 || memcmp(p->str->data, "target", 6) != 0)
+                return fail(p, "Unexpected token");
+            next(p);
+            /* gemeint ist die nächste gewöhnliche Funktion (Pfeilfunktionen reichen durch) */
+            for (fnctx *f = p->fn; f; f = f->outer) {
+                if (!f->arrow) {
+                    f->uses_new_target = true;
+                    break;
+                }
+            }
+            e = node(p, N_NEWTARGET);
+            goto suffix;                /* dahinter darf es weitergehen: new.target.name */
+        }
         js_node *callee;
         if (is_kw(p, KW_NEW)) {
             callee = call_member(p);
@@ -1124,6 +1239,8 @@ static js_node *call_member(parser *p)
                     js_node *m = node(p, N_MEMBER);
                     m->a = callee;
                     m->u.str = p->str;
+                    if (p->private_name)
+                        m->flags |= NF_PRIVATE;
                     callee = m;
                     next(p);
                 } else if (accept(p, P_LBRACKET)) {
@@ -1148,6 +1265,7 @@ static js_node *call_member(parser *p)
     } else {
         e = primary(p);
     }
+suffix:
     while (!p->failed) {
         int optional = 0;
         if (accept(p, P_OPTCHAIN)) {
@@ -1157,7 +1275,7 @@ static js_node *call_member(parser *p)
                 js_node *m = node(p, N_MEMBER);
                 m->a = e;
                 m->u.str = p->str;
-                m->flags |= NF_OPTIONAL;
+                m->flags |= NF_OPTIONAL | (p->private_name ? NF_PRIVATE : 0);
                 e = m;
                 next(p);
                 continue;
@@ -1171,6 +1289,8 @@ static js_node *call_member(parser *p)
             js_node *m = node(p, N_MEMBER);
             m->a = e;
             m->u.str = p->str;
+            if (p->private_name)
+                m->flags |= NF_PRIVATE;
             e = m;
             next(p);
         } else if (accept(p, P_LBRACKET)) {
@@ -1191,7 +1311,7 @@ static js_node *call_member(parser *p)
             c->flags |= (uint16_t)(optional | (spread ? NF_SPREAD : 0));
             e = c;
         } else if (is_punct(p, P_BACKTICK)) {
-            return fail(p, "Tagged templates are not supported");
+            e = template_literal(p, e);
         } else {
             break;
         }
@@ -1223,6 +1343,12 @@ static js_node *unary(parser *p)
         if (p->kw == KW_TYPEOF) op = OP_TYPEOF;
         else if (p->kw == KW_VOID) op = OP_VOID;
         else if (p->kw == KW_DELETE) op = OP_DELETE;
+        else if (p->kw == KW_AWAIT && p->fn->is_async) {
+            js_node *n = node(p, N_AWAIT);
+            next(p);
+            n->a = unary(p);
+            LEAVE(n);
+        }
     }
     if (op != OP_NONE) {
         js_node *n = node(p, op == OP_INC || op == OP_DEC ? N_UPDATE : N_UNARY);
@@ -1303,15 +1429,34 @@ static js_node *binary(parser *p, int min_rank)
     }
 }
 
-static js_node *arrow(parser *p)
+/* Pfeilfunktion; kind: JS_F_ASYNC, wenn "async" davorstand (start zeigt dann dorthin) */
+static js_node *arrow(parser *p, int kind, const char *start)
 {
-    const char *start = p->tk_start;
     if (is_ident(p)) {
         js_node *param = name_node(p, p->str);
         next(p);
-        return function(p, NULL, JS_F_ARROW, start, param);
+        return function(p, NULL, JS_F_ARROW | kind, start, param);
     }
-    return function(p, NULL, JS_F_ARROW, start, NULL);
+    return function(p, NULL, JS_F_ARROW | kind, start, NULL);
+}
+
+/* Das laufende Zeichen ist "yield" in einem Generator. */
+static js_node *yield_expression(parser *p)
+{
+    js_node *n = node(p, N_YIELD);
+    next(p);
+    if (!p->nl && accept(p, P_STAR)) {
+        n->flags |= NF_DELEGATE;
+        n->a = assign(p);
+        return n;
+    }
+    /* "yield" allein liefert undefined; ein Wert folgt nur in derselben Zeile */
+    bool ends = p->nl || p->tk == TK_EOF || is_punct(p, P_RPAREN) || is_punct(p, P_RBRACKET) ||
+                is_punct(p, P_RBRACE) || is_punct(p, P_COMMA) || is_punct(p, P_SEMI) ||
+                is_punct(p, P_COLON) || is_kw(p, KW_IN) || is_kw(p, KW_OF);
+    if (!ends)
+        n->a = assign(p);
+    return n;
 }
 
 static int assign_op(const parser *p)
@@ -1344,7 +1489,19 @@ static js_node *assign(parser *p)
     if (!enter(p))
         return NULL;
     if ((is_ident(p) || is_punct(p, P_LPAREN)) && arrow_ahead(p))
-        LEAVE(arrow(p));
+        LEAVE(arrow(p, 0, p->tk_start));
+    if (is_kw(p, KW_ASYNC)) {
+        /* "async x => ..." und "async (a, b) => ..." */
+        lex_state s;
+        const char *start = p->tk_start;
+        save(p, &s);
+        next(p);
+        if (!p->failed && !p->nl && (is_ident(p) || is_punct(p, P_LPAREN)) && arrow_ahead(p))
+            LEAVE(arrow(p, JS_F_ASYNC, start));
+        restore(p, &s);
+    }
+    if (is_kw(p, KW_YIELD) && p->fn->generator)
+        LEAVE(yield_expression(p));
     js_node *left = binary(p, 1);
     if (!p->failed && accept(p, P_QUESTION)) {
         js_node *n = node(p, N_COND);
@@ -1422,6 +1579,8 @@ static js_node *function(parser *p, js_string *name, int flags, const char *star
     }
     ctx.outer = p->fn;
     ctx.arrow = (flags & JS_F_ARROW) != 0;
+    ctx.generator = (flags & JS_F_GENERATOR) != 0;
+    ctx.is_async = (flags & JS_F_ASYNC) != 0;
     p->fn = &ctx;
     bool no_in = p->no_in;
     p->no_in = false;
@@ -1430,7 +1589,9 @@ static js_node *function(parser *p, js_string *name, int flags, const char *star
     info->flags = (uint8_t)flags;
     info->simple_params = true;
     js_node **tail = &info->params;
-    if (one) {
+    if (flags & PF_NO_PARAMS) {
+        /* Rumpf ohne Parameterliste */
+    } else if (one) {
         *tail = one;
         info->nparams = 1;
     } else {
@@ -1490,6 +1651,7 @@ static js_node *function(parser *p, js_string *name, int flags, const char *star
     info->funcs = ctx.funcs;
     info->nfuncs = ctx.nfuncs;
     info->uses_arguments = ctx.uses_arguments;
+    info->uses_new_target = ctx.uses_new_target;
     p->fn = ctx.outer;
     p->no_in = no_in;
     n->u.fn = info;
@@ -1520,18 +1682,30 @@ static js_node *class_node(parser *p)
             !peek_punct(p, P_SEMI)) {
             item->flags |= NF_STATIC;
             next(p);
-            if (is_punct(p, P_LBRACE))
-                return fail(p, "Static blocks are not supported");
+            if (is_punct(p, P_LBRACE)) {
+                /* static { ... }: läuft einmal, wenn die Klasse entsteht - mit der Klasse als "this" */
+                item->flags |= NF_SHORTHAND;
+                item->b = function(p, NULL, PF_NO_PARAMS, start, NULL);
+                if (p->failed)
+                    break;
+                *members = item;
+                members = &item->next;
+                continue;
+            }
         }
+        int kind = 0;                   /* JS_F_ASYNC, JS_F_GENERATOR */
         if ((is_kw(p, KW_GET) || is_kw(p, KW_SET)) && !peek_punct(p, P_LPAREN) &&
             !peek_punct(p, P_ASSIGN) && !peek_punct(p, P_SEMI) && !peek_punct(p, P_RBRACE)) {
             item->flags |= p->kw == KW_GET ? NF_GETTER : NF_SETTER;
             next(p);
-        } else if (is_kw(p, KW_ASYNC) && !peek_punct(p, P_LPAREN) && !peek_punct(p, P_ASSIGN) &&
-                   !peek_punct(p, P_SEMI)) {
-            return fail(p, "async functions are not supported");
-        } else if (is_punct(p, P_STAR)) {
-            return fail(p, "Generators are not supported");
+        } else {
+            if (is_kw(p, KW_ASYNC) && !peek_punct(p, P_LPAREN) && !peek_punct(p, P_ASSIGN) &&
+                !peek_punct(p, P_SEMI) && !peek_punct(p, P_RBRACE)) {
+                kind |= JS_F_ASYNC;
+                next(p);
+            }
+            if (accept(p, P_STAR))
+                kind |= JS_F_GENERATOR;
         }
         bool computed;
         item->a = property_key(p, &computed);
@@ -1539,13 +1713,16 @@ static js_node *class_node(parser *p)
             break;
         if (computed)
             item->flags |= NF_COMPUTED;
+        else if (item->a->flags & NF_PRIVATE)
+            item->flags |= NF_PRIVATE;
         js_string *key = computed ? NULL : item->a->u.str;
         if (is_punct(p, P_LPAREN)) {
-            bool ctor = key == p->J->k[K_constructor] && !(item->flags & (NF_STATIC | NF_GETTER | NF_SETTER));
+            bool ctor = key == p->J->k[K_constructor] && !kind &&
+                        !(item->flags & (NF_STATIC | NF_GETTER | NF_SETTER));
             if (!(item->flags & (NF_GETTER | NF_SETTER)))
                 item->flags |= NF_METHOD;
             js_node *fn = function(p, ctor ? n->u.str : key,
-                                   ctor ? JS_F_CLASS | (n->a ? JS_F_DERIVED : 0) : 0,
+                                   ctor ? JS_F_CLASS | (n->a ? JS_F_DERIVED : 0) : kind,
                                    ctor ? class_start : start, NULL);
             if (ctor) {
                 n->c = fn;
@@ -1554,7 +1731,7 @@ static js_node *class_node(parser *p)
             item->b = fn;
         } else {
             /* ein Feld: name = wert; */
-            if (item->flags & (NF_GETTER | NF_SETTER))
+            if ((item->flags & (NF_GETTER | NF_SETTER)) || kind)
                 return fail(p, "Unexpected token");
             item->flags |= NF_FIELD;
             if (accept(p, P_ASSIGN))
@@ -1651,8 +1828,13 @@ static js_node *for_statement(parser *p)
 {
     js_node *n = node(p, S_FOR), *init = NULL;
     next(p);
-    if (is_kw(p, KW_AWAIT))
-        return fail(p, "for await is not supported");
+    bool awaiting = false;
+    if (is_kw(p, KW_AWAIT)) {
+        if (!p->fn->is_async)
+            return fail(p, "for await is only valid in async functions");
+        awaiting = true;
+        next(p);
+    }
     expect(p, P_LPAREN);
     bool declaration = is_kw(p, KW_VAR) || is_kw(p, KW_CONST) ||
                        (is_kw(p, KW_LET) && !peek_punct(p, P_SEMI) && !peek_punct(p, P_ASSIGN) &&
@@ -1683,6 +1865,11 @@ static js_node *for_statement(parser *p)
         if (!init || (init->type == S_VAR && (!init->a || init->a->next || init->a->b)))
             return fail(p, "Invalid left-hand side in for loop");
         n->type = of ? S_FOROF : S_FORIN;
+        if (awaiting) {
+            if (!of)
+                return fail(p, "Unexpected token");
+            n->flags |= NF_AWAIT;
+        }
         next(p);
         n->a = init;
         n->b = of ? assign(p) : expression(p);
@@ -1690,6 +1877,8 @@ static js_node *for_statement(parser *p)
         n->d = statement(p);
         return n;
     }
+    if (awaiting)
+        return fail(p, "Unexpected token");
     n->a = init;
     expect(p, P_SEMI);
     if (!is_punct(p, P_SEMI))
@@ -1725,13 +1914,12 @@ static js_node *statement(parser *p)
         case KW_FUNCTION: {
             const char *start = p->tk_start;
             next(p);
-            if (is_punct(p, P_STAR))
-                LEAVE(fail(p, "Generators are not supported"));
+            int kind = accept(p, P_STAR) ? JS_F_GENERATOR : 0;
             if (!is_ident(p))
                 LEAVE(fail(p, "Function statements require a name"));
             js_string *name = p->str;
             next(p);
-            js_node *fn = function(p, name, 0, start, NULL);
+            js_node *fn = function(p, name, kind, start, NULL);
             if (!p->failed && fn) {
                 declare_func(p, fn);
                 declare_var(p, name);
@@ -1740,12 +1928,24 @@ static js_node *statement(parser *p)
         }
         case KW_ASYNC: {
             lex_state s;
+            const char *start = p->tk_start;
             save(p, &s);
             next(p);
-            bool is_function = is_kw(p, KW_FUNCTION) && !p->nl;
+            if (is_kw(p, KW_FUNCTION) && !p->nl) {
+                next(p);
+                int kind = JS_F_ASYNC | (accept(p, P_STAR) ? JS_F_GENERATOR : 0);
+                if (!is_ident(p))
+                    LEAVE(fail(p, "Function statements require a name"));
+                js_string *name = p->str;
+                next(p);
+                js_node *fn = function(p, name, kind, start, NULL);
+                if (!p->failed && fn) {
+                    declare_func(p, fn);
+                    declare_var(p, name);
+                }
+                LEAVE(node(p, S_FUNC));
+            }
             restore(p, &s);
-            if (is_function)
-                LEAVE(fail(p, "async functions are not supported"));
             break;
         }
         case KW_CLASS:

@@ -11,7 +11,7 @@ static bool eval(js_state *J, js_node *n, js_object *env);
 static int exec(js_state *J, js_node *n, js_object *env, js_string *label);
 static int exec_list(js_state *J, js_node *list, js_object *env);
 static bool assign_to(js_state *J, js_node *t, js_object *env, int mode);
-static bool do_call(js_state *J, int argc, bool construct);
+static bool do_call(js_state *J, int argc, int mode);
 
 /* --- Grenzen ----------------------------------------------------------------------------------- */
 
@@ -48,6 +48,19 @@ static js_object *function_prototype(js_state *J, js_object *f)
     if (p)
         return p->v.t == JS_T_OBJ ? p->v.u.o : NULL;
     if (f->cls != JS_C_FUNCTION || (f->flags & JS_F_ARROW))
+        return NULL;
+    if (f->flags & JS_F_GENERATOR) {
+        /* was eine Generatorfunktion liefert, erbt von hier - und darüber next() und Co. */
+        js_object *parent = J->generator_proto;
+        if (f->flags & JS_F_ASYNC) {
+            js_prop *ag = js_own(J->registry, js_intern_cstr(J, "AsyncGeneratorPrototype"));
+            parent = ag && ag->v.t == JS_T_OBJ ? ag->v.u.o : J->object_proto;
+        }
+        js_object *proto = js_object_new(J, JS_C_OBJECT, parent);
+        js_define(J, f, J->k[K_prototype], js_obj(proto), JS_P_WRITE);
+        return proto;
+    }
+    if (f->flags & JS_F_ASYNC)
         return NULL;
     js_object *proto = js_object_new(J, JS_C_OBJECT, J->object_proto);
     js_define(J, proto, J->k[K_constructor], js_obj(f), JS_P_WRITE | JS_P_CONF);
@@ -86,12 +99,17 @@ bool js_get(js_state *J, int index, js_string *key)
     case JS_T_BOOL:
         o = J->boolean_proto;
         break;
+    case JS_T_SYM:
+        o = J->symbol_proto;
+        break;
     default:
         return js_throw(J, JS_E_TYPE, "Cannot read properties of %s (reading '%s')",
                         v->t == JS_T_NULL ? "null" : "undefined", key->data);
     }
     if (v->t == JS_T_OBJ) {
         switch (o->cls) {
+        case JS_C_PROXY:
+            return js_proxy_get(J, index, key);
         case JS_C_ARRAY:
             if (key->index != JS_NO_INDEX) {
                 if (key->index < o->u.arr.len)
@@ -137,8 +155,20 @@ bool js_get(js_state *J, int index, js_string *key)
         }
     }
     js_prop *p = js_lookup(o, key, NULL);
-    if (!p)
+    if (!p) {
+        /* nirgends gefunden - es sei denn, in der Kette der Prototypen steht ein Proxy */
+        for (js_object *q = o->proto; q; q = q->proto) {
+            if (q->cls != JS_C_PROXY)
+                continue;
+            js_push(J, js_obj(q));
+            if (!js_proxy_get(J, J->top - 1, key))
+                return false;
+            *js_top(J, 1) = *js_top(J, 0);
+            js_pop(J, 1);
+            return true;
+        }
         return js_push(J, js_undef());
+    }
     if (!(p->flags & JS_P_ACCESSOR))
         return js_push(J, p->v);
     if (p->v.t != JS_T_OBJ)
@@ -174,6 +204,8 @@ bool js_put(js_state *J, int index, js_string *key)
         return true;
     }
     js_object *o = target->u.o;
+    if (o->cls == JS_C_PROXY)
+        return js_proxy_put(J, index, key);
     if (o->cls == JS_C_ARRAY) {
         if (key->index != JS_NO_INDEX) {
             if (key->index >= o->u.arr.len && !js_array_resize(J, o, key->index + 1))
@@ -279,6 +311,23 @@ bool js_put_value(js_state *J)
 
 bool js_instanceof(js_state *J, const js_value *v, const js_value *ctor, bool *out)
 {
+    if (ctor->t == JS_T_OBJ && js_lookup(ctor->u.o, J->sym[SYM_hasInstance], NULL)) {
+        /* die Klasse entscheidet selbst: [Symbol.hasInstance](wert) */
+        js_value value = *v;
+        js_push(J, *ctor);
+        if (!js_get(J, J->top - 1, J->sym[SYM_hasInstance]))
+            return false;
+        if (js_is_callable(js_top(J, 0))) {
+            js_push(J, *js_top(J, 1));
+            js_push(J, value);
+            if (!js_call(J, 1))
+                return false;
+            *out = js_truthy(js_top(J, 0));
+            js_pop(J, 2);
+            return true;
+        }
+        js_pop(J, 2);
+    }
     if (!js_is_callable(ctor))
         return js_throw(J, JS_E_TYPE, "Right-hand side of 'instanceof' is not callable");
     *out = false;
@@ -292,9 +341,30 @@ bool js_instanceof(js_state *J, const js_value *v, const js_value *ctor, bool *o
             f = t->v.u.o;
     }
     js_object *proto = function_prototype(J, f);
+    if (f->cls == JS_C_PROXY) {
+        /* eine Klasse hinter einem Proxy: ihr "prototype" über den Proxy erfragen */
+        js_value value = *v;
+        js_push(J, *ctor);
+        if (!js_get(J, J->top - 1, J->k[K_prototype]))
+            return false;
+        proto = js_top(J, 0)->t == JS_T_OBJ ? js_top(J, 0)->u.o : NULL;
+        js_pop(J, 2);
+        v = &value;
+        if (!proto)
+            return true;
+        js_object *start = js_proxy_unwrap(value.u.o);
+        for (js_object *o = start ? start->proto : NULL; o; o = o->proto) {
+            if (o == proto) {
+                *out = true;
+                break;
+            }
+        }
+        return true;
+    }
     if (!proto)
         return true;
-    js_object *o = v->u.o->proto;
+    js_object *first = js_proxy_unwrap(v->u.o);
+    js_object *o = first ? first->proto : NULL;
     for (int i = 0; o && i < 10000; i++, o = o->proto) {
         if (o == proto) {
             *out = true;
@@ -368,8 +438,21 @@ static bool set_var(js_state *J, js_object *env, js_string *name)
 
 /* --- Aufzählen ------------------------------------------------------------------------------------- */
 
-bool js_own_keys(js_state *J, js_object *o, bool only_enumerable, js_object *out)
+bool js_own_keys(js_state *J, js_object *o, int which, js_object *out)
 {
+    bool only_enumerable = which & JS_KEYS_ENUM;
+    if (o->cls == JS_C_PROXY)
+        return js_proxy_keys(J, o, which, out);
+    if (which & JS_KEYS_SYMBOLS) {
+        for (uint32_t i = 0; i < o->count; i++) {
+            js_prop *p = &o->props[i];
+            if (p->key && p->key->symbol == JS_SYM_PUBLIC &&
+                (!only_enumerable || (p->flags & JS_P_ENUM)) &&
+                !js_array_push(J, out, js_sym(p->key)))
+                return false;
+        }
+        return true;
+    }
     if (o->cls == JS_C_ARRAY) {
         for (uint32_t i = 0; i < o->u.arr.len; i++) {
             if (!js_array_push(J, out, js_str(js_index_name(J, i))))
@@ -402,72 +485,50 @@ bool js_own_keys(js_state *J, js_object *o, bool only_enumerable, js_object *out
     }
     for (uint32_t i = 0; i < o->count; i++) {
         js_prop *p = &o->props[i];
-        if (p->key && p->key->index == JS_NO_INDEX && (!only_enumerable || (p->flags & JS_P_ENUM)) &&
-            !js_array_push(J, out, js_str(p->key)))
+        if (p->key && p->key->index == JS_NO_INDEX && !p->key->symbol &&
+            (!only_enumerable || (p->flags & JS_P_ENUM)) && !js_array_push(J, out, js_str(p->key)))
             return false;
     }
+    if (which & JS_KEYS_BOTH)
+        return js_own_keys(J, o, (which & JS_KEYS_ENUM) | JS_KEYS_SYMBOLS, out);
     return true;
 }
 
-/* Hängt die Glieder des Werts an Platz index (Feld, Zeichenkette, feldähnlich) an out an. */
+static bool tick(js_state *J);
+
+/* Hängt die Glieder des Werts an Platz index an out an - alles, was sich durchlaufen lässt. */
 bool js_iterate(js_state *J, int index, js_object *out)
 {
     js_value *v = &J->stack[index];
-    if (v->t == JS_T_OBJ && v->u.o->cls == JS_C_ARRAY) {
-        js_object *a = v->u.o;
-        for (uint32_t i = 0; i < a->u.arr.len; i++) {
-            if (!js_array_push(J, out, a->u.arr.v[i]))
+    if (v->t == JS_T_OBJ && v->u.o->cls == JS_C_ARRAY && out->cls == JS_C_ARRAY &&
+        out->u.arr.len == 0 && v->u.o != out) {
+        /* ein Feld in ein leeres Feld: in einem Zug, wenn es wie üblich durchlaufen wird */
+        js_prop *p = js_lookup(v->u.o, J->sym[SYM_iterator], NULL);
+        if (p && p->v.t == JS_T_OBJ && p->v.u.o == J->array_values) {
+            js_object *a = v->u.o;
+            if (!js_array_resize(J, out, a->u.arr.len))
                 return false;
-        }
-        return true;
-    }
-    if (v->t == JS_T_STR || (v->t == JS_T_OBJ && v->u.o->cls == JS_C_STRING)) {
-        js_string *s = v->t == JS_T_STR ? v->u.s : v->u.o->u.prim.u.s;
-        for (uint32_t at = 0; at < s->len;) {
-            uint32_t end = at + 1;
-            while (end < s->len && ((unsigned char)s->data[end] & 0xC0) == 0x80)
-                end++;
-            if (!js_array_push(J, out, js_str(js_string_new(J, s->data + at, end - at))))
-                return false;
-            at = end;
-        }
-        return true;
-    }
-    if (v->t == JS_T_OBJ) {
-        /* Sammlungen (Map, Set) liefern ihre Glieder über eine eingebaute Hilfsfunktion */
-        js_prop *items = js_lookup(v->u.o, js_intern_cstr(J, "__items__"), NULL);
-        if (items && js_is_callable(&items->v)) {
-            js_push(J, items->v);
-            js_push(J, J->stack[index]);
-            if (!js_call(J, 0))
-                return false;
-            bool ok = js_is_array(js_top(J, 0)) && js_iterate(J, J->top - 1, out);
-            js_pop(J, 1);
-            return ok;
-        }
-        /* alles mit "length" und nummerierten Gliedern */
-        if (js_lookup(v->u.o, J->k[K_length], NULL) || v->u.o->cls == JS_C_HOST) {
-            double n;
-            if (!js_get(J, index, J->k[K_length]))
-                return false;
-            if (js_top(J, 0)->t == JS_T_NUM) {
-                if (!js_to_number(J, J->top - 1, &n))
-                    return false;
-                js_pop(J, 1);
-                for (uint32_t i = 0; n > 0 && i < (uint32_t)n && i < JS_ARRAY_MAX; i++) {
-                    if (!js_get_index(J, index, i))
-                        return false;
-                    bool ok = js_array_push(J, out, *js_top(J, 0));
-                    js_pop(J, 1);
-                    if (!ok)
-                        return false;
-                }
-                return true;
-            }
-            js_pop(J, 1);
+            if (a->u.arr.len)
+                memcpy(out->u.arr.v, a->u.arr.v, (size_t)a->u.arr.len * sizeof(js_value));
+            return true;
         }
     }
-    return js_throw(J, JS_E_TYPE, "Value is not iterable");
+    int base = J->top;
+    js_iter it;
+    if (!js_iter_open(J, index, &it))
+        return false;
+    for (;;) {
+        bool done;
+        if (!tick(J) || !js_iter_next(J, &it, &done))
+            return false;
+        if (done)
+            break;
+        if (!js_array_push(J, out, *js_top(J, 0)))
+            return js_iter_close(J, &it, true);
+        js_pop(J, 1);
+    }
+    J->top = base;
+    return true;
 }
 
 /* --- Funktionen ------------------------------------------------------------------------------------ */
@@ -495,6 +556,36 @@ static const char *callee_name(js_node *n)
     return "expression";
 }
 
+/*
+ * Private Namen einer Klasse (#x): Für jeden steht im Bereich der Klasse ein
+ * eigenes Symbol unter dem Namen "#x". Unter diesem Symbol liegt das Feld im
+ * Objekt - von außen kommt niemand an das Symbol und damit an das Feld.
+ */
+static bool private_key(js_state *J, js_object *env, js_string *name, js_string **key)
+{
+    js_prop *p = js_lookup(env, name, NULL);
+    if (!p || p->v.t != JS_T_SYM)
+        return js_throw(J, JS_E_SYNTAX, "Private field '%s' must be declared in an enclosing class",
+                        name->data);
+    *key = p->v.u.s;
+    return true;
+}
+
+/* Der Name, den ein Zugriff "objekt.name" meint; das Objekt liegt oben auf dem Stapel */
+static bool member_key(js_state *J, js_node *n, js_object *env, js_string **key, bool writing)
+{
+    *key = n->u.str;
+    if (!(n->flags & NF_PRIVATE))
+        return true;
+    if (!private_key(J, env, n->u.str, key))
+        return false;
+    js_value *o = js_top(J, 0);
+    if (o->t != JS_T_OBJ || !js_lookup(o->u.o, *key, NULL))
+        return js_throw(J, JS_E_TYPE, "Cannot %s private member %s from an object whose class did not declare it",
+                        writing ? "write" : "read", n->u.str->data);
+    return true;
+}
+
 static bool init_fields(js_state *J, js_node *fields, js_object *env)
 {
     for (js_node *f = fields; f; f = f->next) {
@@ -503,6 +594,9 @@ static bool init_fields(js_state *J, js_node *fields, js_object *env)
             if (!eval(J, f->a, env) || !js_to_key(J, J->top - 1, &key))
                 return false;
             js_pop(J, 1);
+        } else if (f->flags & NF_PRIVATE) {
+            if (!private_key(J, env, f->a->u.str, &key))
+                return false;
         } else {
             key = f->a->u.str;
         }
@@ -570,9 +664,17 @@ static void hoist(js_state *J, js_fninfo *info, js_object *env)
     }
 }
 
-/* Stapel: [fn, this, arg0 ... argN-1] -> [ergebnis] */
-static bool do_call(js_state *J, int argc, bool construct)
+/*
+ * Stapel: [fn, this, arg0 ... argN-1] -> [ergebnis]. mode: CALL - gewöhnlicher
+ * Aufruf; CONSTRUCT - mit "new" (ein neues Objekt wird "this"); DERIVE -
+ * super(...) in einer abgeleiteten Klasse: "this" gibt es schon, und wie bei
+ * "new" ist es das Ergebnis, wenn die Funktion kein Objekt zurückgibt.
+ */
+enum { CALL, CONSTRUCT, DERIVE };
+
+static bool do_call(js_state *J, int argc, int mode)
 {
+    bool construct = mode == CONSTRUCT;
     int base = J->top - argc - 2;
     js_value *fv = &J->stack[base];
     if (!js_is_callable(fv)) {
@@ -592,6 +694,12 @@ static bool do_call(js_state *J, int argc, bool construct)
     js_object *f = fv->u.o;
     bool ok;
     js_value result = js_undef();
+    if (f->cls == JS_C_PROXY) {
+        ok = js_proxy_call(J, argc, mode != CALL);
+        if (!ok)
+            J->top = base;
+        LEAVE(ok);
+    }
 
     if (f->cls == JS_C_NATIVE) {
         /*
@@ -607,7 +715,7 @@ static bool do_call(js_state *J, int argc, bool construct)
         int bot = J->bot;
         bool constructing = J->constructing;
         J->bot = base;
-        J->constructing = construct;
+        J->constructing = mode != CALL;
         ok = f->u.n.fn(J, given);
         J->bot = bot;
         J->constructing = constructing;
@@ -617,9 +725,11 @@ static bool do_call(js_state *J, int argc, bool construct)
             ok = false;
     } else {
         js_fninfo *info = f->u.f.fn->u.fn;
-        if (construct && (f->flags & JS_F_ARROW)) {
+        if (construct && (f->flags & (JS_F_ARROW | JS_F_GENERATOR | JS_F_ASYNC))) {
             J->top = base;
-            js_throw(J, JS_E_TYPE, "Arrow functions cannot be used as constructors");
+            js_throw(J, JS_E_TYPE, (f->flags & JS_F_ARROW)
+                     ? "Arrow functions cannot be used as constructors"
+                     : "Generators and async functions cannot be used as constructors");
             LEAVE(false);
         }
         if (construct) {
@@ -635,6 +745,11 @@ static bool do_call(js_state *J, int argc, bool construct)
         int fbase = J->fbase, line = J->line;
         J->fbase = base;
         ok = true;
+        /* new.target: wer mit "new" gemeint war - bei super(...) reicht es die abgeleitete Klasse durch */
+        js_object *target = mode == CONSTRUCT ? f : mode == DERIVE ? J->new_target : NULL;
+        J->new_target = NULL;
+        if ((info->uses_new_target || (f->flags & JS_F_DERIVED)) && !(f->flags & JS_F_ARROW))
+            js_define(J, env, J->hid[H_newtarget], target ? js_obj(target) : js_undef(), 0);
         if (info->uses_arguments && !(f->flags & JS_F_ARROW)) {
             js_object *args = js_array_new(J, (uint32_t)argc);
             js_define(J, env, J->k[K_arguments], js_obj(args), JS_P_WRITE);
@@ -650,7 +765,10 @@ static bool do_call(js_state *J, int argc, bool construct)
             if (info->fields && !(f->flags & JS_F_DERIVED))
                 ok = init_fields(J, info->fields, env);
         }
-        if (ok && info->expr_body) {
+        if (ok && (f->flags & (JS_F_GENERATOR | JS_F_ASYNC))) {
+            /* der Rumpf läuft später, als Koroutine: jetzt entsteht der Generator oder das Promise */
+            ok = js_co_call(J, base, env, &result);
+        } else if (ok && info->expr_body) {
             ok = eval(J, info->body, env);
             if (ok)
                 result = *js_top(J, 0);
@@ -662,7 +780,7 @@ static bool do_call(js_state *J, int argc, bool construct)
                 result = J->ret;
             J->ret = js_undef();
         }
-        if (ok && construct && result.t != JS_T_OBJ)
+        if (ok && mode != CALL && result.t != JS_T_OBJ)
             result = J->stack[base + 1];
         J->fbase = fbase;
         J->line = line;
@@ -677,7 +795,68 @@ static bool do_call(js_state *J, int argc, bool construct)
 
 bool js_call(js_state *J, int argc)
 {
-    return do_call(J, argc, false);
+    return do_call(J, argc, CALL);
+}
+
+bool js_call_mode(js_state *J, int argc, bool construct)
+{
+    return do_call(J, argc, construct ? CONSTRUCT : CALL);
+}
+
+bool js_has_property(js_state *J, js_object *o, js_string *key, bool *found)
+{
+    if (o->cls == JS_C_PROXY)
+        return js_proxy_has(J, o, key, found);
+    *found = js_lookup(o, key, NULL) != NULL;
+    if (!*found && o->cls == JS_C_ARRAY)
+        *found = (key->index != JS_NO_INDEX && key->index < o->u.arr.len) || key == J->k[K_length];
+    if (!*found && o->cls == JS_C_HOST && o->u.host.cls && o->u.host.cls->get) {
+        if (!o->u.host.cls->get(J, o, key, found))
+            return false;
+        if (*found)
+            js_pop(J, 1);
+    }
+    /* über einen Proxy in der Kette der Prototypen */
+    for (js_object *p = o->proto; !*found && p; p = p->proto) {
+        if (p->cls == JS_C_PROXY)
+            return js_proxy_has(J, p, key, found);
+    }
+    return true;
+}
+
+bool js_delete_property(js_state *J, js_object *o, js_string *key, bool *done)
+{
+    if (o->cls == JS_C_PROXY)
+        return js_proxy_delete(J, o, key, done);
+    *done = true;
+    if (o->cls == JS_C_ARRAY && key->index != JS_NO_INDEX) {
+        if (key->index < o->u.arr.len)
+            o->u.arr.v[key->index] = js_undef();
+    } else {
+        *done = js_delete_own(J, o, key);
+    }
+    return true;
+}
+
+bool js_exec_body(js_state *J, js_object *f, js_object *env, js_value *result)
+{
+    js_fninfo *info = f->u.f.fn->u.fn;
+    bool ok = true;
+    *result = js_undef();
+    J->fbase = 0;
+    if (info->expr_body) {
+        ok = eval(J, info->body, env);
+        if (ok)
+            *result = *js_top(J, 0);
+    } else {
+        int c = exec_list(J, info->body, env);
+        if (c == C_THROW)
+            ok = false;
+        else if (c == C_RETURN)
+            *result = J->ret;
+        J->ret = js_undef();
+    }
+    return ok && !J->fatal && !J->throwing;
 }
 
 /* Stapel: [fn, arg0 ... argN-1] -> [objekt] */
@@ -689,7 +868,7 @@ bool js_construct(js_state *J, int argc)
     for (int i = J->top - 1; i > first; i--)
         J->stack[i] = J->stack[i - 1];
     J->stack[first] = js_undef();
-    return do_call(J, argc, true);
+    return do_call(J, argc, CONSTRUCT);
 }
 
 /* Legt die Argumente eines Aufrufs auf den Stapel; liefert ihre Anzahl oder -1. */
@@ -748,8 +927,22 @@ static bool eval_class(js_state *J, js_node *n, js_object *env)
             parent_proto = js_top(J, 0)->t == JS_T_OBJ ? js_top(J, 0)->u.o : NULL;
         }
     }
-    /* der Name der Klasse ist in ihr selbst sichtbar */
-    js_object *scope = n->u.str ? scope_new(J, env) : env;
+    /* der Name der Klasse ist in ihr selbst sichtbar - ebenso ihre privaten Namen */
+    bool private_names = false;
+    for (js_node *m = n->b; m && !private_names; m = m->next)
+        private_names = m->flags & NF_PRIVATE;
+    for (js_node *m = n->c->u.fn->fields; m && !private_names; m = m->next)
+        private_names = m->flags & NF_PRIVATE;
+    js_object *scope = n->u.str || private_names ? scope_new(J, env) : env;
+    for (int list = 0; list < 2 && private_names; list++) {
+        for (js_node *m = list ? n->c->u.fn->fields : n->b; m; m = m->next) {
+            js_string *name = m->a ? m->a->u.str : NULL;
+            if (!(m->flags & NF_PRIVATE) || js_own(scope, name))
+                continue;               /* (Lese- und Schreibfunktion teilen sich einen Namen) */
+            js_define(J, scope, name,
+                      js_sym(js_symbol_new(J, name->data, name->len, JS_SYM_PRIVATE)), 0);
+        }
+    }
     js_object *ctor = js_function_new(J, n->c, scope);
     js_push(J, js_obj(ctor));
     js_object *proto = js_object_new(J, JS_C_OBJECT, parent_proto);
@@ -765,21 +958,39 @@ static bool eval_class(js_state *J, js_node *n, js_object *env)
     for (js_node *m = n->b; m; m = m->next) {
         js_object *target = (m->flags & NF_STATIC) ? ctor : proto;
         js_string *key;
+        if ((m->flags & (NF_STATIC | NF_SHORTHAND)) == (NF_STATIC | NF_SHORTHAND)) {
+            /* static { ... }: jetzt ausführen, mit der Klasse als "this" */
+            js_push(J, js_obj(js_function_new(J, m->b, scope)));
+            js_push(J, js_obj(ctor));
+            if (!js_call(J, 0))
+                return false;
+            js_pop(J, 1);
+            continue;
+        }
         if (m->flags & NF_COMPUTED) {
             if (!eval(J, m->a, scope) || !js_to_key(J, J->top - 1, &key))
                 return false;
+        } else if (m->flags & NF_PRIVATE) {
+            if (!private_key(J, scope, m->a->u.str, &key))
+                return false;
+            js_push(J, js_sym(key));
         } else {
             key = m->a->u.str;
             js_push(J, js_str(key));
         }
         if (m->flags & NF_FIELD) {
-            if (m->b) {
-                if (!eval(J, m->b, scope))
-                    return false;
-            } else {
+            /* statisches Feld: Im Anfangswert meint "this" die Klasse */
+            js_value outer_this = J->stack[J->fbase + 1];
+            bool ok = true;
+            J->stack[J->fbase + 1] = js_obj(ctor);
+            if (m->b)
+                ok = eval(J, m->b, scope);
+            else
                 js_push(J, js_undef());
-            }
-            js_define(J, target, key, *js_top(J, 0), JS_P_ALL);
+            J->stack[J->fbase + 1] = outer_this;
+            if (!ok)
+                return false;
+            js_define(J, target, key, *js_top(J, 0), (m->flags & NF_PRIVATE) ? JS_P_WRITE : JS_P_ALL);
             js_pop(J, 2);
             continue;
         }
@@ -822,24 +1033,22 @@ static bool eval_super_call(js_state *J, js_node *n, js_object *env)
     if (argc < 0)
         return false;
     if (parent->cls == JS_C_NATIVE) {
-        /* eingebaute Elternklasse (etwa Error): erzeugen lassen und übernehmen */
+        /*
+         * Eingebaute Elternklasse (Error, Array, Map ...): Sie erzeugt das
+         * Objekt - das wird "this" und bekommt den Prototyp der eigenen Klasse.
+         */
         J->stack[base + 1] = js_undef();
-        if (!do_call(J, argc, true))
+        if (!do_call(J, argc, CONSTRUCT))
             return false;
         js_value *made = js_top(J, 0), *self = &J->stack[J->fbase + 1];
         if (made->t == JS_T_OBJ && self->t == JS_T_OBJ && made->u.o != self->u.o) {
-            js_object *from = made->u.o, *to = self->u.o;
-            for (uint32_t i = 0; i < from->count; i++) {
-                if (from->props[i].key)
-                    js_define(J, to, from->props[i].key, from->props[i].v, from->props[i].flags);
-                if (from->cls != JS_C_HOST && J->fatal)
-                    return false;
-            }
-            if (from->cls == JS_C_ERROR)
-                to->cls = JS_C_ERROR;
+            made->u.o->proto = self->u.o->proto;
+            *self = *made;
         }
     } else {
-        if (!do_call(J, argc, false))
+        js_prop *target = js_lookup(env, J->hid[H_newtarget], NULL);
+        J->new_target = target && target->v.t == JS_T_OBJ ? target->v.u.o : NULL;
+        if (!do_call(J, argc, DERIVE))
             return false;
         if (js_top(J, 0)->t == JS_T_OBJ)
             J->stack[J->fbase + 1] = *js_top(J, 0);
@@ -961,17 +1170,9 @@ static bool binary(js_state *J, int op)
         js_string *key;
         if (!js_to_key(J, J->top - 2, &key))
             return false;
-        js_object *o = js_top(J, 0)->u.o;
-        bool found = js_lookup(o, key, NULL) != NULL;
-        if (!found && o->cls == JS_C_ARRAY)
-            found = (key->index != JS_NO_INDEX && key->index < o->u.arr.len) ||
-                    key == J->k[K_length];
-        if (!found && o->cls == JS_C_HOST && o->u.host.cls && o->u.host.cls->get) {
-            if (!o->u.host.cls->get(J, o, key, &found))
-                return false;
-            if (found)
-                js_pop(J, 1);
-        }
+        bool found;
+        if (!js_has_property(J, js_top(J, 0)->u.o, key, &found))
+            return false;
         *js_top(J, 1) = js_bool(found);
         break;
     }
@@ -1004,10 +1205,13 @@ static bool assign_to(js_state *J, js_node *t, js_object *env, int mode)
     case N_IDENT:
         ok = declare(J, env, t->u.str, mode);
         break;
-    case N_MEMBER:
+    case N_MEMBER: {
+        js_string *key;
         ok = (t->a->type == N_SUPER ? js_push(J, J->stack[J->fbase + 1]) : eval(J, t->a, env)) &&
-             js_push(J, J->stack[base - 1]) && js_put(J, J->top - 2, t->u.str);
+             member_key(J, t, env, &key, true) &&
+             js_push(J, J->stack[base - 1]) && js_put(J, J->top - 2, key);
         break;
+    }
     case N_INDEX:
         ok = eval(J, t->a, env) && eval(J, t->b, env) && js_push(J, J->stack[base - 1]) &&
              js_put_value(J);
@@ -1016,25 +1220,38 @@ static bool assign_to(js_state *J, js_node *t, js_object *env, int mode)
         ok = js_throw(J, JS_E_SYNTAX, "Invalid assignment target");
         break;
     case N_ARRAY_PAT: {
-        js_object *items = js_array_new(J, 0);
-        js_push(J, js_obj(items));
-        ok = js_iterate(J, base - 1, items);
-        uint32_t i = 0;
-        for (js_node *e = t->a; e && ok; e = e->next, i++) {
-            if (e->type == N_HOLE)
-                continue;
+        /* Glied für Glied: nur so viele, wie das Muster braucht */
+        js_iter it;
+        ok = js_iter_open(J, base - 1, &it);
+        for (js_node *e = t->a; e && ok; e = e->next) {
             if (e->type == N_REST) {
                 js_object *rest = js_array_new(J, 0);
                 js_push(J, js_obj(rest));
-                for (uint32_t k = i; k < items->u.arr.len && ok; k++)
-                    ok = js_array_push(J, rest, items->u.arr.v[k]);
+                for (;;) {
+                    bool done;
+                    ok = tick(J) && js_iter_next(J, &it, &done);
+                    if (!ok || done)
+                        break;
+                    ok = js_array_push(J, rest, *js_top(J, 0));
+                    js_pop(J, 1);
+                    if (!ok)
+                        break;
+                }
                 ok = ok && assign_to(J, e->a, env, mode);
                 js_pop(J, 1);
                 break;
             }
+            bool done;
+            ok = js_iter_next(J, &it, &done);
+            if (!ok)
+                break;
+            if (done)
+                js_push(J, js_undef());
+            if (e->type == N_HOLE) {
+                js_pop(J, 1);
+                continue;
+            }
             js_node *target = e;
-            js_push(J, items->cls == JS_C_ARRAY && i < items->u.arr.len ? items->u.arr.v[i]
-                                                                         : js_undef());
             if (e->type == N_DEFAULT) {
                 target = e->a;
                 if (js_top(J, 0)->t == JS_T_UNDEF) {
@@ -1045,6 +1262,9 @@ static bool assign_to(js_state *J, js_node *t, js_object *env, int mode)
             ok = ok && assign_to(J, target, env, mode);
             js_pop(J, 1);
         }
+        /* das Muster ist zu Ende, die Quelle vielleicht nicht: ihr Bescheid geben */
+        if (!it.done)
+            ok = js_iter_close(J, &it, !ok);
         break;
     }
     case N_OBJECT_PAT: {
@@ -1063,7 +1283,7 @@ static bool assign_to(js_state *J, js_node *t, js_object *env, int mode)
                 if (J->stack[base - 1].t == JS_T_OBJ) {
                     js_object *keys = js_array_new(J, 0);
                     js_push(J, js_obj(keys));
-                    ok = js_own_keys(J, J->stack[base - 1].u.o, true, keys);
+                    ok = js_own_keys(J, J->stack[base - 1].u.o, JS_KEYS_ENUM | JS_KEYS_BOTH, keys);
                     for (uint32_t k = 0; k < keys->u.arr.len && ok; k++) {
                         js_string *key = keys->u.arr.v[k].u.s;
                         bool taken = false;
@@ -1137,7 +1357,8 @@ static bool eval_call(js_state *J, js_node *n, js_object *env)
             return true;
         }
         if (callee->type == N_MEMBER) {
-            if (!js_get(J, J->top - 1, callee->u.str))
+            js_string *key;
+            if (!member_key(J, callee, env, &key, false) || !js_get(J, J->top - 1, key))
                 return false;
         } else {
             js_string *key;
@@ -1171,7 +1392,79 @@ static bool eval_call(js_state *J, js_node *n, js_object *env)
     if (argc < 0)
         return false;
     J->line = n->line;
-    return do_call(J, argc, false);
+    return do_call(J, argc, CALL);
+}
+
+/*
+ * f`text ${wert} text`: ruft f(stücke, wert, ...). Das Feld der Textstücke
+ * (mit der rohen Fassung unter "raw") gibt es je Stelle im Quelltext nur
+ * einmal - Bibliotheken erkennen daran dieselbe Vorlage wieder.
+ */
+static bool eval_tagged(js_state *J, js_node *n, js_object *env)
+{
+    int base = J->top;
+    js_node *callee = n->a;
+    /* [funktion, this] wie bei einem Aufruf */
+    if (callee->type == N_MEMBER || callee->type == N_INDEX) {
+        if (!eval(J, callee->a, env))
+            return false;
+        if (callee->type == N_MEMBER) {
+            js_string *key;
+            if (!member_key(J, callee, env, &key, false) || !js_get(J, J->top - 1, key))
+                return false;
+        } else {
+            js_string *key;
+            if (!eval(J, callee->b, env) || !js_to_key(J, J->top - 1, &key))
+                return false;
+            js_pop(J, 1);
+            if (!js_get(J, J->top - 1, key))
+                return false;
+        }
+        js_value fn = *js_top(J, 0);
+        *js_top(J, 0) = *js_top(J, 1);
+        *js_top(J, 1) = fn;
+    } else {
+        if (!eval(J, callee, env))
+            return false;
+        js_push(J, js_undef());
+    }
+    if (!js_is_callable(&J->stack[base])) {
+        J->line = n->line;
+        return js_throw(J, JS_E_TYPE, "%s is not a function", callee_name(callee));
+    }
+    if (!n->u.obj) {
+        js_object *parts = js_array_new(J, 0), *raw = js_array_new(J, 0);
+        js_push(J, js_obj(parts));
+        js_push(J, js_obj(raw));
+        for (js_node *part = n->b; part; part = part->next) {
+            if (!js_array_push(J, parts, js_str(part->u.str)))
+                return false;
+        }
+        for (js_node *part = n->c; part; part = part->next) {
+            if (!js_array_push(J, raw, js_str(part->u.str)))
+                return false;
+        }
+        js_define(J, parts, js_intern_cstr(J, "raw"), js_obj(raw), 0);
+        parts->flags |= JS_F_NOEXT;
+        raw->flags |= JS_F_NOEXT;
+        /* festhalten: Die Speicherbereinigung findet das Feld über die Liste aller Vorlagen */
+        js_string *list_name = js_intern_cstr(J, "templates");
+        js_prop *list = js_own(J->registry, list_name);
+        if (!list || !js_is_array(&list->v))
+            list = js_define(J, J->registry, list_name, js_obj(js_array_new(J, 0)), JS_P_ALL);
+        if (!list || !js_array_push(J, list->v.u.o, js_obj(parts)))
+            return false;
+        n->u.obj = parts;
+        js_pop(J, 2);
+    }
+    js_push(J, js_obj(n->u.obj));
+    int argc = 1;
+    for (js_node *value = n->d; value; value = value->next, argc++) {
+        if (!eval(J, value, env))
+            return false;
+    }
+    J->line = n->line;
+    return do_call(J, argc, CALL);
 }
 
 static bool eval_assign(js_state *J, js_node *n, js_object *env)
@@ -1182,14 +1475,17 @@ static bool eval_assign(js_state *J, js_node *n, js_object *env)
         if (t->type == N_MEMBER || t->type == N_INDEX) {
             js_push(J, js_undef());     /* Platz für das Ergebnis */
             bool super = t->a->type == N_SUPER;
+            js_string *name = t->u.str;
             if (!(super ? js_push(J, J->stack[J->fbase + 1]) : eval(J, t->a, env)))
+                return false;
+            if (t->type == N_MEMBER && !member_key(J, t, env, &name, true))
                 return false;
             if (t->type == N_INDEX && !eval(J, t->b, env))
                 return false;
             if (!eval(J, n->b, env))
                 return false;
             J->stack[base] = *js_top(J, 0);
-            if (!(t->type == N_MEMBER ? js_put(J, J->top - 2, t->u.str) : js_put_value(J)))
+            if (!(t->type == N_MEMBER ? js_put(J, J->top - 2, name) : js_put_value(J)))
                 return false;
             J->top = base + 1;
             return true;
@@ -1214,7 +1510,8 @@ static bool eval_assign(js_state *J, js_node *n, js_object *env)
         if (!eval(J, t->a, env))
             return false;
         if (t->type == N_MEMBER) {
-            key = t->u.str;
+            if (!member_key(J, t, env, &key, true))
+                return false;
         } else {
             if (!eval(J, t->b, env) || !js_to_key(J, J->top - 1, &key))
                 return false;
@@ -1264,7 +1561,8 @@ static bool eval_update(js_state *J, js_node *n, js_object *env)
         if (!eval(J, t->a, env))
             return false;
         if (t->type == N_MEMBER) {
-            key = t->u.str;
+            if (!member_key(J, t, env, &key, true))
+                return false;
         } else if (!eval(J, t->b, env) || !js_to_key(J, J->top - 1, &key)) {
             return false;
         }
@@ -1301,7 +1599,7 @@ static bool eval_object(js_state *J, js_node *n, js_object *env)
             if (src->t == JS_T_OBJ) {
                 js_object *keys = js_array_new(J, 0);
                 js_push(J, js_obj(keys));
-                if (!js_own_keys(J, src->u.o, true, keys))
+                if (!js_own_keys(J, src->u.o, JS_KEYS_ENUM | JS_KEYS_BOTH, keys))
                     return false;
                 for (uint32_t i = 0; i < keys->u.arr.len; i++) {
                     js_string *key = keys->u.arr.v[i].u.s;
@@ -1419,7 +1717,10 @@ static bool eval(js_state *J, js_node *n, js_object *env)
             J->short_circuit = true;
             break;
         }
-        ok = js_get(J, J->top - 1, n->u.str);
+        {
+            js_string *key;
+            ok = member_key(J, n, env, &key, false) && js_get(J, J->top - 1, key);
+        }
         if (ok) {
             J->stack[base] = *js_top(J, 0);
             J->top = base + 1;
@@ -1480,14 +1781,9 @@ static bool eval(js_state *J, js_node *n, js_object *env)
                     break;
                 js_value *target = &J->stack[base];
                 bool done = true;
-                if (target->t == JS_T_OBJ) {
-                    js_object *o = target->u.o;
-                    if (o->cls == JS_C_ARRAY && key->index != JS_NO_INDEX) {
-                        if (key->index < o->u.arr.len)
-                            o->u.arr.v[key->index] = js_undef();
-                    } else {
-                        done = js_delete_own(J, o, key);
-                    }
+                if (target->t == JS_T_OBJ && !js_delete_property(J, target->u.o, key, &done)) {
+                    ok = false;
+                    break;
                 }
                 J->top = base;
                 js_push(J, js_bool(done));
@@ -1532,9 +1828,27 @@ static bool eval(js_state *J, js_node *n, js_object *env)
         ok = eval_update(J, n, env);
         break;
     case N_BINARY:
+        if (n->op == OP_IN && n->a->type == N_STR && (n->a->flags & NF_PRIVATE)) {
+            /* #name in objekt: Hat das Objekt dieses private Mitglied? */
+            js_string *key;
+            ok = private_key(J, env, n->a->u.str, &key) && eval(J, n->b, env);
+            if (ok && js_top(J, 0)->t != JS_T_OBJ)
+                ok = js_throw(J, JS_E_TYPE, "Cannot use 'in' operator on a value that is not an object");
+            if (ok)
+                *js_top(J, 0) = js_bool(js_lookup(js_top(J, 0)->u.o, key, NULL) != NULL);
+            break;
+        }
         ok = eval(J, n->a, env) && eval(J, n->b, env) && binary(J, n->op);
         if (!ok && !J->fatal)
             J->line = n->line;
+        break;
+    case N_NEWTARGET: {
+        js_prop *target = js_lookup(env, J->hid[H_newtarget], NULL);
+        js_push(J, target ? target->v : js_undef());
+        break;
+    }
+    case N_TAGGED:
+        ok = eval_tagged(J, n, env);
         break;
     case N_LOGICAL:
         ok = eval(J, n->a, env);
@@ -1567,6 +1881,13 @@ static bool eval(js_state *J, js_node *n, js_object *env)
         break;
     case N_SUPER:
         ok = js_throw(J, JS_E_SYNTAX, "'super' keyword unexpected here");
+        break;
+    case N_YIELD:
+        ok = (n->a ? eval(J, n->a, env) : js_push(J, js_undef())) &&
+             js_co_yield(J, n->flags & NF_DELEGATE);
+        break;
+    case N_AWAIT:
+        ok = eval(J, n->a, env) && js_co_await(J);
         break;
     default:
         ok = js_throw(J, JS_E_SYNTAX, "Unexpected expression");
@@ -1612,6 +1933,187 @@ static bool bind_loop_value(js_state *J, js_node *head, js_object *env)
     return assign_to(J, head, env, A_ASSIGN);
 }
 
+/*
+ * for await (x of quelle) in einer async-Funktion: wie for-of, aber die Quelle
+ * darf ihre Glieder als Promises liefern ([Symbol.asyncIterator]); auf jedes
+ * wird gewartet.
+ */
+static int exec_for_await(js_state *J, js_node *n, js_object *env, js_string *label)
+{
+    int base = J->top, c = C_NORMAL;
+    bool lexical = n->a->type == S_VAR && (n->a->flags & (NF_LET | NF_CONST));
+    bool open = false, plain = false;
+    if (!eval(J, n->b, env))
+        return C_THROW;
+    /* [quelle] -> [iterator, next] */
+    if (js_top(J, 0)->t <= JS_T_NULL) {
+        js_throw(J, JS_E_TYPE, "Value is not async iterable");
+        return C_THROW;
+    }
+    if (!js_get(J, base, J->sym[SYM_asyncIterator]))
+        return C_THROW;
+    if (!js_is_callable(js_top(J, 0))) {
+        js_pop(J, 1);
+        plain = true;                   /* eine gewöhnliche Quelle: auf jedes Glied wird gewartet */
+        if (!js_get(J, base, J->sym[SYM_iterator]))
+            return C_THROW;
+    }
+    if (!js_is_callable(js_top(J, 0))) {
+        js_throw(J, JS_E_TYPE, "Value is not async iterable");
+        return C_THROW;
+    }
+    js_push(J, J->stack[base]);
+    if (!js_call(J, 0))
+        return C_THROW;
+    if (js_top(J, 0)->t != JS_T_OBJ) {
+        js_throw(J, JS_E_TYPE, "Result of the Symbol.asyncIterator method is not an object");
+        return C_THROW;
+    }
+    J->stack[base] = *js_top(J, 0);
+    js_pop(J, 1);
+    if (!js_get(J, base, J->k[K_next]))
+        return C_THROW;
+    int inner = J->top;
+    open = true;
+    for (;;) {
+        if (!tick(J)) {
+            c = C_THROW;
+            break;
+        }
+        js_checkpoint(J);
+        J->top = inner;
+        /* ergebnis = await iterator.next() */
+        js_push(J, J->stack[base + 1]);
+        js_push(J, J->stack[base]);
+        open = false;                   /* scheitert die Quelle selbst, wird sie nicht mehr geschlossen */
+        if (!js_call(J, 0) || (!plain && !js_co_await(J))) {
+            c = C_THROW;
+            break;
+        }
+        if (js_top(J, 0)->t != JS_T_OBJ) {
+            js_throw(J, JS_E_TYPE, "Iterator result is not an object");
+            c = C_THROW;
+            break;
+        }
+        if (!js_get(J, J->top - 1, J->k[K_done])) {
+            c = C_THROW;
+            break;
+        }
+        bool done = js_truthy(js_top(J, 0));
+        js_pop(J, 1);
+        if (done)
+            break;
+        if (!js_get(J, J->top - 1, J->k[K_value])) {
+            c = C_THROW;
+            break;
+        }
+        open = true;
+        if (plain && !js_co_await(J)) {
+            c = C_THROW;
+            break;
+        }
+        js_value item = *js_top(J, 0);
+        J->top = inner;
+        js_object *scope = lexical ? scope_new(J, env) : env;
+        js_push(J, item);
+        if (!bind_loop_value(J, n->a, scope)) {
+            c = C_THROW;
+            break;
+        }
+        js_pop(J, 1);
+        c = exec(J, n->d, scope, NULL);
+        if (loop_control(J, &c, label))
+            break;
+    }
+    if (open && !J->fatal) {
+        /* vorzeitig verlassen: return() der Quelle rufen und darauf warten */
+        bool failing = c == C_THROW;
+        bool throwing = J->throwing;
+        js_string *target = J->label;
+        J->top = inner;
+        js_push(J, J->ret);
+        js_push(J, J->exception);
+        J->throwing = false;
+        J->exception = js_undef();
+        bool ok = js_get(J, base, J->k[K_return]);
+        if (ok && js_is_callable(js_top(J, 0))) {
+            js_push(J, J->stack[base]);
+            ok = js_call(J, 0) && (plain || js_co_await(J));
+        }
+        if (failing && !J->fatal) {
+            J->exception = J->stack[inner + 1];
+            J->throwing = throwing;
+        } else if (!ok) {
+            c = C_THROW;
+        }
+        if (c != C_THROW) {
+            J->ret = J->stack[inner];
+            J->label = target;
+        }
+    }
+    if (c != C_THROW)
+        J->top = base;
+    return c;
+}
+
+/* for (x of quelle): Glied für Glied über das Iterationsprotokoll */
+static int exec_for_of(js_state *J, js_node *n, js_object *env, js_string *label)
+{
+    int base = J->top, c = C_NORMAL;
+    bool lexical = n->a->type == S_VAR && (n->a->flags & (NF_LET | NF_CONST));
+    js_iter it;
+    if (!eval(J, n->b, env) || !js_iter_open(J, J->top - 1, &it))
+        return C_THROW;
+    int inner = J->top;
+    for (;;) {
+        bool done;
+        if (!tick(J)) {
+            c = C_THROW;
+            break;
+        }
+        js_checkpoint(J);
+        J->top = inner;
+        if (!js_iter_next(J, &it, &done)) {
+            c = C_THROW;
+            break;
+        }
+        if (done)
+            break;
+        js_value item = *js_top(J, 0);
+        js_pop(J, 1);
+        js_object *scope = lexical ? scope_new(J, env) : env;
+        js_push(J, item);
+        if (!bind_loop_value(J, n->a, scope)) {
+            c = C_THROW;
+            break;
+        }
+        js_pop(J, 1);
+        c = exec(J, n->d, scope, NULL);
+        if (loop_control(J, &c, label))
+            break;
+    }
+    if (!it.done && !J->fatal) {
+        /*
+         * Vorzeitig verlassen (break, return, Ausnahme): der Quelle Bescheid
+         * geben. Was gerade unterwegs ist - Rückgabewert, Sprungziel -,
+         * übersteht den Aufruf von return().
+         */
+        js_string *target = J->label;
+        J->top = inner;
+        js_push(J, J->ret);
+        if (js_iter_close(J, &it, c == C_THROW)) {
+            J->ret = J->stack[inner];
+            J->label = target;
+        } else {
+            c = C_THROW;
+        }
+    }
+    if (c != C_THROW)
+        J->top = base;
+    return c;
+}
+
+/* for (name in objekt) */
 static int exec_for_each(js_state *J, js_node *n, js_object *env, js_string *label)
 {
     int base = J->top, c = C_NORMAL;
@@ -1620,10 +2122,7 @@ static int exec_for_each(js_state *J, js_node *n, js_object *env, js_string *lab
     js_push(J, js_obj(items));
     if (!eval(J, n->b, env))
         return C_THROW;
-    if (n->type == S_FOROF) {
-        if (!js_iterate(J, J->top - 1, items))
-            return C_THROW;
-    } else if (js_top(J, 0)->t == JS_T_OBJ) {
+    if (js_top(J, 0)->t == JS_T_OBJ) {
         /* alle aufzählbaren Namen, auch die geerbten; jeder nur einmal */
         js_object *seen = js_object_new(J, JS_C_OBJECT, NULL);
         js_push(J, js_obj(seen));
@@ -1661,7 +2160,7 @@ static int exec_for_each(js_state *J, js_node *n, js_object *env, js_string *lab
             js_string *key = items->u.arr.v[i].u.s;
             if (!js_lookup(o, key, NULL) &&
                 !(o->cls == JS_C_ARRAY && key->index != JS_NO_INDEX && key->index < o->u.arr.len) &&
-                o->cls != JS_C_STRING && o->cls != JS_C_HOST)
+                o->cls != JS_C_STRING && o->cls != JS_C_HOST && o->cls != JS_C_PROXY)
                 continue;
         }
         js_object *scope = lexical ? scope_new(J, env) : env;
@@ -1727,7 +2226,9 @@ static int exec_try(js_state *J, js_node *n, js_object *env)
 {
     int base = J->top;
     int c = exec(J, n->a, env, NULL);
-    if (c == C_THROW && n->c && !J->fatal) {
+    /* (die erzwungene Rückkehr aus einem Generator fängt niemand: nur der Schlussteil läuft) */
+    if (c == C_THROW && n->c && !J->fatal &&
+        !(J->exception.t == JS_T_OBJ && J->exception.u.o->cls == JS_C_SIGNAL)) {
         js_value thrown = J->exception;
         J->throwing = false;
         J->exception = js_undef();
@@ -1862,8 +2363,11 @@ static int exec(js_state *J, js_node *n, js_object *env, js_string *label)
     case S_FOR:
         c = exec_for(J, n, env, label);
         break;
-    case S_FORIN: case S_FOROF:
+    case S_FORIN:
         c = exec_for_each(J, n, env, label);
+        break;
+    case S_FOROF:
+        c = (n->flags & NF_AWAIT) ? exec_for_await(J, n, env, label) : exec_for_of(J, n, env, label);
         break;
     case S_WHILE:
         for (;;) {
@@ -2013,7 +2517,7 @@ static void report(js_state *J)
         p = js_own(e.u.o, J->k[K_line]);
         if (p && p->v.t == JS_T_NUM)
             line = (int)p->v.u.n;
-    } else if (e.t == JS_T_STR) {
+    } else if (e.t == JS_T_STR || e.t == JS_T_SYM) {
         text = e.u.s->data;
     } else if (e.t == JS_T_NUM) {
         static char number[48];
@@ -2048,12 +2552,14 @@ static void report(js_state *J)
 
 void js_enter(js_state *J, uint32_t budget_ms)
 {
+    J->error[0] = '\0';
+    if (js_co_active(J))
+        return;                         /* Einstieg aus einer laufenden Koroutine: ihre Grenzen gelten weiter */
     size_t room = J->host.stack_bytes ? J->host.stack_bytes : 256 * 1024;
     uintptr_t here = JS_STACK_HERE();
     J->stack_floor = here > room ? here - room : 0;
     J->deadline = J->host.ticks_ms && budget_ms ? J->host.ticks_ms(J->host.ctx) + budget_ms : 0;
     J->depth = 0;
-    J->error[0] = '\0';
 }
 
 bool js_leave(js_state *J, bool ok)

@@ -15,7 +15,7 @@
 enum { RF_GLOBAL = 1, RF_ICASE = 2, RF_MULTILINE = 4, RF_DOTALL = 8, RF_STICKY = 16, RF_UNICODE = 32 };
 
 enum { I_CHAR, I_ANY, I_CLASS, I_BOL, I_EOL, I_WORDB, I_NWORDB, I_SAVE, I_SPLIT, I_JMP, I_BACKREF,
-       I_ASSERT, I_ASSERT_END, I_MARK, I_CHECK, I_MATCH };
+       I_ASSERT, I_ASSERT_END, I_BEHIND_END, I_MARK, I_CHECK, I_MATCH };
 
 typedef struct {
     uint8_t op, flag;
@@ -29,6 +29,7 @@ typedef struct {
 typedef struct {
     rinst *code;
     rrange *ranges;
+    char **names;                       /* Namen der Gruppen (NULL: unbenannt), oder NULL */
     int ncode, nranges, groups, marks;
     uint8_t flags;
 } rprog;
@@ -46,7 +47,7 @@ enum { R_EMPTY, R_CHAR, R_ANY, R_CLASS, R_BOL, R_EOL, R_WORDB, R_NWORDB, R_CAT, 
 
 typedef struct rnode {
     uint8_t type;
-    bool greedy, negate;
+    bool greedy, negate, behind;
     int min, max, index;
     uint32_t ch;
     int first, count;
@@ -71,6 +72,7 @@ typedef struct {
     uint8_t flags;
     bool failed;
     const char *error;
+    char *names[GROUPS_MAX];            /* Namen der Gruppen in der Reihenfolge des Musters */
 } rcomp;
 
 static rnode *rfail(rcomp *c, const char *message)
@@ -153,6 +155,166 @@ static void add_class_escape(rcomp *c, char kind)
     add_range(c, from, 0x10FFFF);
 }
 
+/*
+ * \p{...}: Zeichen nach ihrer Art. Ohne die vollständigen Tabellen von Unicode
+ * - sie wären größer als die ganze Maschine - gelten hier Näherungen: die
+ * großen, zusammenhängenden Bereiche jeder Art. Für lateinische, griechische
+ * und kyrillische Texte stimmt das, bei seltenen Zeichen nicht immer.
+ */
+static const rrange p_letter[] = {
+    { 'A', 'Z' }, { 'a', 'z' }, { 0xAA, 0xAA }, { 0xB5, 0xB5 }, { 0xBA, 0xBA }, { 0xC0, 0xD6 },
+    { 0xD8, 0xF6 }, { 0xF8, 0x2C1 }, { 0x370, 0x373 }, { 0x376, 0x377 }, { 0x37B, 0x37D },
+    { 0x386, 0x386 }, { 0x388, 0x3FF }, { 0x400, 0x481 }, { 0x48A, 0x52F }, { 0x531, 0x556 },
+    { 0x561, 0x587 }, { 0x5D0, 0x5EA }, { 0x620, 0x64A }, { 0x66E, 0x6D3 }, { 0x904, 0x939 },
+    { 0xE01, 0xE30 }, { 0x10A0, 0x10FF }, { 0x1100, 0x11FF }, { 0x1E00, 0x1FFF },
+    { 0x2C00, 0x2DFF }, { 0x3041, 0x3096 }, { 0x30A1, 0x30FA }, { 0x3400, 0x4DBF },
+    { 0x4E00, 0x9FFF }, { 0xA000, 0xA48C }, { 0xAC00, 0xD7A3 }, { 0xF900, 0xFAFF },
+    { 0xFF21, 0xFF3A }, { 0xFF41, 0xFF5A }, { 0x20000, 0x2FA1F },
+};
+static const rrange p_upper[] = {
+    { 'A', 'Z' }, { 0xC0, 0xD6 }, { 0xD8, 0xDE }, { 0x386, 0x386 }, { 0x388, 0x38F },
+    { 0x391, 0x3A9 }, { 0x400, 0x42F }, { 0x531, 0x556 }, { 0x10A0, 0x10C5 }, { 0xFF21, 0xFF3A },
+};
+static const rrange p_lower[] = {
+    { 'a', 'z' }, { 0xB5, 0xB5 }, { 0xDF, 0xF6 }, { 0xF8, 0xFF }, { 0x3AC, 0x3CE },
+    { 0x430, 0x45F }, { 0x561, 0x587 }, { 0xFF41, 0xFF5A },
+};
+static const rrange p_digit[] = {
+    { '0', '9' }, { 0x660, 0x669 }, { 0x6F0, 0x6F9 }, { 0x966, 0x96F }, { 0xFF10, 0xFF19 },
+};
+static const rrange p_number[] = {
+    { '0', '9' }, { 0xB2, 0xB3 }, { 0xB9, 0xB9 }, { 0xBC, 0xBE }, { 0x660, 0x669 },
+    { 0x6F0, 0x6F9 }, { 0x966, 0x96F }, { 0x2070, 0x2079 }, { 0x2080, 0x2089 },
+    { 0x2150, 0x218B }, { 0x2460, 0x249B }, { 0x24EA, 0x24FF }, { 0x2776, 0x2793 },
+    { 0x3007, 0x3007 }, { 0x3021, 0x3029 }, { 0xFF10, 0xFF19 },
+};
+static const rrange p_punct[] = {
+    { '!', '#' }, { '%', '*' }, { ',', '/' }, { ':', ';' }, { '?', '@' }, { '[', ']' },
+    { '_', '_' }, { '{', '{' }, { '}', '}' }, { 0xA1, 0xA1 }, { 0xA7, 0xA7 }, { 0xAB, 0xAB },
+    { 0xB6, 0xB7 }, { 0xBB, 0xBB }, { 0xBF, 0xBF }, { 0x37E, 0x37E }, { 0x387, 0x387 },
+    { 0x55A, 0x55F }, { 0x589, 0x58A }, { 0x5BE, 0x5BE }, { 0x60C, 0x60D }, { 0x61B, 0x61F },
+    { 0x2010, 0x2027 }, { 0x2030, 0x2043 }, { 0x2045, 0x2051 }, { 0x2053, 0x205E },
+    { 0x2E00, 0x2E4F }, { 0x3001, 0x3003 }, { 0x3008, 0x3011 }, { 0x3014, 0x301F },
+    { 0xFE50, 0xFE6B }, { 0xFF01, 0xFF03 }, { 0xFF05, 0xFF0A }, { 0xFF0C, 0xFF0F },
+    { 0xFF1A, 0xFF1B }, { 0xFF1F, 0xFF20 }, { 0xFF3B, 0xFF3D }, { 0xFF3F, 0xFF3F },
+};
+static const rrange p_symbol[] = {
+    { '$', '$' }, { '+', '+' }, { '<', '>' }, { '^', '^' }, { '`', '`' }, { '|', '|' },
+    { '~', '~' }, { 0xA2, 0xA6 }, { 0xA8, 0xA9 }, { 0xAC, 0xAC }, { 0xAE, 0xB1 }, { 0xB4, 0xB4 },
+    { 0xB8, 0xB8 }, { 0xD7, 0xD7 }, { 0xF7, 0xF7 }, { 0x2044, 0x2044 }, { 0x2052, 0x2052 },
+    { 0x20A0, 0x20C0 }, { 0x2100, 0x214F }, { 0x2190, 0x23FF }, { 0x2400, 0x243F },
+    { 0x2500, 0x2775 }, { 0x2794, 0x27BF }, { 0x2900, 0x2BFF }, { 0x1F000, 0x1FAFF },
+};
+static const rrange p_space[] = {
+    { 9, 13 }, { 32, 32 }, { 0x85, 0x85 }, { 0xA0, 0xA0 }, { 0x1680, 0x1680 }, { 0x2000, 0x200A },
+    { 0x2028, 0x2029 }, { 0x202F, 0x202F }, { 0x205F, 0x205F }, { 0x3000, 0x3000 },
+};
+static const rrange p_separator[] = {
+    { 32, 32 }, { 0xA0, 0xA0 }, { 0x1680, 0x1680 }, { 0x2000, 0x200A }, { 0x2028, 0x2029 },
+    { 0x202F, 0x202F }, { 0x205F, 0x205F }, { 0x3000, 0x3000 },
+};
+static const rrange p_mark[] = {
+    { 0x300, 0x36F }, { 0x483, 0x489 }, { 0x591, 0x5BD }, { 0x64B, 0x65F }, { 0x900, 0x903 },
+    { 0x93A, 0x94F }, { 0xE31, 0xE3A }, { 0x1AB0, 0x1AFF }, { 0x1DC0, 0x1DFF }, { 0x20D0, 0x20F0 },
+    { 0xFE00, 0xFE0F }, { 0xFE20, 0xFE2F },
+};
+static const rrange p_control[] = { { 0, 0x1F }, { 0x7F, 0x9F } };
+static const rrange p_emoji[] = {
+    { 0xA9, 0xA9 }, { 0xAE, 0xAE }, { 0x203C, 0x203C }, { 0x2049, 0x2049 }, { 0x2122, 0x2122 },
+    { 0x2139, 0x2139 }, { 0x2194, 0x21AA }, { 0x231A, 0x23FF }, { 0x25AA, 0x25FE },
+    { 0x2600, 0x27BF }, { 0x2934, 0x2935 }, { 0x2B05, 0x2B55 }, { 0x3030, 0x3030 },
+    { 0x303D, 0x303D }, { 0x3297, 0x3299 }, { 0x1F000, 0x1FAFF },
+};
+static const rrange p_latin[] = {
+    { 'A', 'Z' }, { 'a', 'z' }, { 0xAA, 0xAA }, { 0xBA, 0xBA }, { 0xC0, 0xD6 }, { 0xD8, 0xF6 },
+    { 0xF8, 0x2B8 }, { 0x1E00, 0x1EFF }, { 0x2C60, 0x2C7F }, { 0xA720, 0xA7FF }, { 0xFF21, 0xFF3A },
+    { 0xFF41, 0xFF5A },
+};
+static const rrange p_greek[] = { { 0x370, 0x3FF }, { 0x1F00, 0x1FFF } };
+static const rrange p_cyrillic[] = { { 0x400, 0x52F }, { 0x1C80, 0x1C8F }, { 0x2DE0, 0x2DFF }, { 0xA640, 0xA69F } };
+static const rrange p_han[] = { { 0x2E80, 0x2FDF }, { 0x3005, 0x3007 }, { 0x3400, 0x4DBF }, { 0x4E00, 0x9FFF },
+                                { 0xF900, 0xFAFF }, { 0x20000, 0x2FA1F } };
+static const rrange p_hiragana[] = { { 0x3041, 0x309F } };
+static const rrange p_katakana[] = { { 0x30A0, 0x30FF }, { 0x31F0, 0x31FF }, { 0xFF66, 0xFF9F } };
+static const rrange p_hangul[] = { { 0x1100, 0x11FF }, { 0x3130, 0x318F }, { 0xAC00, 0xD7AF } };
+static const rrange p_arabic[] = { { 0x600, 0x6FF }, { 0x750, 0x77F }, { 0xFB50, 0xFDFF }, { 0xFE70, 0xFEFF } };
+static const rrange p_hebrew[] = { { 0x591, 0x5F4 }, { 0xFB1D, 0xFB4F } };
+static const rrange p_thai[] = { { 0xE01, 0xE5B } };
+static const rrange p_any[] = { { 0, 0x10FFFF } };
+static const rrange p_ascii[] = { { 0, 0x7F } };
+
+#define PROP(name, set) { name, set, (int)(sizeof(set) / sizeof(set[0])) }
+static const struct {
+    const char *name;
+    const rrange *set;
+    int count;
+} properties[] = {
+    PROP("L", p_letter), PROP("Letter", p_letter), PROP("Alphabetic", p_letter), PROP("Alpha", p_letter),
+    PROP("ID_Start", p_letter), PROP("XID_Start", p_letter),
+    PROP("Lu", p_upper), PROP("Uppercase_Letter", p_upper), PROP("Uppercase", p_upper),
+    PROP("Ll", p_lower), PROP("Lowercase_Letter", p_lower), PROP("Lowercase", p_lower),
+    PROP("Nd", p_digit), PROP("Decimal_Number", p_digit), PROP("digit", p_digit),
+    PROP("N", p_number), PROP("Number", p_number),
+    PROP("P", p_punct), PROP("Punctuation", p_punct), PROP("punct", p_punct),
+    PROP("S", p_symbol), PROP("Symbol", p_symbol),
+    PROP("Z", p_separator), PROP("Separator", p_separator), PROP("Zs", p_separator),
+    PROP("Space_Separator", p_separator), PROP("White_Space", p_space), PROP("space", p_space),
+    PROP("M", p_mark), PROP("Mark", p_mark), PROP("Mn", p_mark), PROP("Nonspacing_Mark", p_mark),
+    PROP("C", p_control), PROP("Cc", p_control), PROP("Control", p_control), PROP("Other", p_control),
+    PROP("Emoji", p_emoji), PROP("Emoji_Presentation", p_emoji), PROP("Extended_Pictographic", p_emoji),
+    PROP("Latin", p_latin), PROP("Latn", p_latin), PROP("Greek", p_greek), PROP("Grek", p_greek),
+    PROP("Cyrillic", p_cyrillic), PROP("Cyrl", p_cyrillic), PROP("Han", p_han), PROP("Hani", p_han),
+    PROP("Hiragana", p_hiragana), PROP("Hira", p_hiragana), PROP("Katakana", p_katakana),
+    PROP("Kana", p_katakana), PROP("Hangul", p_hangul), PROP("Hang", p_hangul),
+    PROP("Arabic", p_arabic), PROP("Arab", p_arabic), PROP("Hebrew", p_hebrew), PROP("Hebr", p_hebrew),
+    PROP("Thai", p_thai), PROP("Any", p_any), PROP("ASCII", p_ascii),
+};
+
+/* Fügt die Bereiche der Eigenschaft Nummer id hinzu - oder alles außer ihnen */
+static void add_property(rcomp *c, int id, bool negate)
+{
+    const rrange *set = properties[id].set;
+    int count = properties[id].count;
+    if (!negate) {
+        for (int i = 0; i < count; i++)
+            add_range(c, set[i].lo, set[i].hi);
+        return;
+    }
+    uint32_t from = 0;                  /* die Bereiche stehen aufsteigend: die Lücken dazwischen */
+    for (int i = 0; i < count; i++) {
+        if (set[i].lo > from)
+            add_range(c, from, set[i].lo - 1);
+        from = set[i].hi + 1;
+    }
+    if (from <= 0x10FFFF)
+        add_range(c, from, 0x10FFFF);
+}
+
+/* Liest "{Name}" oder "{Art=Name}" hinter \p; liefert die Nummer der Eigenschaft oder -1 */
+static int read_property(rcomp *c)
+{
+    if (c->p >= c->end || *c->p != '{')
+        return -1;
+    const char *start = c->p + 1, *q = start;
+    while (q < c->end && *q != '}')
+        q++;
+    if (q >= c->end)
+        return -1;
+    const char *name = start;
+    for (const char *e = start; e < q; e++) {
+        if (*e == '=')
+            name = e + 1;               /* General_Category=L, Script=Latin, sc=Latn ... */
+    }
+    size_t n = (size_t)(q - name);
+    for (unsigned i = 0; i < sizeof(properties) / sizeof(properties[0]); i++) {
+        if (strlen(properties[i].name) == n && memcmp(properties[i].name, name, n) == 0) {
+            c->p = q + 1;
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
 static int rhex(char ch)
 {
     if (ch >= '0' && ch <= '9') return ch - '0';
@@ -171,7 +333,8 @@ static uint32_t next_char(rcomp *c)
 /*
  * Liest eine Maskierung hinter dem "\". Liefert das Zeichen - oder 0x110000 + x
  * für die Klassen d, w, s (und groß), 0x120000 + n für einen Rückbezug,
- * 0x130000/0x130001 für \b und \B.
+ * 0x130000/0x130001 für \b und \B, 0x140000 + nummer (+ 0x8000: verneint)
+ * für eine Eigenschaft \p{...}.
  */
 static uint32_t rescape(rcomp *c, bool in_class)
 {
@@ -195,6 +358,32 @@ static uint32_t rescape(rcomp *c, bool in_class)
     case 't': c->p++; return '\t';
     case 'v': c->p++; return '\v';
     case 'f': c->p++; return '\f';
+    case 'p': case 'P':
+        if (c->flags & RF_UNICODE) {
+            c->p++;
+            int id = read_property(c);
+            if (id < 0) {
+                rfail(c, "Invalid property name");
+                return 0;
+            }
+            return 0x140000 + (uint32_t)id + (ch == 'P' ? 0x8000u : 0);
+        }
+        break;
+    case 'k':
+        /* \k<name>: Rückbezug auf eine benannte Gruppe */
+        if (!in_class && c->p + 1 < c->end && c->p[1] == '<') {
+            const char *start = c->p + 2, *q = start;
+            while (q < c->end && *q != '>')
+                q++;
+            for (int i = 1; q < c->end && i < c->total_groups && i < GROUPS_MAX; i++) {
+                if (c->names[i] && strlen(c->names[i]) == (size_t)(q - start) &&
+                    memcmp(c->names[i], start, (size_t)(q - start)) == 0) {
+                    c->p = q + 1;
+                    return 0x120000 + (uint32_t)i;
+                }
+            }
+        }
+        break;
     case '0':
         if (c->p + 1 >= c->end || c->p[1] < '0' || c->p[1] > '9') {
             c->p++;
@@ -285,6 +474,10 @@ static rnode *rparse_class(rcomp *c)
         if (*c->p == '\\') {
             c->p++;
             lo = rescape(c, true);
+            if (lo >= 0x140000) {
+                add_property(c, (int)(lo & 0x7FFF), (lo & 0x8000) != 0);
+                continue;
+            }
             if (lo >= 0x110000) {
                 add_class_escape(c, (char)(lo - 0x110000));
                 continue;
@@ -301,7 +494,10 @@ static rnode *rparse_class(rcomp *c)
                 if (hi >= 0x110000) {   /* [a-\d]: der Strich steht für sich */
                     add_range(c, lo, lo);
                     add_range(c, '-', '-');
-                    add_class_escape(c, (char)(hi - 0x110000));
+                    if (hi >= 0x140000)
+                        add_property(c, (int)(hi & 0x7FFF), (hi & 0x8000) != 0);
+                    else
+                        add_class_escape(c, (char)(hi - 0x110000));
                     continue;
                 }
             } else {
@@ -337,7 +533,7 @@ static rnode *rparse_atom(rcomp *c)
         return rparse_class(c);
     case '(': {
         c->p++;
-        bool capture = true, look = false, negate = false;
+        bool capture = true, look = false, negate = false, behind = false;
         if (c->p < c->end && *c->p == '?') {
             c->p++;
             if (c->p >= c->end)
@@ -350,14 +546,21 @@ static rnode *rparse_atom(rcomp *c)
                 look = true;
                 negate = *c->p == '!';
                 c->p++;
-            } else if (*c->p == '<' && c->p + 1 < c->end && c->p[1] != '=' && c->p[1] != '!') {
-                while (c->p < c->end && *c->p != '>')   /* benannte Gruppe: der Name entfällt */
+            } else if (*c->p == '<' && c->p + 1 < c->end && (c->p[1] == '=' || c->p[1] == '!')) {
+                /* Rückwärtsblick: (?<=x) und (?<!x) */
+                capture = false;
+                look = true;
+                behind = true;
+                negate = c->p[1] == '!';
+                c->p += 2;
+            } else if (*c->p == '<') {
+                while (c->p < c->end && *c->p != '>')   /* benannte Gruppe: Namen stehen schon in c->names */
                     c->p++;
                 if (c->p >= c->end)
                     return rfail(c, "Invalid group name");
                 c->p++;
             } else {
-                return rfail(c, "Lookbehind is not supported");
+                return rfail(c, "Invalid group");
             }
         }
         int index = 0;
@@ -380,6 +583,7 @@ static rnode *rparse_atom(rcomp *c)
             if (n) {
                 n->a = inner;
                 n->negate = negate;
+                n->behind = behind;
             }
             return n;
         }
@@ -397,6 +601,15 @@ static rnode *rparse_atom(rcomp *c)
         uint32_t code = rescape(c, false);
         if (c->failed)
             return NULL;
+        if (code >= 0x140000) {
+            n = rnew(c, R_CLASS);
+            if (n) {
+                n->first = c->nranges;
+                add_property(c, (int)(code & 0x7FFF), (code & 0x8000) != 0);
+                n->count = c->nranges - n->first;
+            }
+            return n;
+        }
         if (code == 0x130000 || code == 0x130001)
             return rnew(c, code == 0x130000 ? R_WORDB : R_NWORDB);
         if (code >= 0x120000) {
@@ -601,9 +814,9 @@ static void gen(rcomp *c, const rnode *n)
         emit(c, I_SAVE, 0, 2 * n->index + 1, 0);
         break;
     case R_LOOK: {
-        int assert = emit(c, I_ASSERT, n->negate, 0, 0);
+        int assert = emit(c, I_ASSERT, (n->negate ? 1 : 0) | (n->behind ? 2 : 0), 0, 0);
         gen(c, n->a);
-        emit(c, I_ASSERT_END, 0, 0, 0);
+        emit(c, n->behind ? I_BEHIND_END : I_ASSERT_END, 0, 0, 0);
         if (!c->failed)
             c->code[assert].x = c->ncode;
         break;
@@ -673,6 +886,18 @@ static rprog *compile(js_state *J, const js_string *source, uint8_t flags, const
         } else if (*q == '(' && (q + 1 >= c.end || q[1] != '?' ||
                                  (q + 2 < c.end && q[2] == '<' && q + 3 < c.end && q[3] != '=' &&
                                   q[3] != '!'))) {
+            if (q + 2 < c.end && q[1] == '?' && c.total_groups < GROUPS_MAX) {
+                /* (?<name>...): den Namen festhalten */
+                const char *name = q + 3, *e = name;
+                while (e < c.end && *e != '>')
+                    e++;
+                char *copy = e < c.end ? kmalloc((size_t)(e - name) + 1) : NULL;
+                if (copy) {
+                    memcpy(copy, name, (size_t)(e - name));
+                    copy[e - name] = '\0';
+                    c.names[c.total_groups] = copy;
+                }
+            }
             c.total_groups++;
         }
     }
@@ -691,6 +916,18 @@ static rprog *compile(js_state *J, const js_string *source, uint8_t flags, const
         c.chunks = next;
     }
     rprog *prog = c.failed ? NULL : kzalloc(sizeof(rprog));
+    bool named = false;
+    for (int i = 0; i < GROUPS_MAX; i++)
+        named |= c.names[i] != NULL;
+    if (prog && named) {
+        prog->names = kzalloc((size_t)c.groups * sizeof(char *));
+        for (int i = 0; prog->names && i < c.groups && i < GROUPS_MAX; i++) {
+            prog->names[i] = c.names[i];
+            c.names[i] = NULL;
+        }
+    }
+    for (int i = 0; i < GROUPS_MAX; i++)
+        kfree(c.names[i]);
     if (!prog) {
         kfree(c.code);
         kfree(c.ranges);
@@ -723,6 +960,7 @@ typedef struct {
     int top, cap;
     uint32_t steps;
     bool failed;
+    int target[34];                     /* Rückwärtsblick: Hier muss der Lauf dieser Tiefe enden */
 } rmatch;
 
 static uint32_t fold(uint32_t c)
@@ -915,16 +1153,33 @@ static int run(rmatch *m, int pc, int pos, int depth)
                 m->failed = true;
                 return -1;
             }
-            int end = run(m, pc + 1, pos, depth + 1);
+            int end = -1;
+            if (in->flag & 2) {
+                /* Rückwärtsblick: Passt das Muster irgendwo davor so, dass es genau hier endet? */
+                m->target[depth + 1] = pos;
+                for (int start = pos; start >= 0 && end < 0 && !m->failed; start--) {
+                    if (start < len && start > 0 && ((unsigned char)text[start] & 0xC0) == 0x80)
+                        continue;       /* nur an Zeichengrenzen */
+                    end = run(m, pc + 1, start, depth + 1);
+                }
+            } else {
+                end = run(m, pc + 1, pos, depth + 1);
+            }
             if (m->failed)
                 return -1;
-            ok = (end >= 0) != (in->flag != 0);
+            ok = (end >= 0) != ((in->flag & 1) != 0);
             pc = in->x;
             break;
         }
+        case I_BEHIND_END:
+            if (pos != m->target[depth]) {
+                ok = false;             /* endet nicht an der gefragten Stelle: andere Wege versuchen */
+                break;
+            }
+            /* fall through */
         case I_ASSERT_END: case I_MATCH:
             /* was dieser Lauf an Rücksprüngen offen hat, verfällt */
-            if (in->op == I_ASSERT_END) {
+            if (in->op != I_MATCH) {
                 /* Fundstellen der Gruppen behalten: nur die Wahlpunkte dieses Laufs entfernen */
                 int keep = base;
                 for (int i = base; i < m->top; i++) {
@@ -1027,6 +1282,9 @@ void js_regex_free(js_state *J, js_object *o)
     (void)J;
     rprog *prog = o->u.re.prog;
     if (prog) {
+        for (int i = 0; prog->names && i < prog->groups; i++)
+            kfree(prog->names[i]);
+        kfree(prog->names);
         kfree(prog->code);
         kfree(prog->ranges);
         kfree(prog);
@@ -1044,7 +1302,7 @@ js_object *js_regex_new(js_state *J, js_string *source, js_string *flags)
         case 'm': bits |= RF_MULTILINE; break;
         case 's': bits |= RF_DOTALL; break;
         case 'y': bits |= RF_STICKY; break;
-        case 'u': bits |= RF_UNICODE; break;
+        case 'u': case 'v': bits |= RF_UNICODE; break;
         case 'd': break;
         default:
             js_throw(J, JS_E_SYNTAX, "Invalid regular expression flags");
@@ -1059,9 +1317,9 @@ js_object *js_regex_new(js_state *J, js_string *source, js_string *flags)
     }
     js_object *re = js_object_new(J, JS_C_REGEXP, J->regexp_proto);
     if (re == J->dummy) {
-        kfree(prog->code);
-        kfree(prog->ranges);
-        kfree(prog);
+        js_object holder;
+        holder.u.re.prog = prog;
+        js_regex_free(J, &holder);
         return NULL;
     }
     re->u.re.prog = prog;
@@ -1165,7 +1423,22 @@ static bool push_match(js_state *J, js_object *re, js_string *text, const int *c
     }
     js_define(J, a, J->k[K_index], js_num(chars_before(text, (uint32_t)caps[0])), JS_P_ALL);
     js_define(J, a, J->k[K_input], js_str(text), JS_P_ALL);
-    return true;
+    /* benannte Gruppen noch einmal unter ihrem Namen */
+    const rprog *prog = re->u.re.prog;
+    js_value named = js_undef();
+    if (prog && prog->names) {
+        js_object *g = js_object_new(J, JS_C_OBJECT, NULL);
+        named = js_obj(g);
+        js_define(J, a, js_intern_cstr(J, "groups"), named, JS_P_ALL);
+        for (int i = 1; i < groups; i++) {
+            if (prog->names[i])
+                js_define(J, g, js_intern_cstr(J, prog->names[i]),
+                          i < (int)a->u.arr.len ? a->u.arr.v[i] : js_undef(), JS_P_ALL);
+        }
+    } else {
+        js_define(J, a, js_intern_cstr(J, "groups"), named, JS_P_ALL);
+    }
+    return !J->fatal;
 }
 
 /* exec für das Objekt re auf text; legt das Ergebnis (Feld oder null) auf den Stapel */
@@ -1306,8 +1579,9 @@ static bool is_regexp(const js_value *v)
 
 /* Fügt die Ersetzung für einen Treffer an: Funktion aufrufen oder $-Angaben auflösen */
 static bool append_replacement(js_state *J, sbuf *out, js_string *text, const int *caps, int groups,
-                               const js_value *with)
+                               const js_value *with, const js_object *re)
 {
+    const rprog *prog = re ? re->u.re.prog : NULL;
     if (js_is_callable(with)) {
         js_push(J, *with);
         js_push(J, js_undef());
@@ -1350,6 +1624,26 @@ static bool append_replacement(js_state *J, sbuf *out, js_string *text, const in
             if (!sbuf_put(out, text->data + caps[1], text->len - (size_t)caps[1]))
                 return false;
             i++;
+        } else if (d == '<' && prog && prog->names) {
+            /* $<name>: der Text der benannten Gruppe */
+            uint32_t close = i + 2;
+            while (close < r->len && r->data[close] != '>')
+                close++;
+            if (close >= r->len) {
+                if (!sbuf_put(out, "$", 1))
+                    return false;
+                continue;
+            }
+            for (int g = 1; g < groups; g++) {
+                if (prog->names[g] && strlen(prog->names[g]) == close - i - 2 &&
+                    memcmp(prog->names[g], r->data + i + 2, close - i - 2) == 0) {
+                    if (caps[2 * g] >= 0 &&
+                        !sbuf_put(out, text->data + caps[2 * g], (size_t)(caps[2 * g + 1] - caps[2 * g])))
+                        return false;
+                    break;
+                }
+            }
+            i = close;
         } else if (d >= '0' && d <= '9') {
             int n = d - '0', used = 1;
             if (i + 2 < r->len && r->data[i + 2] >= '0' && r->data[i + 2] <= '9' &&
@@ -1403,7 +1697,7 @@ static bool string_replace(js_state *J, int argc)
             if (!found)
                 break;
             ok = sbuf_put(&out, text->data + at, (size_t)caps[0] - at) &&
-                 append_replacement(J, &out, text, caps, groups, with);
+                 append_replacement(J, &out, text, caps, groups, with, re);
             at = (uint32_t)caps[1];
             if (!global)
                 break;
@@ -1429,7 +1723,7 @@ static bool string_replace(js_state *J, int argc)
             caps[0] = (int)hit;
             caps[1] = (int)(hit + needle->len);
             ok = sbuf_put(&out, text->data + at, hit - at) &&
-                 append_replacement(J, &out, text, caps, 1, with);
+                 append_replacement(J, &out, text, caps, 1, with, NULL);
             at = hit + needle->len;
             from = needle->len ? at : at + 1;
             if (!all)
@@ -1520,6 +1814,13 @@ static bool string_match(js_state *J, int argc)
     set_last_index(J, re, 0);
     if (MAGIC == 0 && out->u.arr.len == 0)
         return js_push(J, js_null());
+    if (MAGIC == 2) {
+        /* matchAll: ein Iterator über die Treffer */
+        if (!js_get(J, J->top - 1, J->sym[SYM_iterator]))
+            return false;
+        js_push(J, js_obj(out));
+        return js_call(J, 0);
+    }
     return true;
 }
 

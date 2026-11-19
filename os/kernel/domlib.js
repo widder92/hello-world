@@ -507,6 +507,8 @@
     };
     CL.item = function (i) { return classes(this)[i] || null; };
     CL.forEach = function (fn, self) { classes(this).forEach(fn, self); };
+    CL.values = function () { return classes(this)[Symbol.iterator](); };
+    hide(CL, Symbol.iterator, CL.values);
     CL.toString = function () { return text(dom.attr(this._el, 'class')); };
     accessor(CL, 'length', function () { return classes(this).length; });
     accessor(CL, 'value', function () { return this.toString(); }, function (v) { dom.setAttr(this._el, 'class', text(v)); });
@@ -798,7 +800,11 @@
         hide(this, '_p', []);
         var s = text(init);
         if (init && typeof init === 'object') {
-            for (var k in init) this._p.push([k, String(init[k])]);
+            if (typeof init[Symbol.iterator] === 'function') {
+                for (var pair of init) this._p.push([String(pair[0]), String(pair[1])]);
+            } else {
+                for (var k in init) this._p.push([k, String(init[k])]);
+            }
             return;
         }
         if (s.charAt(0) === '?') s = s.slice(1);
@@ -816,10 +822,10 @@
     USP['delete'] = function (k) { this._p = this._p.filter(function (p) { return p[0] !== String(k); }); };
     USP.set = function (k, v) { this['delete'](k); this.append(k, v); };
     USP.forEach = function (fn, self) { this._p.forEach(function (p) { fn.call(self, p[1], p[0], this); }, this); };
-    USP.keys = function () { return this._p.map(function (p) { return p[0]; }); };
-    USP.values = function () { return this._p.map(function (p) { return p[1]; }); };
-    USP.entries = function () { return this._p.map(function (p) { return [p[0], p[1]]; }); };
-    hide(USP, '__items__', USP.entries);
+    USP.keys = function () { return this._p.map(function (p) { return p[0]; })[Symbol.iterator](); };
+    USP.values = function () { return this._p.map(function (p) { return p[1]; })[Symbol.iterator](); };
+    USP.entries = function () { return this._p.map(function (p) { return [p[0], p[1]]; })[Symbol.iterator](); };
+    hide(USP, Symbol.iterator, USP.entries);
     USP.toString = function () {
         return this._p.map(function (p) { return encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]); }).join('&');
     };
@@ -840,7 +846,7 @@
             this._p.push([key, type === 'checkbox' || type === 'radio' ? (dom.attr(f, 'value') === null ? 'on' : dom.attr(f, 'value')) : text(f.value)]);
         }
     }
-    ['get', 'getAll', 'has', 'append', 'delete', 'set', 'forEach', 'keys', 'values', 'entries', '__items__'].forEach(function (name) {
+    ['get', 'getAll', 'has', 'append', 'delete', 'set', 'forEach', 'keys', 'values', 'entries', Symbol.iterator].forEach(function (name) {
         hide(FormData.prototype, name, USP[name]);
     });
     window.FormData = FormData;
@@ -848,7 +854,7 @@
     function Headers(init) {
         hide(this, '_h', {});
         if (init instanceof Headers) { for (var k in init._h) this._h[k] = init._h[k]; }
-        else if (Array.isArray(init)) init.forEach(function (p) { this.append(p[0], p[1]); }, this);
+        else if (init && typeof init[Symbol.iterator] === 'function') { for (var p of init) this.append(p[0], p[1]); }
         else if (init && typeof init === 'object') { for (var name in init) this.append(name, init[name]); }
     }
     Headers.prototype.append = function (k, v) { k = String(k).toLowerCase(); this._h[k] = k in this._h ? this._h[k] + ', ' + v : String(v); };
@@ -857,6 +863,10 @@
     Headers.prototype.has = function (k) { return String(k).toLowerCase() in this._h; };
     Headers.prototype['delete'] = function (k) { delete this._h[String(k).toLowerCase()]; };
     Headers.prototype.forEach = function (fn, self) { for (var k in this._h) fn.call(self, this._h[k], k, this); };
+    Headers.prototype.keys = function () { return Object.keys(this._h).sort()[Symbol.iterator](); };
+    Headers.prototype.values = function () { var h = this._h; return Object.keys(h).sort().map(function (k) { return h[k]; })[Symbol.iterator](); };
+    Headers.prototype.entries = function () { var h = this._h; return Object.keys(h).sort().map(function (k) { return [k, h[k]]; })[Symbol.iterator](); };
+    hide(Headers.prototype, Symbol.iterator, Headers.prototype.entries);
     window.Headers = Headers;
 
     var statusNames = { 200: 'OK', 201: 'Created', 204: 'No Content', 301: 'Moved Permanently', 302: 'Found',

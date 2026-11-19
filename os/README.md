@@ -26,8 +26,9 @@ fremde Bibliothek: rund 24 000 Zeilen C und etwas Assembler.
   Bilder und Kästen neben dem Text), meldet sich an (Cookies) und prüft bei
   https den Server
 - **JavaScript** mit einer eigenen Maschine (abschaltbar, ausgeliefert: aus):
-  genug für Seiten mit einfachen und älteren Skripten, jQuery und die
-  WordPress-Verwaltung – nicht für große Web-Anwendungen
+  die Sprache auf heutigem Stand (`async`/`await`, Generatoren, Klassen mit
+  privaten Feldern, `Proxy`, `Map`/`Set`, `Intl` …) – genug für jQuery, React
+  und die WordPress-Verwaltung; Module und große Web-Anwendungen noch nicht
 - **Echte Schriften**: ein eigener TrueType-Renderer zeichnet Text in jeder
   Größe aus den eingebauten Schriftdateien (DejaVu Sans) – in Fenstertiteln,
   Menüs, Dialogen und im Browser
@@ -490,10 +491,27 @@ Abbild steht; ändern Skripte es, setzt der Browser die Seite neu.
 
 **Was geht**
 
-- Die Sprache bis etwa zum Stand von 2015–2020: Funktionen, Objekte, Felder,
-  Zeichenketten, reguläre Ausdrücke, JSON, Datum, Klassen, Pfeilfunktionen,
-  `let`/`const`, Vorlagen-Zeichenketten, Zerlegen (`{a, b} = …`), `Map`, `Set`,
-  `Promise`, typisierte Felder (`Uint8Array` …).
+![Eine Testseite prüft Generatoren, Map und Set, Symbole, async/await und for await – alles grün](docs/screenshot-modernes-javascript.png)
+
+- **Die Sprache auf heutigem Stand** (seit 0.21): alles bis ECMAScript 2015
+  und fast alles, was seither dazukam –
+  - Funktionen, Objekte, Felder, Zeichenketten, JSON, Datum, Klassen,
+    Pfeilfunktionen, `let`/`const`, Vorlagen-Zeichenketten (auch
+    ``f`…` ``), Zerlegen (`{a, b} = …`), `?.` und `??`, Zahlen mit
+    Trennstrichen (`1_000`);
+  - **Generatoren** (`function*`, `yield`, `yield*`) und
+    **`async`/`await`**, `for await` und `async`-Generatoren;
+  - **Symbole** und das Iterationsprotokoll: `for…of`, Spread und Zerlegung
+    arbeiten mit allem, was `[Symbol.iterator]` hat;
+  - `Map`, `Set`, `WeakMap`, `WeakSet` (die schwachen geben wirklich frei),
+    `Promise` samt `any`/`allSettled`/`withResolvers`, typisierte Felder;
+  - Klassen mit **privaten Mitgliedern** (`#x`), `static`-Blöcken und
+    Unterklassen der eingebauten Klassen (`extends Array`, `Map`, `Error`);
+    `new.target`;
+  - **`Proxy` und `Reflect`** – darauf bauen „reaktive" Bibliotheken auf;
+  - reguläre Ausdrücke mit benannten Gruppen, Rückwärtsblick und
+    `\p{…}`; `Intl` für Zahlen, Daten, Listen und Sortieren (deutsch und
+    englisch), `structuredClone`, `TextEncoder`/`TextDecoder`.
 - Die Seite lesen und umbauen: `getElementById`, `querySelector(All)`,
   `createElement`, `appendChild`, `innerHTML`, `textContent`, `classList`,
   `style`, `dataset`, Attribute, `document.write`.
@@ -513,12 +531,21 @@ Abbild steht; ändern Skripte es, setzt der Browser die Seite neu.
   `style.display` zeigen, erscheint.
 - **jQuery** (getestet mit 3.7) läuft samt Selektoren, Ein-/Ausblenden,
   Animationen (in Schritten) und `$.ajax`.
+- **React** (getestet mit 18.2, wie es WordPress mitbringt): Komponenten mit
+  Zustand (`useState`, `useEffect`, `useMemo`) erscheinen und reagieren auf
+  Klicks.
 
 **Was nicht geht**
 
-- Neuere Sprachmittel: `async`/`await`, Generatoren (`function*`), Module
-  (`import`/`export`, `<script type="module">`). Ein Skript, das so etwas
-  enthält, wird als Ganzes ausgelassen; die Statuszeile nennt die Zahl.
+- **Module** (`import`/`export`, `<script type="module">`, `import()`): Ein
+  Skript, das so etwas enthält, wird als Ganzes ausgelassen; die Statuszeile
+  nennt die Zahl. Viele aktuelle Seiten liefern ihre Skripte so aus – sie
+  bleiben vorerst ohne Wirkung.
+- Kleine Abweichungen von der Sprache: Zeichenketten zählen ganze Zeichen
+  (ein Emoji hat die Länge 1, nicht 2); große Ganzzahlen (`10n`) sind
+  gewöhnliche Zahlen und über 2^53 hinaus ungenau; `with` gibt es nicht;
+  `\p{…}` kennt nur die großen Zeichenbereiche; `Intl` nur Deutsch und
+  Englisch; `WeakRef` hält sein Ziel fest.
 - Alles, was zeichnet oder abspielt: Canvas, WebGL, Video, Ton. Kein
   `localStorage` über das Fenster hinaus, keine Web Worker, kein WebSocket.
 - Maße und Positionen: Wo ein Element steht und wie groß es ist, erfahren
@@ -534,10 +561,21 @@ Abbild steht; ändern Skripte es, setzt der Browser die Seite neu.
   angehalten (die Seite bleibt, wie sie bis dahin war, und die Statuszeile
   sagt es).
 
-Unterm Strich: Seiten mit einfachen und älteren Skripten – Menüs zum
-Aufklappen, Formularprüfung, „Mehr anzeigen", jQuery-Seiten, die
-WordPress-Verwaltung – funktionieren. Große Web-Anwendungen (Google Maps,
-YouTube, der Block-Editor von WordPress) nicht.
+Unterm Strich: Seiten, deren Skripte als gewöhnliche Dateien oder im
+Quelltext der Seite stehen – Menüs zum Aufklappen, Formularprüfung, „Mehr
+anzeigen", jQuery- und React-Seiten, die WordPress-Verwaltung –
+funktionieren, auch wenn sie die neuesten Sprachmittel benutzen. Seiten, die
+ihre Skripte als Module laden oder erst nach dem Laden nachfordern, und
+große Web-Anwendungen (Google Maps, YouTube, der Block-Editor von WordPress)
+noch nicht.
+
+**Wie Generatoren und `async` hier funktionieren.** Die Maschine führt den
+Programmbaum direkt aus; wo eine Funktion gerade steht, steckt also im
+Stack. Eine Funktion, die mittendrin anhalten soll (`yield`, `await`),
+bekommt deshalb einen eigenen Stack – genauer: Alle teilen sich einen, und
+wer anhält, dessen benutztes Stück wird beiseitegelegt und beim Fortsetzen
+an dieselbe Stelle zurückkopiert (`kernel/js_co.c`). Eine ruhende Funktion
+kostet so nur ein bis zwei Kilobyte.
 
 **Sicherheit.** Ein großer Browser sperrt jede Seite in einen eigenen,
 abgeschotteten Prozess. HelloOS hat keine solche Trennung: Die Skripte einer
@@ -937,7 +975,7 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `kernel/tls.c`, `kernel/http.c`, `kernel/url.c` | TLS 1.3, HTTP-Client, Web-Adressen |
 | `kernel/html.c`, `kernel/browser.c` | HTML zerlegen und als Text setzen; das Browser-Fenster |
 | `kernel/css.c` | Stylesheets lesen und auf Elemente anwenden |
-| `kernel/js_*.c`, `kernel/js.h` | die JavaScript-Maschine: Quelltext lesen (`js_parse.c`), ausführen (`js_run.c`), Werte und Speicherbereinigung (`js_core.c`), Zahlen (`js_num.c`), eingebaute Objekte (`js_lib*.c`), reguläre Ausdrücke (`js_regex.c`), typisierte Felder (`js_typed.c`) |
+| `kernel/js_*.c`, `kernel/js.h`, `kernel/jslib.js` | die JavaScript-Maschine: Quelltext lesen (`js_parse.c`), ausführen (`js_run.c`), Werte und Speicherbereinigung (`js_core.c`), Zahlen (`js_num.c`), eingebaute Objekte (`js_lib*.c` und – in JavaScript selbst geschrieben – `jslib.js`), Symbole und Iteratoren (`js_sym.c`), `Map`/`Set` (`js_coll.c`), Generatoren und `async` (`js_co.c`), `Proxy`/`Reflect` (`js_proxy.c`), reguläre Ausdrücke (`js_regex.c`), typisierte Felder (`js_typed.c`) |
 | `kernel/dom.c` | das veränderbare Abbild einer Seite (DOM): Baum lesen, umbauen, wieder zu Quelltext machen |
 | `kernel/dom_js.c`, `kernel/domlib.js`, `kernel/script.h` | Skripte einer Seite: Verbindung von Abbild und JavaScript-Maschine; `window`, `document` und die Elemente, zum großen Teil selbst in JavaScript geschrieben |
 | `kernel/image*.c`, `kernel/inflate.c` | Bilder entschlüsseln (PNG, JPEG, GIF) und verkleinern |
@@ -986,7 +1024,7 @@ gehalten. Naheliegende nächste Schritte:
 - Programme aus Dateien laden (ELF), mehrere Prozessorkerne
 - Symbole auf dem Desktop, ein Dateimanager, Fenster an den Kanten ziehen und minimieren
 - im Browser: Abstände und Rahmen (auch Tabellenlinien), frei platzierte Elemente, Raster mit benannten Flächen, WebP- und SVG-Bilder, Hintergrundbilder, Tabs
-- JavaScript: `async`/`await`, Generatoren und Module; Zeichenflächen (Canvas); Maße und Positionen der Elemente; eine Schutzwand zwischen Skripten und System (dafür braucht es den User-Modus)
+- JavaScript: Module (`import`/`export`), Skripte und Stylesheets, die eine Seite nach dem Laden nachfordert, Nachladen von fremden Servern (mit den üblichen Regeln dafür); Zeichenflächen (Canvas); Maße und Positionen der Elemente; eine Schutzwand zwischen Skripten und System (dafür braucht es den User-Modus)
 - echte Schrift auch in Terminal, Editor und Eingabefeldern; Hinting für schärfere kleine Schrift
 
 ## Die ältere 32-Bit-Version
