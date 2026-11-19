@@ -59,6 +59,51 @@ enum { CSS_FLOW = 0, CSS_FLEX, CSS_GRID };
 /* Wohin freier Platz in einer Reihe geht (justify-content) */
 enum { CSS_PACK_START = 0, CSS_PACK_CENTER, CSS_PACK_END, CSS_PACK_BETWEEN };
 
+/*
+ * --- Für den Seitenaufbau mit Kastenmodell (layout.h) ---
+ *
+ * Eine Länge: Pixel + Anteil der Bezugsgröße (Prozent) + Vielfache der
+ * Schriftgröße (em), je mal 1000 - so lässt sich auch "calc(100% - 2em)"
+ * festhalten. Was gilt, wenn nichts festgelegt ist, weiß der Seitenaufbau.
+ */
+enum { CSS_LEN_UNSET = 0, CSS_LEN_VALUE, CSS_LEN_AUTO, CSS_LEN_NONE,
+       CSS_LEN_CONTENT };               /* CONTENT: so breit wie der Inhalt (fit-content ...) */
+
+typedef struct {
+    uint8_t kind;
+    int32_t px, percent, em;
+} css_len_t;
+
+/* Bei allen folgenden Aufzählungen heißt 0: nicht festgelegt */
+enum { CSS_D_NONE = 1, CSS_D_BLOCK, CSS_D_INLINE, CSS_D_INLINE_BLOCK, CSS_D_LIST_ITEM,
+       CSS_D_FLEX, CSS_D_INLINE_FLEX, CSS_D_GRID, CSS_D_INLINE_GRID, CSS_D_TABLE,
+       CSS_D_INLINE_TABLE, CSS_D_TABLE_ROW, CSS_D_TABLE_CELL, CSS_D_TABLE_GROUP,
+       CSS_D_TABLE_CAPTION, CSS_D_TABLE_COLUMN, CSS_D_CONTENTS };
+enum { CSS_POS_STATIC = 1, CSS_POS_RELATIVE, CSS_POS_ABSOLUTE, CSS_POS_FIXED, CSS_POS_STICKY };
+enum { CSS_WS_NORMAL = 1, CSS_WS_NOWRAP, CSS_WS_PRE, CSS_WS_PRE_WRAP, CSS_WS_PRE_LINE };
+enum { CSS_VA_BASELINE = 1, CSS_VA_TOP, CSS_VA_MIDDLE, CSS_VA_BOTTOM, CSS_VA_SUB, CSS_VA_SUPER };
+enum { CSS_TT_NONE = 1, CSS_TT_UPPER, CSS_TT_LOWER, CSS_TT_CAPITALIZE };
+enum { CSS_OV_VISIBLE = 1, CSS_OV_HIDDEN, CSS_OV_SCROLL };
+enum { CSS_AL_STRETCH = 1, CSS_AL_START, CSS_AL_CENTER, CSS_AL_END, CSS_AL_BASELINE };
+enum { CSS_JU_START = 1, CSS_JU_CENTER, CSS_JU_END, CSS_JU_BETWEEN, CSS_JU_AROUND, CSS_JU_EVENLY };
+enum { CSS_FD_ROW = 1, CSS_FD_ROW_REVERSE, CSS_FD_COLUMN, CSS_FD_COLUMN_REVERSE };
+enum { CSS_FW_NOWRAP = 1, CSS_FW_WRAP };
+enum { CSS_LT_NONE = 1, CSS_LT_DISC, CSS_LT_CIRCLE, CSS_LT_SQUARE, CSS_LT_DECIMAL,
+       CSS_LT_LOWER_ALPHA, CSS_LT_UPPER_ALPHA, CSS_LT_LOWER_ROMAN, CSS_LT_UPPER_ROMAN };
+enum { CSS_BS_NONE = 1, CSS_BS_SOLID, CSS_BS_DASHED, CSS_BS_DOTTED };
+enum { CSS_FF_SANS = 1, CSS_FF_MONO };
+enum { CSS_BOX_CONTENT = 1, CSS_BOX_BORDER };
+enum { CSS_NO = 1, CSS_YES };            /* für Ja/Nein-Angaben */
+enum { CSS_COLOR_VALUE = 1, CSS_COLOR_CURRENT, CSS_COLOR_TRANSPARENT };
+
+/* Eine Spalte eines Rasters (grid-template-columns) */
+#define CSS_GRID_TRACKS 12
+typedef struct {
+    css_len_t size;                     /* feste Breite bzw. Mindestbreite (UNSET: keine) */
+    int32_t fr;                         /* Anteil am freien Platz mal 1000, oder 0 */
+    bool automatic;                     /* so breit wie der Inhalt */
+} css_track_t;
+
 /* Was die Regeln für ein Element festlegen; "has" sagt, welche Angaben gemacht wurden */
 typedef struct {
     uint32_t has;
@@ -91,6 +136,32 @@ typedef struct {
     bool grows;                         /* das Kind nimmt freien Platz der Reihe (flex-grow) */
     bool clipped;                       /* auf nichts beschnitten: nur für Vorleseprogramme da */
     bool off_top;                       /* weit nach oben aus dem Bild geschoben (top: -1000em) */
+
+    /*
+     * Nur von css_match_full() ausgefüllt - für den Seitenaufbau mit
+     * Kastenmodell. Seiten jeweils in der Reihenfolge oben, rechts, unten, links.
+     */
+    uint8_t display_kind, position, box_sizing, white_space, vertical_align, text_transform;
+    uint8_t overflow, font_weight, font_slant, font_family, list_type, border_collapse;
+    uint8_t flex_direction, flex_wrap, justify_content, align_items, align_self, align_content;
+    uint8_t break_words, transparent;   /* CSS_NO/CSS_YES: lange Wörter trennen; opacity: 0 */
+    uint8_t background_image;           /* CSS_NO/CSS_YES: Bild oder Farbverlauf als Hintergrund */
+    bool gradient_set;                  /* ... und dessen erste Farbe als Ersatz */
+    uint32_t gradient_color;
+    uint8_t border_style[4], border_color_kind[4];
+    uint32_t border_color[4];
+    css_len_t margin[4], padding[4], border_width[4], inset[4];
+    css_len_t width, height, min_width, max_width, min_height, max_height;
+    css_len_t font_size, line_height, text_indent, radius, gap_row, gap_column, flex_basis;
+    css_len_t border_spacing;
+    bool grow_set, shrink_set, z_set, order_set, grid_set;
+    int32_t flex_grow, flex_shrink;     /* mal 1000 */
+    int32_t z_index, order;
+    css_track_t grid[CSS_GRID_TRACKS];  /* grid-template-columns */
+    uint8_t grid_count;
+    bool grid_auto_fill;                /* so viele Spalten wie passen: die erste Spalte wiederholt sich */
+    uint8_t grid_span;                  /* grid-column: über so viele Spalten (0: eine) */
+    bool grid_full;                     /* ... oder über alle (1 / -1) */
 } css_style_t;
 
 /* viewport_width: Breite der Anzeige in Pixeln, für @media-Bedingungen */
@@ -107,6 +178,23 @@ bool css_add(css_sheet_t *sheet, const char *text, size_t length);
  */
 void css_match(const css_sheet_t *sheet, const css_node_t *node, const char *style,
                size_t style_length, css_style_t *out);
+
+/*
+ * Wie css_match(), aber vollständig: mit den Grundregeln des Browsers (jede
+ * Seite beginnt mit ihnen - Absätze haben Abstand, Überschriften sind groß ...)
+ * und allen Angaben für Kästen. hints sind Festlegungen aus Attributen des
+ * Elements ("bgcolor", "width" ...) in der Schreibweise eines style-Attributs:
+ * Sie gelten vor den Grundregeln, aber jede Regel der Seite geht ihnen vor.
+ */
+void css_match_full(const css_sheet_t *sheet, const css_node_t *node, const char *hints,
+                    size_t hints_length, const char *style, size_t style_length,
+                    css_style_t *out);
+
+/* Höhe der Anzeige in Pixeln, für Angaben in vh (sonst wird 3/4 der Breite angenommen) */
+void css_set_viewport_height(css_sheet_t *sheet, int height);
+
+/* Liest eine Längenangabe ("12px", "1.5em", "50%", "calc(...)"); false bei Unverständlichem. */
+bool css_length(const css_sheet_t *sheet, const char *text, size_t length, css_len_t *out);
 
 /* Liest eine Farbangabe; false bei "transparent" oder Unverständlichem. */
 bool css_color(const char *text, size_t length, uint32_t *rgb);

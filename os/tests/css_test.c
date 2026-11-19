@@ -398,6 +398,8 @@ static void test_media(void)
         "@media not print { p { text-decoration: underline } }\n"
         "@media print, screen { em { color: #000004 } }\n"
         "@supports (display: grid) { p { color: #000005 } }\n"
+        "@supports not (display: grid) { p { color: #000007 } }\n"
+        "@layer basis { strong { font-style: italic } }\n"
         "@font-face { font-family: x; src: url(x.woff) }\n"
         "@import url(anderes.css);\n"
         "@media screen { @media (min-width: 100px) { strong { color: #000006 } } }\n"
@@ -408,20 +410,141 @@ static void test_media(void)
     css_sheet_t *wide = css_create(900);
     CHECK(css_add(wide, text, sizeof(text) - 1));
     css_style_t s = match(wide, &p, NULL);
-    CHECK(s.color == 0x000001 && s.bold && !(s.has & CSS_SLANT) && s.align == CSS_CENTER &&
+    /* @supports gilt (außer "not"): Was dort gefragt wird, kann der Browser inzwischen meist */
+    CHECK(s.color == 0x000005 && s.bold && !(s.has & CSS_SLANT) && s.align == CSS_CENTER &&
           s.underline);
     CHECK(match(wide, &em, NULL).color == 0x000004 && match(wide, &em, NULL).bold);
-    CHECK(match(wide, &strong, NULL).color == 0x000006);
+    CHECK(match(wide, &strong, NULL).color == 0x000006 && match(wide, &strong, NULL).italic);
     css_free(wide);
 
     css_sheet_t *narrow = css_create(400);
     CHECK(css_add(narrow, text, sizeof(text) - 1));
     s = match(narrow, &p, NULL);
-    CHECK(s.color == 0x000001 && !(s.has & CSS_WEIGHT) && s.italic && !(s.has & CSS_ALIGN));
+    CHECK(s.color == 0x000005 && !(s.has & CSS_WEIGHT) && s.italic && !(s.has & CSS_ALIGN));
     css_free(narrow);
 }
 
 /* Unsinn darf nichts zum Absturz bringen (der Test läuft mit Speicherprüfung). */
+static css_style_t full(const css_sheet_t *sheet, const css_node_t *n, const char *hints,
+                        const char *style)
+{
+    css_style_t s;
+    css_match_full(sheet, n, hints, hints ? strlen(hints) : 0, style, style ? strlen(style) : 0, &s);
+    return s;
+}
+
+static bool len_is(css_len_t l, int px, int percent, int em)
+{
+    return l.kind == CSS_LEN_VALUE && l.px == px && l.percent == percent && l.em == em;
+}
+
+/* Die Angaben für Kästen: Abstände, Rahmen, Maße - und die Grundregeln des Browsers */
+static void test_box_model(void)
+{
+    css_node_t div = node("div", NULL, "karte", NULL), p = node("p", NULL, NULL, NULL);
+    css_node_t h1 = node("h1", NULL, NULL, NULL), span = node("span", NULL, NULL, NULL);
+    css_node_t li = node("li", NULL, NULL, NULL), td = node("td", NULL, NULL, NULL);
+    css_node_t script = node("script", NULL, NULL, NULL), pre = node("pre", NULL, NULL, NULL);
+    css_sheet_t *sheet = css_create(1000);
+    css_set_viewport_height(sheet, 600);
+    CHECK(css_rule_count(sheet) == 0);          /* die Grundregeln zählen nicht als Regeln der Seite */
+
+    /* Grundregeln: nur css_match_full sieht sie */
+    css_style_t s = full(sheet, &p, NULL, NULL);
+    CHECK(s.display_kind == CSS_D_BLOCK && len_is(s.margin[0], 0, 0, 1000) && len_is(s.margin[2], 0, 0, 1000) &&
+          s.margin[1].kind == CSS_LEN_UNSET);
+    CHECK(match(sheet, &p, NULL).has == 0 && match(sheet, &h1, NULL).has == 0);
+    s = full(sheet, &h1, NULL, NULL);
+    CHECK(s.display_kind == CSS_D_BLOCK && len_is(s.font_size, 0, 0, 2000) && s.font_weight == CSS_YES &&
+          len_is(s.margin[0], 0, 0, 670));
+    CHECK(full(sheet, &span, NULL, NULL).display_kind == 0 && full(sheet, &li, NULL, NULL).display_kind == CSS_D_LIST_ITEM &&
+          full(sheet, &td, NULL, NULL).display_kind == CSS_D_TABLE_CELL && full(sheet, &script, NULL, NULL).display_kind == CSS_D_NONE);
+    s = full(sheet, &pre, NULL, NULL);
+    CHECK(s.white_space == CSS_WS_PRE && s.font_family == CSS_FF_MONO);
+
+    static const char text[] =
+        ".karte { margin: 10px 20px; padding: 1em 2% 3px; border: 1px solid #ccc; border-radius: 8px;"
+        " width: calc(100% - 40px); max-width: 60rem; min-height: 50vh; box-sizing: border-box }\n"
+        ".karte { margin-top: auto; border-left: 4px dashed red; border-bottom-color: transparent }\n"
+        "p { margin: 0 }\n"
+        "* { line-height: 1.5 }\n"
+        "h1 { font: italic 700 24px/30px Georgia, serif; text-transform: uppercase }\n"
+        "span { display: inline-block; vertical-align: middle; white-space: nowrap; position: relative;"
+        " top: -2px; left: 1em; z-index: 5; overflow: hidden auto }\n"
+        "li { display: flex; flex-flow: column wrap; justify-content: space-between; align-items: center;"
+        " gap: 10px 2em; flex: 1 0 200px; order: 2 }\n"
+        "td { display: grid; grid-template-columns: repeat(2, 1fr) 200px minmax(100px, 2fr) auto;"
+        " grid-column: span 3; padding: 0 !important }\n"
+        "pre { grid-template-columns: repeat(auto-fill, minmax(12em, 1fr)); grid-column: 1 / -1;"
+        " font-size: clamp(12px, 2vw, 18px); width: min(500px, 80%); height: max(10px, 2em);"
+        " background: linear-gradient(to right, #102030, #fff) }\n";
+    CHECK(css_add(sheet, text, sizeof(text) - 1));
+
+    s = full(sheet, &div, NULL, NULL);
+    CHECK(s.margin[0].kind == CSS_LEN_AUTO && len_is(s.margin[1], 20000, 0, 0) && len_is(s.margin[2], 10000, 0, 0) &&
+          len_is(s.margin[3], 20000, 0, 0));
+    CHECK(len_is(s.padding[0], 0, 0, 1000) && len_is(s.padding[1], 0, 2000, 0) && len_is(s.padding[2], 3000, 0, 0) &&
+          len_is(s.padding[3], 0, 2000, 0));
+    CHECK(len_is(s.border_width[0], 1000, 0, 0) && s.border_style[0] == CSS_BS_SOLID && s.border_color[0] == 0xCCCCCC &&
+          s.border_color_kind[0] == CSS_COLOR_VALUE);
+    CHECK(len_is(s.border_width[3], 4000, 0, 0) && s.border_style[3] == CSS_BS_DASHED && s.border_color[3] == 0xFF0000 &&
+          s.border_color_kind[2] == CSS_COLOR_TRANSPARENT && s.border_style[2] == CSS_BS_SOLID);
+    CHECK(len_is(s.width, -40000, 100000, 0) && len_is(s.max_width, 960000, 0, 0) && len_is(s.min_height, 300000, 0, 0) &&
+          len_is(s.radius, 8000, 0, 0) && s.box_sizing == CSS_BOX_BORDER && len_is(s.line_height, 0, 0, 1500));
+
+    /* Rangfolge: Regel der Seite schlägt Grundregel und Attribut; style schlägt die Regel */
+    s = full(sheet, &p, "margin-top: 7px; width: 300px", NULL);
+    CHECK(len_is(s.margin[0], 0, 0, 0) && len_is(s.width, 300000, 0, 0));
+    s = full(sheet, &p, "margin-top: 7px", "margin: 3px 4px");
+    CHECK(len_is(s.margin[0], 3000, 0, 0) && len_is(s.margin[3], 4000, 0, 0));
+    s = full(sheet, &td, NULL, "padding: 9px");
+    CHECK(len_is(s.padding[0], 0, 0, 0));       /* !important der Regel geht dem style-Attribut vor */
+    s = full(sheet, &h1, "font-size: 10px", NULL);
+    CHECK(len_is(s.font_size, 24000, 0, 0) && len_is(s.line_height, 30000, 0, 0) && s.font_weight == CSS_YES &&
+          s.font_slant == CSS_YES && s.font_family == CSS_FF_SANS && s.text_transform == CSS_TT_UPPER);
+
+    s = full(sheet, &span, NULL, NULL);
+    CHECK(s.display_kind == CSS_D_INLINE_BLOCK && s.vertical_align == CSS_VA_MIDDLE && s.white_space == CSS_WS_NOWRAP &&
+          s.position == CSS_POS_RELATIVE && len_is(s.inset[0], -2000, 0, 0) && len_is(s.inset[3], 0, 0, 1000) &&
+          s.inset[1].kind == CSS_LEN_UNSET && s.z_set && s.z_index == 5 && s.overflow == CSS_OV_SCROLL);
+    s = full(sheet, &li, NULL, NULL);
+    CHECK(s.display_kind == CSS_D_FLEX && s.flex_direction == CSS_FD_COLUMN && s.flex_wrap == CSS_FW_WRAP &&
+          s.justify_content == CSS_JU_BETWEEN && s.align_items == CSS_AL_CENTER && len_is(s.gap_row, 10000, 0, 0) &&
+          len_is(s.gap_column, 0, 0, 2000));
+    CHECK(s.grow_set && s.flex_grow == 1000 && s.shrink_set && s.flex_shrink == 0 && len_is(s.flex_basis, 200000, 0, 0) &&
+          s.order_set && s.order == 2);
+    s = full(sheet, &td, NULL, NULL);
+    CHECK(s.display_kind == CSS_D_GRID && s.grid_set && s.grid_count == 5 && s.grid[0].fr == 1000 && s.grid[1].fr == 1000 &&
+          len_is(s.grid[2].size, 200000, 0, 0) && s.grid[2].fr == 0 && s.grid[3].fr == 2000 &&
+          len_is(s.grid[3].size, 100000, 0, 0) && s.grid[4].automatic && !s.grid_auto_fill && s.grid_span == 3);
+    s = full(sheet, &pre, NULL, NULL);
+    CHECK(s.grid_auto_fill && s.grid_count == 1 && s.grid[0].fr == 1000 && len_is(s.grid[0].size, 0, 0, 12000) &&
+          s.grid_full);
+    CHECK(len_is(s.font_size, 18000, 0, 0) && len_is(s.width, 500000, 0, 0) && len_is(s.height, 0, 0, 2000) &&
+          s.background_image == CSS_YES && s.gradient_set && s.gradient_color == 0x102030);
+
+    /* einzelne Schreibweisen im style-Attribut */
+    s = full(sheet, &span, NULL, "flex: none; margin: 0 auto; padding: 4px 8px 2px; border: none; inset: 0 auto;"
+                                 " font-size: 120%; line-height: 150%; width: fit-content; opacity: 0;"
+                                 " overflow-wrap: anywhere; border-collapse: collapse; list-style: square inside");
+    CHECK(s.flex_grow == 0 && s.flex_shrink == 0 && s.flex_basis.kind == CSS_LEN_AUTO && s.margin[1].kind == CSS_LEN_AUTO &&
+          len_is(s.margin[0], 0, 0, 0) && len_is(s.padding[2], 2000, 0, 0) && len_is(s.padding[3], 8000, 0, 0));
+    CHECK(s.border_style[0] == CSS_BS_NONE && len_is(s.inset[0], 0, 0, 0) && s.inset[1].kind == CSS_LEN_AUTO &&
+          len_is(s.font_size, 0, 0, 1200) && len_is(s.line_height, 0, 0, 1500) && s.width.kind == CSS_LEN_CONTENT &&
+          s.transparent == CSS_YES && s.break_words == CSS_YES && s.border_collapse == CSS_YES && s.list_type == CSS_LT_SQUARE);
+    s = full(sheet, &span, NULL, "margin: 1px 2px 3px 4px 5px; padding: -3px; width: blau; border-width: thin thick;"
+                                 " font: caption; height: calc(2 * (10px + 5%)); max-width: none; min-width: calc(10px + 2)");
+    CHECK(s.margin[0].kind == CSS_LEN_UNSET && s.padding[0].kind == CSS_LEN_UNSET && s.width.kind == CSS_LEN_UNSET &&
+          len_is(s.border_width[0], 1000, 0, 0) && len_is(s.border_width[1], 5000, 0, 0) && s.font_size.kind == CSS_LEN_UNSET &&
+          len_is(s.height, 20000, 10000, 0) && s.max_width.kind == CSS_LEN_NONE && s.min_width.kind == CSS_LEN_UNSET);
+
+    css_len_t l;
+    CHECK(css_length(sheet, "12.5pt", 6, &l) && l.px == 16666 && css_length(sheet, "50vw", 4, &l) && l.px == 500000 &&
+          css_length(sheet, "10vh", 4, &l) && l.px == 60000 && css_length(sheet, "auto", 4, &l) && l.kind == CSS_LEN_AUTO &&
+          !css_length(sheet, "12 px", 5, &l) && !css_length(sheet, "calc(", 5, &l) && !css_length(sheet, "", 0, &l));
+    css_free(sheet);
+}
+
 static void test_fuzz(void)
 {
     static const char sample[] =
@@ -429,7 +552,10 @@ static void test_fuzz(void)
         "background:url('x;y}') rgb(1 2 3 / 4%);font-size:1.2em}}g:hover{x:y}e[i=\"j\"]{color:red}"
         "[a~=b],e[c|='d' i][e^=f],d[g$=h] e[i*=j]{float:left;width:12.5em;clip:rect(0 0 0 0);top:-99em}"
         "e{width:50%;clip-path:inset(50%);clear:both}"
-        "/* m */ n{display:none;visibility:hidden;list-style:none;text-align:center}";
+        "/* m */ n{display:none;visibility:hidden;list-style:none;text-align:center}"
+        "e{margin:1px 2em;padding:calc(1px + 2%);border:1px solid red;width:min(1px,2%);font:bold 12px/1.2 a,b;"
+        "grid-template-columns:repeat(2,minmax(1px,1fr)) [x] auto;flex:1 1 0;gap:1px 2px;grid-column:1 / span 2;"
+        "background:linear-gradient(red,blue);height:clamp(1px,2vw,3em);border-color:red blue;inset:0 auto}";
     css_node_t root = node("html", NULL, NULL, NULL);
     css_node_t mid = node("d", "c", "b x y", &root);
     css_node_t leaf = node("e", "c", "b", &mid);
@@ -437,7 +563,7 @@ static void test_fuzz(void)
     mid.attrs_len = strlen(mid.attrs);
     srand(777);
     for (int round = 0; round < 30000; round++) {
-        char text[700];
+        char text[1100];
         size_t length = sizeof(sample) - 1;
         memcpy(text, sample, length);
         if (round % 3 == 0) {
@@ -459,6 +585,10 @@ static void test_fuzz(void)
         leaf.attrs_len = length;
         css_match(sheet, &leaf, copy, length, &out);
         css_match(sheet, &root, NULL, 0, &out);
+        css_match_full(sheet, &leaf, copy, length, copy, length, &out);
+        css_match_full(sheet, &mid, NULL, 0, NULL, 0, &out);
+        css_len_t l;
+        css_length(sheet, copy, length > 60 ? 60 : length, &l);
         uint32_t color;
         css_color(copy, length, &color);
         css_free(sheet);
@@ -475,6 +605,7 @@ int main(void)
     test_boxes();
     test_cascade_and_values();
     test_media();
+    test_box_model();
     test_fuzz();
     printf("%d Prüfungen an den Stylesheets, %d Fehler\n", checks, failures);
     return failures ? 1 : 0;

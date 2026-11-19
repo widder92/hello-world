@@ -14,8 +14,31 @@
 /* Eigenschaften, die wir auswerten */
 enum { P_COLOR, P_BACKGROUND, P_BACKGROUND_COLOR, P_WEIGHT, P_STYLE, P_SIZE, P_ALIGN,
        P_DECORATION, P_DISPLAY, P_VISIBILITY, P_LIST, P_FLOAT, P_CLEAR, P_WIDTH, P_CLIP,
-       P_CLIP_PATH, P_TOP, P_FLEX_DIRECTION, P_FLEX_WRAP, P_FLEX_FLOW, P_GRID_COLUMNS,
-       P_GRID_TEMPLATE, P_FLEX, P_FLEX_BASIS, P_FLEX_GROW, P_JUSTIFY, P_GRID_AREAS, P_COUNT };
+       P_CLIP_PATH, P_TOP, P_RIGHT, P_BOTTOM, P_LEFT, P_FLEX_DIRECTION, P_FLEX_WRAP, P_FLEX_FLOW,
+       P_GRID_COLUMNS, P_GRID_TEMPLATE, P_FLEX, P_FLEX_BASIS, P_FLEX_GROW, P_JUSTIFY, P_GRID_AREAS,
+       /* ab hier: nur für den Seitenaufbau mit Kastenmodell (apply_box) */
+       P_POSITION, P_BOX_SIZING, P_WHITE_SPACE, P_VALIGN, P_TRANSFORM_TEXT, P_OVERFLOW, P_FAMILY,
+       P_LINE_HEIGHT, P_FONT, P_COLLAPSE, P_SPACING, P_ALIGN_ITEMS, P_ALIGN_SELF, P_ALIGN_CONTENT,
+       P_PLACE_ITEMS, P_PLACE_CONTENT, P_FLEX_SHRINK, P_ORDER, P_ZINDEX, P_GAP, P_ROW_GAP,
+       P_COLUMN_GAP, P_GRID_COLUMN, P_MARGIN, P_MARGIN_TOP, P_MARGIN_RIGHT, P_MARGIN_BOTTOM,
+       P_MARGIN_LEFT, P_MARGIN_BLOCK, P_MARGIN_INLINE, P_PADDING, P_PADDING_TOP, P_PADDING_RIGHT,
+       P_PADDING_BOTTOM, P_PADDING_LEFT, P_PADDING_BLOCK, P_PADDING_INLINE, P_INSET, P_HEIGHT,
+       P_MIN_WIDTH, P_MAX_WIDTH, P_MIN_HEIGHT, P_MAX_HEIGHT, P_INDENT, P_RADIUS, P_BORDER,
+       P_BORDER_TOP, P_BORDER_RIGHT, P_BORDER_BOTTOM, P_BORDER_LEFT, P_BORDER_WIDTH, P_BORDER_STYLE,
+       P_BORDER_COLOR, P_BORDER_TOP_WIDTH, P_BORDER_RIGHT_WIDTH, P_BORDER_BOTTOM_WIDTH,
+       P_BORDER_LEFT_WIDTH, P_BORDER_TOP_STYLE, P_BORDER_RIGHT_STYLE, P_BORDER_BOTTOM_STYLE,
+       P_BORDER_LEFT_STYLE, P_BORDER_TOP_COLOR, P_BORDER_RIGHT_COLOR, P_BORDER_BOTTOM_COLOR,
+       P_BORDER_LEFT_COLOR, P_BREAK, P_WORD_BREAK, P_OPACITY, P_BACKGROUND_IMAGE, P_COUNT };
+
+/* Die Einzelangaben für Kästen: Jede hat ihren eigenen Rang (Kurzschreibweisen setzen mehrere) */
+enum { L_DISPLAY, L_POSITION, L_BOX_SIZING, L_WHITE_SPACE, L_VALIGN, L_TRANSFORM, L_OVERFLOW,
+       L_WEIGHT, L_SLANT, L_FAMILY, L_LIST_TYPE, L_COLLAPSE, L_DIRECTION, L_WRAP, L_JUSTIFY,
+       L_ALIGN_ITEMS, L_ALIGN_SELF, L_ALIGN_CONTENT, L_MARGIN, L_PADDING = L_MARGIN + 4,
+       L_BORDER_WIDTH = L_PADDING + 4, L_BORDER_STYLE = L_BORDER_WIDTH + 4,
+       L_BORDER_COLOR = L_BORDER_STYLE + 4, L_INSET = L_BORDER_COLOR + 4, L_WIDTH = L_INSET + 4,
+       L_HEIGHT, L_MIN_WIDTH, L_MAX_WIDTH, L_MIN_HEIGHT, L_MAX_HEIGHT, L_FONT_SIZE, L_LINE_HEIGHT,
+       L_INDENT, L_RADIUS, L_GAP_ROW, L_GAP_COLUMN, L_BASIS, L_SPACING, L_GROW, L_SHRINK, L_ZINDEX,
+       L_ORDER, L_GRID, L_GRID_ITEM, L_BREAK, L_OPACITY, L_BG_IMAGE, L_COUNT };
 
 static const struct {
     const char *name;
@@ -33,6 +56,43 @@ static const struct {
     { "grid-template", P_GRID_TEMPLATE }, { "flex", P_FLEX }, { "flex-basis", P_FLEX_BASIS },
     { "flex-grow", P_FLEX_GROW }, { "justify-content", P_JUSTIFY },
     { "grid-template-areas", P_GRID_AREAS },
+    { "right", P_RIGHT }, { "bottom", P_BOTTOM }, { "left", P_LEFT }, { "inset", P_INSET },
+    { "position", P_POSITION }, { "box-sizing", P_BOX_SIZING }, { "white-space", P_WHITE_SPACE },
+    { "vertical-align", P_VALIGN }, { "text-transform", P_TRANSFORM_TEXT },
+    { "overflow", P_OVERFLOW }, { "overflow-x", P_OVERFLOW }, { "overflow-y", P_OVERFLOW },
+    { "font-family", P_FAMILY }, { "line-height", P_LINE_HEIGHT }, { "font", P_FONT },
+    { "border-collapse", P_COLLAPSE }, { "border-spacing", P_SPACING },
+    { "align-items", P_ALIGN_ITEMS }, { "align-self", P_ALIGN_SELF },
+    { "align-content", P_ALIGN_CONTENT }, { "place-items", P_PLACE_ITEMS },
+    { "place-content", P_PLACE_CONTENT }, { "flex-shrink", P_FLEX_SHRINK }, { "order", P_ORDER },
+    { "z-index", P_ZINDEX }, { "gap", P_GAP }, { "grid-gap", P_GAP }, { "row-gap", P_ROW_GAP },
+    { "grid-row-gap", P_ROW_GAP }, { "column-gap", P_COLUMN_GAP },
+    { "grid-column-gap", P_COLUMN_GAP }, { "grid-column", P_GRID_COLUMN },
+    { "margin", P_MARGIN }, { "margin-top", P_MARGIN_TOP }, { "margin-right", P_MARGIN_RIGHT },
+    { "margin-bottom", P_MARGIN_BOTTOM }, { "margin-left", P_MARGIN_LEFT },
+    { "margin-block", P_MARGIN_BLOCK }, { "margin-inline", P_MARGIN_INLINE },
+    { "margin-block-start", P_MARGIN_TOP }, { "margin-block-end", P_MARGIN_BOTTOM },
+    { "margin-inline-start", P_MARGIN_LEFT }, { "margin-inline-end", P_MARGIN_RIGHT },
+    { "padding", P_PADDING }, { "padding-top", P_PADDING_TOP }, { "padding-right", P_PADDING_RIGHT },
+    { "padding-bottom", P_PADDING_BOTTOM }, { "padding-left", P_PADDING_LEFT },
+    { "padding-block", P_PADDING_BLOCK }, { "padding-inline", P_PADDING_INLINE },
+    { "padding-block-start", P_PADDING_TOP }, { "padding-block-end", P_PADDING_BOTTOM },
+    { "padding-inline-start", P_PADDING_LEFT }, { "padding-inline-end", P_PADDING_RIGHT },
+    { "height", P_HEIGHT }, { "min-width", P_MIN_WIDTH }, { "max-width", P_MAX_WIDTH },
+    { "min-height", P_MIN_HEIGHT }, { "max-height", P_MAX_HEIGHT }, { "inline-size", P_WIDTH },
+    { "block-size", P_HEIGHT }, { "max-inline-size", P_MAX_WIDTH }, { "min-inline-size", P_MIN_WIDTH },
+    { "text-indent", P_INDENT }, { "border-radius", P_RADIUS }, { "border", P_BORDER },
+    { "border-top", P_BORDER_TOP }, { "border-right", P_BORDER_RIGHT },
+    { "border-bottom", P_BORDER_BOTTOM }, { "border-left", P_BORDER_LEFT },
+    { "border-width", P_BORDER_WIDTH }, { "border-style", P_BORDER_STYLE },
+    { "border-color", P_BORDER_COLOR }, { "border-top-width", P_BORDER_TOP_WIDTH },
+    { "border-right-width", P_BORDER_RIGHT_WIDTH }, { "border-bottom-width", P_BORDER_BOTTOM_WIDTH },
+    { "border-left-width", P_BORDER_LEFT_WIDTH }, { "border-top-style", P_BORDER_TOP_STYLE },
+    { "border-right-style", P_BORDER_RIGHT_STYLE }, { "border-bottom-style", P_BORDER_BOTTOM_STYLE },
+    { "border-left-style", P_BORDER_LEFT_STYLE }, { "border-top-color", P_BORDER_TOP_COLOR },
+    { "border-right-color", P_BORDER_RIGHT_COLOR }, { "border-bottom-color", P_BORDER_BOTTOM_COLOR },
+    { "border-left-color", P_BORDER_LEFT_COLOR }, { "overflow-wrap", P_BREAK }, { "word-wrap", P_BREAK },
+    { "word-break", P_WORD_BREAK }, { "opacity", P_OPACITY }, { "background-image", P_BACKGROUND_IMAGE },
 };
 
 enum { S_TAG, S_CLASS, S_ID, S_ROOT, S_ATTR };
@@ -61,6 +121,7 @@ typedef struct {
     uint32_t specificity;
     uint32_t first_decl, decl_count;
     int32_t next;                       /* nächste Regel im selben Fach */
+    bool ua;                            /* eine Grundregel des Browsers, keine der Seite */
 } rule_t;
 
 typedef struct {
@@ -82,6 +143,9 @@ typedef struct {
 
 struct css_sheet {
     int viewport;
+    int viewport_height;                /* 0: unbekannt */
+    bool adding_ua;                     /* gerade werden die Grundregeln des Browsers eingelesen */
+    int ua_rules;                       /* so viele Regeln sind Grundregeln */
     chunk_t *chunks;                    /* Kopien der Texte: Regeln zeigen hinein */
     rule_t *rules;
     int rule_count, rule_capacity;
@@ -429,6 +493,8 @@ static bool find_color(const char *text, size_t length, uint32_t *rgb, bool *has
 
 typedef struct {
     uint64_t priority[P_COUNT];
+    uint64_t box_priority[L_COUNT];
+    bool boxes;                         /* auch die Angaben für Kästen und die Grundregeln auswerten */
     css_style_t *style;
 } cascade_t;
 
@@ -552,13 +618,1207 @@ static void grid_tracks(const css_sheet_t *sheet, const char *p, const char *sto
     s->tracks = (uint8_t)(count > 40 ? 40 : count);
 }
 
+/* --- Kästen: Längen, Rahmen und was der Seitenaufbau mit Kastenmodell sonst braucht ------ */
+
+/* Eine Rechnung mit Längen: Pixel, Prozent, em und reine Zahl, je mal 1000 */
+typedef struct {
+    int64_t px, percent, em, num;
+    bool pure;                          /* nur eine Zahl ohne Einheit */
+} combo_t;
+
+static int sheet_height(const css_sheet_t *sheet)
+{
+    int width = sheet_viewport(sheet);
+    return sheet && sheet->viewport_height > 0 ? sheet->viewport_height : width * 3 / 4;
+}
+
+static bool unit_combo(const css_sheet_t *sheet, int64_t value, const char *unit, size_t n,
+                       combo_t *out)
+{
+    static const struct {
+        const char *name;
+        int mul, div;
+    } absolute[] = {
+        { "px", 1, 1 }, { "pt", 4, 3 }, { "pc", 16, 1 }, { "in", 96, 1 }, { "cm", 3780, 100 },
+        { "mm", 378, 100 }, { "q", 945, 1000 }, { "rem", 16, 1 },
+    };
+    memset(out, 0, sizeof(*out));
+    if (n == 0) {
+        out->num = value;
+        out->pure = true;
+        return true;
+    }
+    for (unsigned i = 0; i < sizeof(absolute) / sizeof(absolute[0]); i++) {
+        if (word_is(unit, n, absolute[i].name)) {
+            out->px = value * absolute[i].mul / absolute[i].div;
+            return true;
+        }
+    }
+    int width = sheet_viewport(sheet), height = sheet_height(sheet);
+    /* svw, lvh, dvh ...: die Vorsilbe für kleine/große/veränderliche Anzeige zählt hier nicht */
+    if (n == 3 && (lower(unit[0]) == 's' || lower(unit[0]) == 'l' || lower(unit[0]) == 'd') &&
+        lower(unit[1]) == 'v') {
+        unit++;
+        n--;
+    }
+    if (word_is(unit, n, "em"))
+        out->em = value;
+    else if (word_is(unit, n, "ex") || word_is(unit, n, "ch"))
+        out->em = value / 2;
+    else if (word_is(unit, n, "%"))
+        out->percent = value;
+    else if (word_is(unit, n, "vw") || word_is(unit, n, "vi"))
+        out->px = value * width / 100;
+    else if (word_is(unit, n, "vh") || word_is(unit, n, "vb"))
+        out->px = value * height / 100;
+    else if (word_is(unit, n, "vmin"))
+        out->px = value * (width < height ? width : height) / 100;
+    else if (word_is(unit, n, "vmax"))
+        out->px = value * (width > height ? width : height) / 100;
+    else
+        return false;
+    return true;
+}
+
+/* Ungefähre Größe in Pixeln mal 1000 - nur zum Vergleichen in min(), max() und clamp() */
+static int64_t combo_guess(const css_sheet_t *sheet, const combo_t *c)
+{
+    return c->px + c->percent * sheet_viewport(sheet) / 100 + c->em * 16 + c->num;
+}
+
+static bool combo_sum(const css_sheet_t *sheet, const char **p, const char *end, combo_t *out,
+                      int depth);
+
+static bool combo_primary(const css_sheet_t *sheet, const char **p, const char *end, combo_t *out,
+                          int depth)
+{
+    const char *s = *p;
+    while (s < end && space(*s))
+        s++;
+    if (s >= end || depth > 8)
+        return false;
+    const char *name = s;
+    while (s < end && (name_char(*s)) && !(*s >= '0' && *s <= '9') && *s != '-' && *s != '+')
+        s++;
+    if (s < end && *s == '(') {
+        size_t n = (size_t)(s - name);
+        s++;
+        if (n == 0 || word_is(name, n, "calc") || word_is(name, n, "-webkit-calc")) {
+            if (!combo_sum(sheet, &s, end, out, depth + 1))
+                return false;
+        } else if (word_is(name, n, "min") || word_is(name, n, "max") || word_is(name, n, "clamp")) {
+            combo_t args[3];
+            int count = 0;
+            for (;;) {
+                combo_t one;
+                if (!combo_sum(sheet, &s, end, &one, depth + 1))
+                    return false;
+                if (count < 3)
+                    args[count] = one;
+                else if (name[1] == 'i' ? combo_guess(sheet, &one) < combo_guess(sheet, &args[0])
+                                        : combo_guess(sheet, &one) > combo_guess(sheet, &args[0]))
+                    args[0] = one;      /* min/max mit mehr als drei Werten: laufend auswählen */
+                count++;
+                while (s < end && space(*s))
+                    s++;
+                if (s < end && *s == ',') {
+                    s++;
+                    continue;
+                }
+                break;
+            }
+            if (count > 3)
+                count = 1;
+            if (lower(name[0]) == 'c') {        /* clamp(kleinster, gewünschter, größter) */
+                if (count != 3)
+                    return false;
+                *out = args[1];
+                if (combo_guess(sheet, out) > combo_guess(sheet, &args[2]))
+                    *out = args[2];
+                if (combo_guess(sheet, out) < combo_guess(sheet, &args[0]))
+                    *out = args[0];
+            } else {
+                bool smallest = lower(name[1]) == 'i';
+                *out = args[0];
+                for (int i = 1; i < count; i++) {
+                    int64_t a = combo_guess(sheet, &args[i]), b = combo_guess(sheet, out);
+                    if (smallest ? a < b : a > b)
+                        *out = args[i];
+                }
+            }
+        } else {
+            return false;               /* env(), attr() und was es sonst gibt */
+        }
+        while (s < end && space(*s))
+            s++;
+        if (s >= end || *s != ')')
+            return false;
+        *p = s + 1;
+        return true;
+    }
+    s = name;
+    const char *unit;
+    size_t unit_length;
+    int64_t value;
+    if (!number(&s, end, &value, &unit, &unit_length) ||
+        !unit_combo(sheet, value, unit, unit_length, out))
+        return false;
+    *p = s;
+    return true;
+}
+
+static bool combo_product(const css_sheet_t *sheet, const char **p, const char *end, combo_t *out,
+                          int depth)
+{
+    if (!combo_primary(sheet, p, end, out, depth))
+        return false;
+    for (;;) {
+        const char *s = *p;
+        while (s < end && space(*s))
+            s++;
+        if (s >= end || (*s != '*' && *s != '/'))
+            return true;
+        char op = *s++;
+        combo_t right;
+        if (!combo_primary(sheet, &s, end, &right, depth))
+            return false;
+        if (op == '/') {
+            if (!right.pure || right.num == 0)
+                return false;
+            out->px = out->px * 1000 / right.num;
+            out->percent = out->percent * 1000 / right.num;
+            out->em = out->em * 1000 / right.num;
+            out->num = out->num * 1000 / right.num;
+        } else {
+            if (!out->pure && !right.pure)
+                return false;
+            if (out->pure) {            /* Zahl mal Länge: die Länge steht rechts */
+                combo_t swap = *out;
+                *out = right;
+                right = swap;
+            }
+            out->px = out->px * right.num / 1000;
+            out->percent = out->percent * right.num / 1000;
+            out->em = out->em * right.num / 1000;
+            out->num = out->num * right.num / 1000;
+        }
+        *p = s;
+    }
+}
+
+static bool combo_sum(const css_sheet_t *sheet, const char **p, const char *end, combo_t *out,
+                      int depth)
+{
+    if (!combo_product(sheet, p, end, out, depth))
+        return false;
+    for (;;) {
+        const char *s = *p;
+        while (s < end && space(*s))
+            s++;
+        if (s >= end || (*s != '+' && *s != '-'))
+            return true;
+        bool minus = *s++ == '-';
+        combo_t right;
+        if (!combo_product(sheet, &s, end, &right, depth))
+            return false;
+        out->px += minus ? -right.px : right.px;
+        out->percent += minus ? -right.percent : right.percent;
+        out->em += minus ? -right.em : right.em;
+        out->num += minus ? -right.num : right.num;
+        out->pure = out->pure && right.pure;
+        *p = s;
+    }
+}
+
+static int32_t fit32(int64_t v)
+{
+    return v > 2000000000 ? 2000000000 : v < -2000000000 ? -2000000000 : (int32_t)v;
+}
+
+enum { LEN_AUTO = 1, LEN_NONE = 2, LEN_NORMAL = 4, LEN_CONTENT = 8, LEN_NUMBER_EM = 16,
+       LEN_NUMBER_PX = 32, LEN_POSITIVE = 64, LEN_THICKNESS = 128, LEN_PERCENT_EM = 256 };
+
+/* Liest eine Länge; allow sagt, welche Wörter und Schreibweisen dabei gelten. */
+static bool parse_len(const css_sheet_t *sheet, const char *text, size_t length, unsigned allow,
+                      css_len_t *out)
+{
+    trim(&text, &length);
+    memset(out, 0, sizeof(*out));
+    if (!length)
+        return false;
+    if (lower(text[0]) >= 'a' && lower(text[0]) <= 'z' && text[length - 1] != ')') {
+        if ((allow & LEN_AUTO) && word_is(text, length, "auto"))
+            out->kind = CSS_LEN_AUTO;
+        else if ((allow & LEN_NONE) && word_is(text, length, "none"))
+            out->kind = CSS_LEN_NONE;
+        else if ((allow & LEN_NORMAL) && word_is(text, length, "normal"))
+            out->kind = CSS_LEN_AUTO;
+        else if ((allow & LEN_CONTENT) &&
+                 (word_is(text, length, "min-content") || word_is(text, length, "max-content") ||
+                  word_is(text, length, "fit-content") || word_is(text, length, "-moz-fit-content") ||
+                  word_is(text, length, "-webkit-fit-content") || word_is(text, length, "content")))
+            out->kind = CSS_LEN_CONTENT;
+        else if ((allow & (LEN_CONTENT | LEN_AUTO)) &&
+                 (word_is(text, length, "stretch") || word_is(text, length, "-webkit-fill-available") ||
+                  word_is(text, length, "-moz-available")))
+            out->kind = CSS_LEN_AUTO;
+        else if ((allow & LEN_THICKNESS) && (word_is(text, length, "thin") ||
+                                             word_is(text, length, "medium") ||
+                                             word_is(text, length, "thick"))) {
+            out->kind = CSS_LEN_VALUE;
+            out->px = lower(text[0]) == 'm' ? 3000 : lower(text[2]) == 'i' && length == 4 ? 1000 : 5000;
+        } else {
+            return false;
+        }
+        return true;
+    }
+    const char *p = text, *end = text + length;
+    combo_t c;
+    if (!combo_sum(sheet, &p, end, &c, 0))
+        return false;
+    while (p < end && space(*p))
+        p++;
+    if (p != end)
+        return false;
+    if (c.num) {
+        if (!c.pure)
+            return false;               /* Zahl und Länge gemischt */
+        if (allow & LEN_NUMBER_EM)
+            c.em = c.num;
+        else if (allow & LEN_NUMBER_PX)
+            c.px = c.num;
+        else
+            return false;
+    }
+    if (allow & LEN_PERCENT_EM) {       /* Prozent meinen hier die Schriftgröße */
+        c.em += c.percent / 100;
+        c.percent = 0;
+    }
+    if ((allow & LEN_POSITIVE) && c.px < 0 && c.percent <= 0 && c.em <= 0)
+        return false;
+    out->kind = CSS_LEN_VALUE;
+    out->px = fit32(c.px);
+    out->percent = fit32(c.percent);
+    out->em = fit32(c.em);
+    return true;
+}
+
+bool css_length(const css_sheet_t *sheet, const char *text, size_t length, css_len_t *out)
+{
+    return parse_len(sheet, text, length, LEN_AUTO | LEN_NUMBER_PX, out);
+}
+
+/* Das nächste Stück eines Werts: bis zum Leerraum außerhalb von Klammern (oder bis stop) */
+static bool next_piece(const char **p, const char *end, char stop, const char **piece, size_t *n)
+{
+    const char *s = *p;
+    while (s < end && space(*s))
+        s++;
+    if (s >= end)
+        return false;
+    const char *start = s;
+    int level = 0;
+    char quote = 0;
+    while (s < end && (level > 0 || quote || (!space(*s) && *s != stop))) {
+        if (quote) {
+            if (*s == quote)
+                quote = 0;
+        } else if (*s == '"' || *s == '\'') {
+            quote = *s;
+        } else if (*s == '(') {
+            level++;
+        } else if (*s == ')' && level > 0) {
+            level--;
+        }
+        s++;
+    }
+    *piece = start;
+    *n = (size_t)(s - start);
+    if (s < end && *s == stop && *n == 0) {     /* das Trennzeichen selbst */
+        *n = 1;
+        s++;
+    }
+    *p = s;
+    return true;
+}
+
+/* Längen für die vier Seiten: 1 bis 4 Werte in der üblichen Kurzschreibweise */
+static bool four_lens(const css_sheet_t *sheet, const char *text, size_t length, unsigned allow,
+                      css_len_t out[4])
+{
+    const char *p = text, *end = text + length, *piece;
+    size_t n;
+    css_len_t v[4];
+    int count = 0;
+    while (next_piece(&p, end, 0, &piece, &n)) {
+        if (count >= 4 || !parse_len(sheet, piece, n, allow, &v[count]))
+            return false;
+        count++;
+    }
+    if (count == 0)
+        return false;
+    out[0] = v[0];
+    out[1] = count > 1 ? v[1] : v[0];
+    out[2] = count > 2 ? v[2] : v[0];
+    out[3] = count > 3 ? v[3] : count > 1 ? v[1] : v[0];
+    return true;
+}
+
+static uint8_t border_style_of(const char *text, size_t n)
+{
+    static const char *const visible[] = { "solid", "double", "groove", "ridge", "inset", "outset", NULL };
+    if (word_is(text, n, "none") || word_is(text, n, "hidden"))
+        return CSS_BS_NONE;
+    if (word_is(text, n, "dashed"))
+        return CSS_BS_DASHED;
+    if (word_is(text, n, "dotted"))
+        return CSS_BS_DOTTED;
+    for (int i = 0; visible[i]; i++) {
+        if (word_is(text, n, visible[i]))
+            return CSS_BS_SOLID;
+    }
+    return 0;
+}
+
+static uint8_t color_kind(const char *text, size_t n, uint32_t *rgb)
+{
+    if (word_is(text, n, "currentcolor"))
+        return CSS_COLOR_CURRENT;
+    if (word_is(text, n, "transparent"))
+        return CSS_COLOR_TRANSPARENT;
+    return css_color(text, n, rgb) ? CSS_COLOR_VALUE : 0;
+}
+
+static uint8_t keyword(const char *text, size_t n, const char *const *names, const uint8_t *values)
+{
+    for (int i = 0; names[i]; i++) {
+        if (word_is(text, n, names[i]))
+            return values[i];
+    }
+    return 0;
+}
+
+/* Wörter für align-items, align-self, align-content */
+static uint8_t align_word(const char *text, size_t n)
+{
+    static const char *const names[] = { "stretch", "normal", "flex-start", "start", "self-start",
+                                         "center", "flex-end", "end", "self-end", "baseline",
+                                         "first", "last", "safe", "unsafe", NULL };
+    static const uint8_t values[] = { CSS_AL_STRETCH, CSS_AL_STRETCH, CSS_AL_START, CSS_AL_START,
+                                      CSS_AL_START, CSS_AL_CENTER, CSS_AL_END, CSS_AL_END, CSS_AL_END,
+                                      CSS_AL_BASELINE, CSS_AL_BASELINE, CSS_AL_BASELINE, 0, 0 };
+    return keyword(text, n, names, values);
+}
+
+static uint8_t justify_word(const char *text, size_t n)
+{
+    static const char *const names[] = { "flex-start", "start", "left", "normal", "stretch", "center",
+                                         "flex-end", "end", "right", "space-between", "space-around",
+                                         "space-evenly", NULL };
+    static const uint8_t values[] = { CSS_JU_START, CSS_JU_START, CSS_JU_START, CSS_JU_START,
+                                      CSS_JU_START, CSS_JU_CENTER, CSS_JU_END, CSS_JU_END, CSS_JU_END,
+                                      CSS_JU_BETWEEN, CSS_JU_AROUND, CSS_JU_EVENLY };
+    return keyword(text, n, names, values);
+}
+
+static bool family_is_mono(const char *text, size_t length)
+{
+    static const char *const mono[] = { "monospace", "courier", "consolas", "menlo", "monaco",
+                                        "mono", "fira code", "source code", "lucida console",
+                                        "ui-monospace", "terminal", "fixed", NULL };
+    /* Es zählt die erste Schrift der Liste - und "monospace" irgendwo darin */
+    size_t first = 0;
+    while (first < length && text[first] != ',')
+        first++;
+    for (int i = 0; mono[i]; i++) {
+        size_t n = strlen(mono[i]);
+        for (size_t at = 0; at + n <= (i == 0 ? length : first); at++) {
+            size_t k = 0;
+            while (k < n && lower(text[at + k]) == mono[i][k])
+                k++;
+            if (k == n)
+                return true;
+        }
+    }
+    return false;
+}
+
+/* font-size: Wörter, Längen; em und Prozent meinen die Schrift der Umgebung */
+static bool font_size_len(const css_sheet_t *sheet, const char *text, size_t length, css_len_t *out)
+{
+    static const struct {
+        const char *name;
+        int px, em;
+    } words[] = {
+        { "xx-small", 9, 0 }, { "x-small", 10, 0 }, { "small", 13, 0 }, { "medium", 16, 0 },
+        { "large", 18, 0 }, { "x-large", 24, 0 }, { "xx-large", 32, 0 }, { "xxx-large", 48, 0 },
+        { "smaller", 0, 833 }, { "larger", 0, 1200 },
+    };
+    for (unsigned i = 0; i < sizeof(words) / sizeof(words[0]); i++) {
+        if (word_is(text, length, words[i].name)) {
+            memset(out, 0, sizeof(*out));
+            out->kind = CSS_LEN_VALUE;
+            out->px = words[i].px * 1000;
+            out->em = words[i].em;
+            return true;
+        }
+    }
+    return parse_len(sheet, text, length, LEN_POSITIVE | LEN_PERCENT_EM, out) &&
+           (out->px > 0 || out->em > 0);
+}
+
+/* Eine Spalte eines Rasters: "200px", "1fr", "auto", "minmax(100px, 1fr)" */
+static bool grid_track(const css_sheet_t *sheet, const char *text, size_t n, css_track_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (n > 8 && word_is(text, 7, "minmax(") && text[n - 1] == ')') {
+        const char *comma = text + 7, *end = text + n - 1;
+        int level = 0;
+        while (comma < end && (level > 0 || *comma != ',')) {
+            level += *comma == '(' ? 1 : *comma == ')' ? -1 : 0;
+            comma++;
+        }
+        if (comma >= end)
+            return false;
+        css_track_t low, high;
+        if (!grid_track(sheet, text + 7, (size_t)(comma - text - 7), &low) ||
+            !grid_track(sheet, comma + 1, (size_t)(end - comma - 1), &high))
+            return false;
+        if (high.fr || high.automatic) {        /* mindestens so breit, sonst nach Anteil */
+            *out = high;
+            out->size = low.size;
+        } else {
+            *out = high;                /* zwei feste Grenzen: die obere gilt */
+        }
+        return true;
+    }
+    if (n > 12 && word_is(text, 12, "fit-content(") && text[n - 1] == ')') {
+        out->automatic = true;
+        return true;
+    }
+    trim(&text, &n);
+    if (word_is(text, n, "auto") || word_is(text, n, "min-content") || word_is(text, n, "max-content")) {
+        out->automatic = true;
+        return true;
+    }
+    const char *p = text, *unit;
+    size_t unit_length;
+    int64_t value;
+    if (number(&p, text + n, &value, &unit, &unit_length) && p == text + n &&
+        word_is(unit, unit_length, "fr")) {
+        out->fr = fit32(value > 0 ? value : 1);
+        return true;
+    }
+    return parse_len(sheet, text, n, LEN_POSITIVE | LEN_NUMBER_PX, &out->size);
+}
+
+/* grid-template-columns: Spalten der Reihe nach, auch mit repeat(...) */
+static bool grid_template(const css_sheet_t *sheet, const char *text, size_t length, css_style_t *s)
+{
+    const char *p = text, *end = text + length, *piece;
+    size_t n;
+    css_track_t tracks[CSS_GRID_TRACKS];
+    int count = 0;
+    bool auto_fill = false;
+    if (word_is(text, length, "none") || word_is(text, length, "subgrid")) {
+        s->grid_count = 0;
+        s->grid_auto_fill = false;
+        return true;
+    }
+    while (next_piece(&p, end, 0, &piece, &n)) {
+        if (piece[0] == '[') {          /* Namen von Linien: zählen nicht */
+            while (n && piece[n - 1] != ']' && p < end) {
+                p++;
+                n++;
+            }
+            continue;
+        }
+        if (n > 8 && word_is(piece, 7, "repeat(") && piece[n - 1] == ')') {
+            const char *q = piece + 7, *stop = piece + n - 1, *comma = q;
+            while (comma < stop && *comma != ',')
+                comma++;
+            if (comma >= stop)
+                return false;
+            const char *times = q;
+            size_t times_length = (size_t)(comma - q);
+            trim(&times, &times_length);
+            int repeat = 0;
+            if (word_is(times, times_length, "auto-fill") || word_is(times, times_length, "auto-fit")) {
+                auto_fill = true;
+                repeat = 1;
+            } else {
+                for (size_t i = 0; i < times_length && times[i] >= '0' && times[i] <= '9'; i++)
+                    repeat = repeat * 10 + (times[i] - '0');
+            }
+            if (repeat < 1)
+                return false;
+            css_track_t group[CSS_GRID_TRACKS];
+            int group_count = 0;
+            const char *g = comma + 1, *one;
+            size_t one_length;
+            while (next_piece(&g, stop, 0, &one, &one_length)) {
+                if (one[0] == '[')
+                    continue;
+                if (group_count >= CSS_GRID_TRACKS || !grid_track(sheet, one, one_length, &group[group_count]))
+                    return false;
+                group_count++;
+            }
+            if (!group_count)
+                return false;
+            for (int r = 0; r < repeat && count < CSS_GRID_TRACKS; r++) {
+                for (int k = 0; k < group_count && count < CSS_GRID_TRACKS; k++)
+                    tracks[count++] = group[k];
+            }
+            continue;
+        }
+        if (count >= CSS_GRID_TRACKS)
+            break;
+        if (!grid_track(sheet, piece, n, &tracks[count]))
+            return false;
+        count++;
+    }
+    if (!count)
+        return false;
+    memcpy(s->grid, tracks, sizeof(tracks[0]) * (size_t)count);
+    s->grid_count = (uint8_t)count;
+    s->grid_auto_fill = auto_fill;
+    return true;
+}
+
+/* Die erste Farbe in einem Farbverlauf ("linear-gradient(to right, #fff, #000)") */
+static bool gradient_color(const char *text, size_t length, uint32_t *rgb)
+{
+    size_t open = 0;
+    while (open < length && text[open] != '(')
+        open++;
+    if (open < 8 || open >= length)
+        return false;
+    bool gradient = false;
+    for (size_t i = 0; i + 8 <= open; i++)
+        gradient = gradient || word_is(text + i, 8, "gradient");
+    if (!gradient)
+        return false;
+    for (size_t i = open + 1; i < length;) {
+        while (i < length && (space(text[i]) || text[i] == ','))
+            i++;
+        size_t start = i;
+        int level = 0;
+        while (i < length && (level > 0 || (!space(text[i]) && text[i] != ',' && text[i] != ')'))) {
+            level += text[i] == '(' ? 1 : text[i] == ')' ? -1 : 0;
+            i++;
+        }
+        if (i > start && css_color(text + start, i - start, rgb))
+            return true;
+        if (i < length && text[i] == ')')
+            i++;
+    }
+    return false;
+}
+
+#define BOX_SET(id) (priority >= c->box_priority[id] ? (c->box_priority[id] = priority, true) : false)
+
+/* Setzt Breite, Art und Farbe des Rahmens für die Seiten in sides (Bit 0 oben ... Bit 3 links). */
+static void border_parts(cascade_t *c, uint64_t priority, unsigned sides, const css_len_t *width,
+                         uint8_t style, uint8_t kind, uint32_t color)
+{
+    css_style_t *s = c->style;
+    for (int i = 0; i < 4; i++) {
+        if (!(sides & (1u << i)))
+            continue;
+        if (width && BOX_SET(L_BORDER_WIDTH + i))
+            s->border_width[i] = *width;
+        if (style && BOX_SET(L_BORDER_STYLE + i))
+            s->border_style[i] = style;
+        if (kind && BOX_SET(L_BORDER_COLOR + i)) {
+            s->border_color_kind[i] = kind;
+            s->border_color[i] = color;
+        }
+    }
+}
+
+/* Die neue Rangfolge: jede Einzelangabe für sich, Kurzschreibweisen setzen mehrere. */
+static void apply_box(const css_sheet_t *sheet, cascade_t *c, uint8_t property, const char *text,
+                      size_t length, uint64_t priority)
+{
+    css_style_t *s = c->style;
+    css_len_t len, four[4];
+    const char *p = text, *end = text + length, *piece;
+    size_t n;
+    uint32_t color;
+
+    switch (property) {
+    case P_DISPLAY: {
+        static const char *const names[] = {
+            "none", "block", "flow-root", "inline", "inline-block", "list-item", "flex", "-webkit-box",
+            "-webkit-flex", "-ms-flexbox", "inline-flex", "-webkit-inline-box", "grid", "inline-grid",
+            "table", "inline-table", "table-row", "table-cell", "table-row-group",
+            "table-header-group", "table-footer-group", "table-caption", "table-column",
+            "table-column-group", "contents", "ruby", "run-in", NULL };
+        static const uint8_t values[] = {
+            CSS_D_NONE, CSS_D_BLOCK, CSS_D_BLOCK, CSS_D_INLINE, CSS_D_INLINE_BLOCK, CSS_D_LIST_ITEM,
+            CSS_D_FLEX, CSS_D_FLEX, CSS_D_FLEX, CSS_D_FLEX, CSS_D_INLINE_FLEX, CSS_D_INLINE_FLEX,
+            CSS_D_GRID, CSS_D_INLINE_GRID, CSS_D_TABLE, CSS_D_INLINE_TABLE, CSS_D_TABLE_ROW,
+            CSS_D_TABLE_CELL, CSS_D_TABLE_GROUP, CSS_D_TABLE_GROUP, CSS_D_TABLE_GROUP,
+            CSS_D_TABLE_CAPTION, CSS_D_TABLE_COLUMN, CSS_D_TABLE_COLUMN, CSS_D_CONTENTS, CSS_D_INLINE,
+            CSS_D_INLINE };
+        uint8_t kind = 0;
+        while (next_piece(&p, end, 0, &piece, &n)) {
+            uint8_t one = keyword(piece, n, names, values);
+            if (one)
+                kind = one;             /* "block flex": das letzte Wort sagt, wie die Kinder stehen */
+        }
+        if (kind && BOX_SET(L_DISPLAY))
+            s->display_kind = kind;
+        break;
+    }
+    case P_POSITION: {
+        static const char *const names[] = { "static", "relative", "absolute", "fixed", "sticky",
+                                             "-webkit-sticky", NULL };
+        static const uint8_t values[] = { CSS_POS_STATIC, CSS_POS_RELATIVE, CSS_POS_ABSOLUTE,
+                                          CSS_POS_FIXED, CSS_POS_STICKY, CSS_POS_STICKY };
+        uint8_t kind = keyword(text, length, names, values);
+        if (kind && BOX_SET(L_POSITION))
+            s->position = kind;
+        break;
+    }
+    case P_BOX_SIZING:
+        if ((word_is(text, length, "border-box") || word_is(text, length, "content-box")) &&
+            BOX_SET(L_BOX_SIZING))
+            s->box_sizing = lower(text[0]) == 'b' ? CSS_BOX_BORDER : CSS_BOX_CONTENT;
+        break;
+    case P_WHITE_SPACE: {
+        static const char *const names[] = { "normal", "nowrap", "pre", "pre-wrap", "pre-line",
+                                             "break-spaces", "collapse", NULL };
+        static const uint8_t values[] = { CSS_WS_NORMAL, CSS_WS_NOWRAP, CSS_WS_PRE, CSS_WS_PRE_WRAP,
+                                          CSS_WS_PRE_LINE, CSS_WS_PRE_WRAP, CSS_WS_NORMAL };
+        uint8_t kind = keyword(text, length, names, values);
+        if (kind && BOX_SET(L_WHITE_SPACE))
+            s->white_space = kind;
+        break;
+    }
+    case P_VALIGN: {
+        static const char *const names[] = { "baseline", "top", "text-top", "middle", "bottom",
+                                             "text-bottom", "sub", "super", NULL };
+        static const uint8_t values[] = { CSS_VA_BASELINE, CSS_VA_TOP, CSS_VA_TOP, CSS_VA_MIDDLE,
+                                          CSS_VA_BOTTOM, CSS_VA_BOTTOM, CSS_VA_SUB, CSS_VA_SUPER };
+        uint8_t kind = keyword(text, length, names, values);
+        if (kind && BOX_SET(L_VALIGN))
+            s->vertical_align = kind;
+        break;
+    }
+    case P_TRANSFORM_TEXT: {
+        static const char *const names[] = { "none", "uppercase", "lowercase", "capitalize", NULL };
+        static const uint8_t values[] = { CSS_TT_NONE, CSS_TT_UPPER, CSS_TT_LOWER, CSS_TT_CAPITALIZE };
+        uint8_t kind = keyword(text, length, names, values);
+        if (kind && BOX_SET(L_TRANSFORM))
+            s->text_transform = kind;
+        break;
+    }
+    case P_OVERFLOW: {
+        static const char *const names[] = { "visible", "hidden", "clip", "auto", "scroll", "overlay", NULL };
+        static const uint8_t values[] = { CSS_OV_VISIBLE, CSS_OV_HIDDEN, CSS_OV_HIDDEN, CSS_OV_SCROLL,
+                                          CSS_OV_SCROLL, CSS_OV_SCROLL };
+        uint8_t kind = 0;
+        while (next_piece(&p, end, 0, &piece, &n)) {
+            uint8_t one = keyword(piece, n, names, values);
+            if (one > kind)
+                kind = one;
+        }
+        if (kind && BOX_SET(L_OVERFLOW))
+            s->overflow = kind;
+        break;
+    }
+    case P_WEIGHT: {
+        const char *q = text, *unit;
+        size_t unit_length;
+        int64_t value;
+        uint8_t weight = 0;
+        if (word_is(text, length, "bold") || word_is(text, length, "bolder"))
+            weight = CSS_YES;
+        else if (word_is(text, length, "normal") || word_is(text, length, "lighter"))
+            weight = CSS_NO;
+        else if (number(&q, end, &value, &unit, &unit_length))
+            weight = value >= 600000 ? CSS_YES : CSS_NO;
+        if (weight && BOX_SET(L_WEIGHT))
+            s->font_weight = weight;
+        break;
+    }
+    case P_STYLE:
+        if ((word_is(text, length, "italic") || contains_word(text, length, "oblique") ||
+             word_is(text, length, "normal")) && BOX_SET(L_SLANT))
+            s->font_slant = word_is(text, length, "normal") ? CSS_NO : CSS_YES;
+        break;
+    case P_SIZE:
+        if (font_size_len(sheet, text, length, &len) && BOX_SET(L_FONT_SIZE))
+            s->font_size = len;
+        break;
+    case P_FAMILY:
+        if (BOX_SET(L_FAMILY))
+            s->font_family = family_is_mono(text, length) ? CSS_FF_MONO : CSS_FF_SANS;
+        break;
+    case P_LINE_HEIGHT:
+        if (parse_len(sheet, text, length, LEN_NORMAL | LEN_NUMBER_EM | LEN_PERCENT_EM | LEN_POSITIVE, &len) &&
+            BOX_SET(L_LINE_HEIGHT))
+            s->line_height = len;
+        break;
+    case P_FONT: {
+        /* font: [kursiv] [fett] größe[/zeilenhöhe] schrift - vor der Größe stehen nur Wörter */
+        uint8_t weight = CSS_NO, slant = CSS_NO;
+        css_len_t size, height;
+        bool found = false;
+        memset(&height, 0, sizeof(height));
+        height.kind = CSS_LEN_AUTO;
+        while (!found && next_piece(&p, end, 0, &piece, &n)) {
+            size_t slash = 0;
+            while (slash < n && piece[slash] != '/')
+                slash++;
+            if (word_is(piece, n, "bold") || word_is(piece, n, "bolder")) {
+                weight = CSS_YES;
+            } else if (word_is(piece, n, "italic") || word_is(piece, n, "oblique")) {
+                slant = CSS_YES;
+            } else if (n == 3 && piece[0] >= '1' && piece[0] <= '9' && piece[1] == '0' && piece[2] == '0') {
+                weight = piece[0] >= '6' ? CSS_YES : CSS_NO;
+            } else if (font_size_len(sheet, piece, slash, &size)) {
+                found = true;
+                if (slash < n)
+                    parse_len(sheet, piece + slash + 1, n - slash - 1,
+                              LEN_NORMAL | LEN_NUMBER_EM | LEN_PERCENT_EM | LEN_POSITIVE, &height);
+            } else if (!word_is(piece, n, "normal") && !word_is(piece, n, "small-caps") &&
+                       !word_is(piece, n, "lighter") && !has_word_starting(piece, n, "condensed") &&
+                       !has_word_starting(piece, n, "expanded")) {
+                return;                 /* "caption", "menu" ...: Schriften des Systems */
+            }
+        }
+        if (!found)
+            return;
+        if (BOX_SET(L_FONT_SIZE))
+            s->font_size = size;
+        if (BOX_SET(L_LINE_HEIGHT))
+            s->line_height = height;
+        if (BOX_SET(L_WEIGHT))
+            s->font_weight = weight;
+        if (BOX_SET(L_SLANT))
+            s->font_slant = slant;
+        if (p < end && BOX_SET(L_FAMILY))
+            s->font_family = family_is_mono(p, (size_t)(end - p)) ? CSS_FF_MONO : CSS_FF_SANS;
+        break;
+    }
+    case P_LIST: {
+        static const char *const names[] = { "none", "disc", "circle", "square", "decimal",
+                                             "decimal-leading-zero", "lower-alpha", "lower-latin",
+                                             "upper-alpha", "upper-latin", "lower-roman", "upper-roman",
+                                             NULL };
+        static const uint8_t values[] = { CSS_LT_NONE, CSS_LT_DISC, CSS_LT_CIRCLE, CSS_LT_SQUARE,
+                                          CSS_LT_DECIMAL, CSS_LT_DECIMAL, CSS_LT_LOWER_ALPHA,
+                                          CSS_LT_LOWER_ALPHA, CSS_LT_UPPER_ALPHA, CSS_LT_UPPER_ALPHA,
+                                          CSS_LT_LOWER_ROMAN, CSS_LT_UPPER_ROMAN };
+        uint8_t kind = 0;
+        while (next_piece(&p, end, 0, &piece, &n)) {
+            uint8_t one = keyword(piece, n, names, values);
+            if (one && (!kind || one != CSS_LT_NONE))
+                kind = one;
+        }
+        if (kind && BOX_SET(L_LIST_TYPE))
+            s->list_type = kind;
+        break;
+    }
+    case P_COLLAPSE:
+        if ((word_is(text, length, "collapse") || word_is(text, length, "separate")) && BOX_SET(L_COLLAPSE))
+            s->border_collapse = lower(text[0]) == 'c' ? CSS_YES : CSS_NO;
+        break;
+    case P_SPACING:
+        if (next_piece(&p, end, 0, &piece, &n) && parse_len(sheet, piece, n, LEN_POSITIVE, &len) &&
+            BOX_SET(L_SPACING))
+            s->border_spacing = len;
+        break;
+    case P_FLEX_DIRECTION: case P_FLEX_WRAP: case P_FLEX_FLOW:
+        while (next_piece(&p, end, 0, &piece, &n)) {
+            static const char *const names[] = { "row", "row-reverse", "column", "column-reverse", NULL };
+            static const uint8_t values[] = { CSS_FD_ROW, CSS_FD_ROW_REVERSE, CSS_FD_COLUMN,
+                                              CSS_FD_COLUMN_REVERSE };
+            uint8_t direction = property != P_FLEX_WRAP ? keyword(piece, n, names, values) : 0;
+            if (direction && BOX_SET(L_DIRECTION))
+                s->flex_direction = direction;
+            if (property != P_FLEX_DIRECTION && (word_is(piece, n, "wrap") || word_is(piece, n, "nowrap") ||
+                                                 word_is(piece, n, "wrap-reverse")) && BOX_SET(L_WRAP))
+                s->flex_wrap = lower(piece[0]) == 'n' ? CSS_FW_NOWRAP : CSS_FW_WRAP;
+        }
+        break;
+    case P_JUSTIFY: {
+        uint8_t kind = 0;
+        while (!kind && next_piece(&p, end, 0, &piece, &n))
+            kind = justify_word(piece, n);
+        if (kind && BOX_SET(L_JUSTIFY))
+            s->justify_content = kind;
+        break;
+    }
+    case P_ALIGN_ITEMS: case P_ALIGN_SELF: case P_ALIGN_CONTENT: case P_PLACE_ITEMS:
+    case P_PLACE_CONTENT: {
+        uint8_t kind = 0, second = 0;
+        while (next_piece(&p, end, 0, &piece, &n)) {
+            if (!kind)
+                kind = property == P_ALIGN_CONTENT || property == P_PLACE_CONTENT
+                           ? (align_word(piece, n) ? align_word(piece, n)
+                              : justify_word(piece, n) >= CSS_JU_BETWEEN ? CSS_AL_STRETCH : 0)
+                           : align_word(piece, n);
+            else if (!second)
+                second = justify_word(piece, n);
+        }
+        if (!kind)
+            break;
+        if ((property == P_ALIGN_ITEMS || property == P_PLACE_ITEMS) && BOX_SET(L_ALIGN_ITEMS))
+            s->align_items = kind;
+        if (property == P_ALIGN_SELF && BOX_SET(L_ALIGN_SELF))
+            s->align_self = kind;
+        if ((property == P_ALIGN_CONTENT || property == P_PLACE_CONTENT) && BOX_SET(L_ALIGN_CONTENT))
+            s->align_content = kind;
+        if (property == P_PLACE_CONTENT) {
+            /* place-content: center - auch in der Reihe mittig */
+            if (!second)
+                second = justify_word(text, length);
+            if (second && BOX_SET(L_JUSTIFY))
+                s->justify_content = second;
+        }
+        break;
+    }
+    case P_FLEX: {
+        /* flex: none | auto | wachsen [schrumpfen] [grundbreite] */
+        int64_t grow = 0, shrink = 1000;
+        css_len_t basis;
+        memset(&basis, 0, sizeof(basis));
+        basis.kind = CSS_LEN_VALUE;     /* ohne Angabe: 0 */
+        if (word_is(text, length, "none")) {
+            shrink = 0;
+            basis.kind = CSS_LEN_AUTO;
+        } else if (word_is(text, length, "auto")) {
+            grow = 1000;
+            basis.kind = CSS_LEN_AUTO;
+        } else {
+            int numbers = 0;
+            bool any = false;
+            while (next_piece(&p, end, 0, &piece, &n)) {
+                const char *q = piece, *unit;
+                size_t unit_length;
+                int64_t value;
+                if (number(&q, piece + n, &value, &unit, &unit_length) && q == piece + n &&
+                    unit_length == 0 && numbers < 2) {
+                    if (numbers++ == 0)
+                        grow = value;
+                    else
+                        shrink = value;
+                } else if (!parse_len(sheet, piece, n, LEN_AUTO | LEN_CONTENT | LEN_NUMBER_PX, &basis)) {
+                    return;
+                }
+                any = true;
+            }
+            if (!any)
+                return;
+        }
+        if (BOX_SET(L_GROW)) {
+            s->flex_grow = fit32(grow);
+            s->grow_set = true;
+        }
+        if (BOX_SET(L_SHRINK)) {
+            s->flex_shrink = fit32(shrink);
+            s->shrink_set = true;
+        }
+        if (BOX_SET(L_BASIS))
+            s->flex_basis = basis;
+        break;
+    }
+    case P_FLEX_GROW: case P_FLEX_SHRINK: case P_ORDER: case P_ZINDEX: {
+        const char *q = text, *unit;
+        size_t unit_length;
+        int64_t value;
+        if (!number(&q, end, &value, &unit, &unit_length) || unit_length)
+            break;
+        if (property == P_FLEX_GROW && BOX_SET(L_GROW)) {
+            s->flex_grow = fit32(value);
+            s->grow_set = true;
+        } else if (property == P_FLEX_SHRINK && BOX_SET(L_SHRINK)) {
+            s->flex_shrink = fit32(value);
+            s->shrink_set = true;
+        } else if (property == P_ORDER && BOX_SET(L_ORDER)) {
+            s->order = fit32(value / 1000);
+            s->order_set = true;
+        } else if (property == P_ZINDEX && BOX_SET(L_ZINDEX)) {
+            s->z_index = fit32(value / 1000);
+            s->z_set = true;
+        }
+        break;
+    }
+    case P_FLEX_BASIS:
+        if (parse_len(sheet, text, length, LEN_AUTO | LEN_CONTENT | LEN_POSITIVE, &len) && BOX_SET(L_BASIS))
+            s->flex_basis = len;
+        break;
+    case P_GAP: case P_ROW_GAP: case P_COLUMN_GAP: {
+        css_len_t gaps[2];
+        int count = 0;
+        while (count < 2 && next_piece(&p, end, 0, &piece, &n)) {
+            if (word_is(piece, n, "normal")) {
+                memset(&gaps[count], 0, sizeof(gaps[0]));
+                gaps[count].kind = CSS_LEN_VALUE;
+            } else if (!parse_len(sheet, piece, n, LEN_POSITIVE, &gaps[count])) {
+                return;
+            }
+            count++;
+        }
+        if (!count)
+            break;
+        if (property != P_COLUMN_GAP && BOX_SET(L_GAP_ROW))
+            s->gap_row = gaps[0];
+        if (property != P_ROW_GAP && BOX_SET(L_GAP_COLUMN))
+            s->gap_column = gaps[property == P_GAP && count > 1 ? 1 : 0];
+        break;
+    }
+    case P_GRID_COLUMNS: case P_GRID_TEMPLATE: {
+        const char *from = text;
+        if (property == P_GRID_TEMPLATE) {
+            /* "Zeilen / Spalten"; Fassungen mit Flächennamen in Anführungszeichen: nicht hier */
+            const char *slash = NULL;
+            for (const char *q = text; q < end; q++) {
+                if (*q == '"' || *q == '\'')
+                    return;
+                if (*q == '/')
+                    slash = q;
+            }
+            if (!slash)
+                return;
+            from = slash + 1;
+        }
+        css_style_t probe;
+        probe.grid_count = 0;
+        probe.grid_auto_fill = false;
+        if (grid_template(sheet, from, (size_t)(end - from), &probe) && BOX_SET(L_GRID)) {
+            memcpy(s->grid, probe.grid, sizeof(s->grid[0]) * probe.grid_count);
+            s->grid_count = probe.grid_count;
+            s->grid_auto_fill = probe.grid_auto_fill;
+            s->grid_set = true;
+        }
+        break;
+    }
+    case P_GRID_COLUMN: {
+        /* "span 2", "1 / 3", "1 / -1", "2 / span 3" */
+        long first = 0, second = 0, span = 0;
+        bool slash = false;
+        while (next_piece(&p, end, '/', &piece, &n)) {
+            if (n == 1 && piece[0] == '/') {
+                slash = true;
+                continue;
+            }
+            if (word_is(piece, n, "span")) {
+                if (next_piece(&p, end, '/', &piece, &n)) {
+                    for (size_t i = 0; i < n && piece[i] >= '0' && piece[i] <= '9'; i++)
+                        span = span * 10 + (piece[i] - '0');
+                }
+                continue;
+            }
+            long value = 0;
+            bool negative = piece[0] == '-';
+            for (size_t i = negative ? 1 : 0; i < n && piece[i] >= '0' && piece[i] <= '9'; i++)
+                value = value * 10 + (piece[i] - '0');
+            if (slash)
+                second = negative ? -value : value;
+            else
+                first = negative ? -value : value;
+        }
+        if (!BOX_SET(L_GRID_ITEM))
+            break;
+        s->grid_full = second < 0 && first <= 1;
+        if (!span && second > first && first > 0)
+            span = second - first;
+        s->grid_span = (uint8_t)(span > 0 && span < 200 ? span : 0);
+        break;
+    }
+    case P_MARGIN: case P_PADDING: case P_INSET: case P_BORDER_WIDTH: {
+        unsigned allow = property == P_MARGIN ? LEN_AUTO | LEN_NUMBER_PX
+                       : property == P_INSET ? LEN_AUTO | LEN_NUMBER_PX
+                       : property == P_BORDER_WIDTH ? LEN_POSITIVE | LEN_THICKNESS | LEN_NUMBER_PX
+                       : LEN_POSITIVE | LEN_NUMBER_PX;
+        int base = property == P_MARGIN ? L_MARGIN : property == P_PADDING ? L_PADDING
+                 : property == P_INSET ? L_INSET : L_BORDER_WIDTH;
+        css_len_t *to = property == P_MARGIN ? s->margin : property == P_PADDING ? s->padding
+                      : property == P_INSET ? s->inset : s->border_width;
+        if (!four_lens(sheet, text, length, allow, four))
+            break;
+        for (int i = 0; i < 4; i++) {
+            if (BOX_SET(base + i))
+                to[i] = four[i];
+        }
+        break;
+    }
+    case P_MARGIN_TOP: case P_MARGIN_RIGHT: case P_MARGIN_BOTTOM: case P_MARGIN_LEFT:
+        if (parse_len(sheet, text, length, LEN_AUTO | LEN_NUMBER_PX, &len) &&
+            BOX_SET(L_MARGIN + property - P_MARGIN_TOP))
+            s->margin[property - P_MARGIN_TOP] = len;
+        break;
+    case P_MARGIN_BLOCK: case P_MARGIN_INLINE: case P_PADDING_BLOCK: case P_PADDING_INLINE: {
+        /* Anfang und Ende in Lese- bzw. Stapelrichtung: hier oben/unten und links/rechts */
+        bool margin = property == P_MARGIN_BLOCK || property == P_MARGIN_INLINE;
+        bool block = property == P_MARGIN_BLOCK || property == P_PADDING_BLOCK;
+        if (!four_lens(sheet, text, length, margin ? LEN_AUTO | LEN_NUMBER_PX : LEN_POSITIVE | LEN_NUMBER_PX, four))
+            break;
+        int a = block ? 0 : 3, b = block ? 2 : 1;
+        css_len_t *to = margin ? s->margin : s->padding;
+        if (BOX_SET((margin ? L_MARGIN : L_PADDING) + a))
+            to[a] = four[0];
+        if (BOX_SET((margin ? L_MARGIN : L_PADDING) + b))
+            to[b] = four[1];
+        break;
+    }
+    case P_PADDING_TOP: case P_PADDING_RIGHT: case P_PADDING_BOTTOM: case P_PADDING_LEFT:
+        if (parse_len(sheet, text, length, LEN_POSITIVE | LEN_NUMBER_PX, &len) &&
+            BOX_SET(L_PADDING + property - P_PADDING_TOP))
+            s->padding[property - P_PADDING_TOP] = len;
+        break;
+    case P_TOP: case P_RIGHT: case P_BOTTOM: case P_LEFT:
+        if (parse_len(sheet, text, length, LEN_AUTO | LEN_NUMBER_PX, &len) &&
+            BOX_SET(L_INSET + property - P_TOP))
+            s->inset[property - P_TOP] = len;
+        break;
+    case P_WIDTH: case P_HEIGHT: case P_MIN_WIDTH: case P_MAX_WIDTH: case P_MIN_HEIGHT:
+    case P_MAX_HEIGHT: {
+        bool limit = property == P_MAX_WIDTH || property == P_MAX_HEIGHT;
+        if (!parse_len(sheet, text, length,
+                       (limit ? LEN_NONE : LEN_AUTO) | LEN_CONTENT | LEN_POSITIVE | LEN_NUMBER_PX, &len))
+            break;
+        int id = property == P_WIDTH ? L_WIDTH : property == P_HEIGHT ? L_HEIGHT
+               : property == P_MIN_WIDTH ? L_MIN_WIDTH : property == P_MAX_WIDTH ? L_MAX_WIDTH
+               : property == P_MIN_HEIGHT ? L_MIN_HEIGHT : L_MAX_HEIGHT;
+        css_len_t *to = property == P_WIDTH ? &s->width : property == P_HEIGHT ? &s->height
+                      : property == P_MIN_WIDTH ? &s->min_width : property == P_MAX_WIDTH ? &s->max_width
+                      : property == P_MIN_HEIGHT ? &s->min_height : &s->max_height;
+        if (BOX_SET(id))
+            *to = len;
+        break;
+    }
+    case P_INDENT:
+        if (next_piece(&p, end, 0, &piece, &n) && parse_len(sheet, piece, n, LEN_NUMBER_PX, &len) &&
+            BOX_SET(L_INDENT))
+            s->text_indent = len;
+        break;
+    case P_RADIUS:
+        if (next_piece(&p, end, '/', &piece, &n) && parse_len(sheet, piece, n, LEN_POSITIVE | LEN_NUMBER_PX, &len) &&
+            BOX_SET(L_RADIUS))
+            s->radius = len;
+        break;
+    case P_BORDER: case P_BORDER_TOP: case P_BORDER_RIGHT: case P_BORDER_BOTTOM: case P_BORDER_LEFT: {
+        /* Breite, Art und Farbe in beliebiger Reihenfolge; was fehlt, gilt wie üblich */
+        css_len_t width;
+        uint8_t style = CSS_BS_NONE, kind = CSS_COLOR_CURRENT;
+        memset(&width, 0, sizeof(width));
+        width.kind = CSS_LEN_VALUE;
+        width.px = 3000;
+        color = 0;
+        while (next_piece(&p, end, 0, &piece, &n)) {
+            uint8_t one = border_style_of(piece, n), ck;
+            uint32_t rgb;
+            if (one)
+                style = one;
+            else if (parse_len(sheet, piece, n, LEN_POSITIVE | LEN_THICKNESS | LEN_NUMBER_PX, &len))
+                width = len;
+            else if ((ck = color_kind(piece, n, &rgb)) != 0) {
+                kind = ck;
+                color = rgb;
+            } else {
+                return;
+            }
+        }
+        border_parts(c, priority, property == P_BORDER ? 15 : 1u << (property - P_BORDER_TOP), &width,
+                     style, kind, color);
+        break;
+    }
+    case P_BORDER_STYLE: {
+        uint8_t v[4];
+        int count = 0;
+        while (count < 4 && next_piece(&p, end, 0, &piece, &n)) {
+            v[count] = border_style_of(piece, n);
+            if (!v[count])
+                return;
+            count++;
+        }
+        if (!count)
+            break;
+        border_parts(c, priority, 1, NULL, v[0], 0, 0);
+        border_parts(c, priority, 2, NULL, count > 1 ? v[1] : v[0], 0, 0);
+        border_parts(c, priority, 4, NULL, count > 2 ? v[2] : v[0], 0, 0);
+        border_parts(c, priority, 8, NULL, count > 3 ? v[3] : count > 1 ? v[1] : v[0], 0, 0);
+        break;
+    }
+    case P_BORDER_COLOR: {
+        uint8_t kinds[4];
+        uint32_t colors[4] = { 0, 0, 0, 0 };
+        int count = 0;
+        while (count < 4 && next_piece(&p, end, 0, &piece, &n)) {
+            kinds[count] = color_kind(piece, n, &colors[count]);
+            if (!kinds[count])
+                return;
+            count++;
+        }
+        if (!count)
+            break;
+        for (int i = 0; i < 4; i++) {
+            int from = i == 0 ? 0 : i == 1 ? (count > 1 ? 1 : 0) : i == 2 ? (count > 2 ? 2 : 0)
+                     : count > 3 ? 3 : count > 1 ? 1 : 0;
+            border_parts(c, priority, 1u << i, NULL, 0, kinds[from], colors[from]);
+        }
+        break;
+    }
+    case P_BORDER_TOP_WIDTH: case P_BORDER_RIGHT_WIDTH: case P_BORDER_BOTTOM_WIDTH:
+    case P_BORDER_LEFT_WIDTH:
+        if (parse_len(sheet, text, length, LEN_POSITIVE | LEN_THICKNESS | LEN_NUMBER_PX, &len))
+            border_parts(c, priority, 1u << (property - P_BORDER_TOP_WIDTH), &len, 0, 0, 0);
+        break;
+    case P_BORDER_TOP_STYLE: case P_BORDER_RIGHT_STYLE: case P_BORDER_BOTTOM_STYLE:
+    case P_BORDER_LEFT_STYLE:
+        if (border_style_of(text, length))
+            border_parts(c, priority, 1u << (property - P_BORDER_TOP_STYLE), NULL,
+                         border_style_of(text, length), 0, 0);
+        break;
+    case P_BORDER_TOP_COLOR: case P_BORDER_RIGHT_COLOR: case P_BORDER_BOTTOM_COLOR:
+    case P_BORDER_LEFT_COLOR: {
+        uint8_t kind = color_kind(text, length, &color);
+        if (kind)
+            border_parts(c, priority, 1u << (property - P_BORDER_TOP_COLOR), NULL, 0, kind, color);
+        break;
+    }
+    case P_BREAK: case P_WORD_BREAK:
+        if (BOX_SET(L_BREAK))
+            s->break_words = word_is(text, length, "anywhere") || word_is(text, length, "break-word") ||
+                             word_is(text, length, "break-all") ? CSS_YES : CSS_NO;
+        break;
+    case P_OPACITY: {
+        const char *q = text, *unit;
+        size_t unit_length;
+        int64_t value;
+        if (number(&q, end, &value, &unit, &unit_length) && BOX_SET(L_OPACITY))
+            s->transparent = value == 0 ? CSS_YES : CSS_NO;
+        break;
+    }
+    case P_BACKGROUND: case P_BACKGROUND_IMAGE: {
+        bool image = false;
+        for (const char *q = text; q + 4 <= end; q++)
+            image = image || (lower(q[0]) == 'u' && lower(q[1]) == 'r' && lower(q[2]) == 'l' && q[3] == '(');
+        bool gradient = gradient_color(text, length, &color);
+        if (!BOX_SET(L_BG_IMAGE))
+            break;
+        s->background_image = image || gradient ? CSS_YES : CSS_NO;
+        s->gradient_set = gradient;
+        s->gradient_color = gradient ? color : 0;
+        break;
+    }
+    default:
+        break;
+    }
+}
+
 static void apply(const css_sheet_t *sheet, cascade_t *c, uint8_t property, const char *raw,
                   size_t raw_length, uint64_t priority)
 {
     /* Zwei Schreibweisen für dasselbe teilen sich die Rangfolge */
     uint8_t slot = property == P_BACKGROUND_COLOR ? P_BACKGROUND
                  : property == P_CLIP_PATH ? P_CLIP : property;
-    if (priority < c->priority[slot])
+    if (!c->boxes && (property >= P_POSITION || priority < c->priority[slot]))
         return;
 
     char resolved[VALUE_MAX];
@@ -578,6 +1838,11 @@ static void apply(const css_sheet_t *sheet, cascade_t *c, uint8_t property, cons
     if (!length || word_is(text, length, "inherit") || word_is(text, length, "unset") ||
         word_is(text, length, "initial") || word_is(text, length, "revert"))
         return;                         /* gilt wie nicht angegeben */
+    if (c->boxes) {
+        apply_box(sheet, c, property, text, length, priority);
+        if (property >= P_POSITION || priority < c->priority[slot])
+            return;
+    }
 
     css_style_t *s = c->style;
     uint32_t color;
@@ -1127,11 +2392,12 @@ static void match_bucket(const css_sheet_t *sheet, uint32_t bucket, const css_no
 {
     for (int32_t index = sheet->buckets[bucket]; index >= 0; index = sheet->rules[index].next) {
         const rule_t *rule = &sheet->rules[index];
-        if (!selector_matches(rule, rule->compound_count - 1, node))
+        if ((rule->ua && !c->boxes) || !selector_matches(rule, rule->compound_count - 1, node))
             continue;
         for (uint32_t d = 0; d < rule->decl_count; d++) {
             const decl_t *decl = &sheet->decls[rule->first_decl + d];
-            uint64_t priority = ((uint64_t)decl->important << 50) |
+            /* Regeln der Seite gehen den Grundregeln des Browsers immer vor */
+            uint64_t priority = ((uint64_t)decl->important << 50) | ((uint64_t)!rule->ua << 48) |
                                 ((uint64_t)rule->specificity << 24) | (uint32_t)index;
             apply(sheet, c, decl->property, decl->value, decl->length, priority + 1);
         }
@@ -1201,6 +2467,7 @@ static void each_declaration(const char *text, size_t length, decl_found_t found
 typedef struct {
     const css_sheet_t *sheet;
     cascade_t *cascade;
+    bool hints;                         /* Festlegungen aus Attributen: unter allen Regeln der Seite */
 } inline_ctx_t;
 
 static void inline_found(void *ctx, uint8_t property, bool important, const char *name,
@@ -1212,17 +2479,20 @@ static void inline_found(void *ctx, uint8_t property, bool important, const char
     if (property == P_COUNT || value_length >= VALUE_MAX)
         return;
     /* über allen Regeln; mit !important auch über deren !important */
-    uint64_t priority = ((uint64_t)1 << 49) | ((uint64_t)important << 51);
+    uint64_t priority = c->hints ? (uint64_t)1 << 48
+                                 : ((uint64_t)1 << 49) | ((uint64_t)important << 51);
     apply(c->sheet, c->cascade, property, value, value_length, priority);
 }
 
-void css_match(const css_sheet_t *sheet, const css_node_t *node, const char *style,
-               size_t style_length, css_style_t *out)
+static void match(const css_sheet_t *sheet, const css_node_t *node, const char *hints,
+                  size_t hints_length, const char *style, size_t style_length, css_style_t *out,
+                  bool boxes)
 {
     cascade_t c;
     memset(&c, 0, sizeof(c));
     memset(out, 0, sizeof(*out));
     c.style = out;
+    c.boxes = boxes;
 
     if (sheet && node) {
         if (node->id_len)
@@ -1240,10 +2510,33 @@ void css_match(const css_sheet_t *sheet, const css_node_t *node, const char *sty
             match_bucket(sheet, hash(S_TAG, node->tag, node->tag_len), node, &c);
         match_bucket(sheet, hash(S_ROOT, "", 0), node, &c);         /* "*" und ":root" */
     }
+    if (hints && hints_length) {
+        inline_ctx_t ctx = { sheet, &c, true };
+        each_declaration(hints, hints_length, inline_found, &ctx);
+    }
     if (style && style_length) {
-        inline_ctx_t ctx = { sheet, &c };
+        inline_ctx_t ctx = { sheet, &c, false };
         each_declaration(style, style_length, inline_found, &ctx);
     }
+}
+
+void css_match(const css_sheet_t *sheet, const css_node_t *node, const char *style,
+               size_t style_length, css_style_t *out)
+{
+    match(sheet, node, NULL, 0, style, style_length, out, false);
+}
+
+void css_match_full(const css_sheet_t *sheet, const css_node_t *node, const char *hints,
+                    size_t hints_length, const char *style, size_t style_length,
+                    css_style_t *out)
+{
+    match(sheet, node, hints, hints_length, style, style_length, out, true);
+}
+
+void css_set_viewport_height(css_sheet_t *sheet, int height)
+{
+    if (sheet)
+        sheet->viewport_height = height;
 }
 
 /* --- Stylesheet einlesen ---------------------------------------------------------------- */
@@ -1600,6 +2893,7 @@ static void add_rule(css_sheet_t *sheet, const char *selectors, size_t selectors
         rule->specificity = specificity;
         rule->first_decl = first;
         rule->decl_count = (uint32_t)ctx.count;
+        rule->ua = sheet->adding_ua;
 
         /* Ins Fach des aussagekräftigsten Merkmals des letzten Glieds */
         const compound_t *subject = &copy[count - 1];
@@ -1760,13 +3054,84 @@ static void parse_rules(css_sheet_t *sheet, const char *text, size_t length, int
             if (prelude_length >= 6 && word_is(prelude, 6, "@media") && depth < 4 &&
                 media_applies(sheet, prelude + 6, prelude_length - 6))
                 parse_rules(sheet, block, block_length, depth + 1);
-            /* @supports, @font-face, @keyframes ...: übergehen */
+            /*
+             * "@supports (display: grid)": Regeln für Browser, die etwas
+             * können - das meiste davon kann dieser inzwischen. Nur was
+             * ausdrücklich für Browser ohne etwas gedacht ist ("not"), bleibt
+             * aus. "@layer" ordnet Regeln nur.
+             */
+            else if (prelude_length >= 9 && word_is(prelude, 9, "@supports") && depth < 4) {
+                const char *condition = prelude + 9;
+                size_t n = prelude_length - 9;
+                trim(&condition, &n);
+                if (!(n >= 3 && word_is(condition, 3, "not")))
+                    parse_rules(sheet, block, block_length, depth + 1);
+            } else if (prelude_length >= 6 && word_is(prelude, 6, "@layer") && depth < 4) {
+                parse_rules(sheet, block, block_length, depth + 1);
+            }
+            /* @font-face, @keyframes ...: übergehen */
             continue;
         }
         if (prelude_length)
             add_rule(sheet, prelude, prelude_length, block, block_length);
     }
 }
+
+/*
+ * Die Grundregeln: wie eine Seite aussieht, die selbst nichts festlegt. Sie
+ * entsprechen dem, was alle großen Browser mitbringen.
+ */
+static const char ua_rules[] =
+    "html, body, div, p, h1, h2, h3, h4, h5, h6, ul, ol, menu, dl, dt, dd, form, fieldset, legend, pre,"
+    " blockquote, address, article, aside, footer, header, hgroup, main, nav, section, figure,"
+    " figcaption, hr, details, summary, center, dialog, search, listing, xmp, plaintext, dir,"
+    " optgroup { display: block }\n"
+    "li { display: list-item }\n"
+    "head, script, style, title, meta, link, base, template, datalist, param, source, track, area,"
+    " noembed, noframes, rp, [hidden] { display: none }\n"
+    "body { margin: 8px }\n"
+    "p, dl, blockquote, figure, pre, ul, ol, menu, dir, listing, xmp { margin-top: 1em; margin-bottom: 1em }\n"
+    "blockquote, figure { margin-left: 40px; margin-right: 40px }\n"
+    "ul, ol, menu, dir { padding-left: 40px }\n"
+    "ul, menu, dir { list-style-type: disc }\n"
+    "ol { list-style-type: decimal }\n"
+    "ul ul, ol ul { list-style-type: circle }\n"
+    "ul ul ul, ol ul ul, ul ol ul, ol ol ul { list-style-type: square }\n"
+    "ul ul, ul ol, ol ul, ol ol, li ul, li ol { margin-top: 0; margin-bottom: 0 }\n"
+    "dd { margin-left: 40px }\n"
+    "h1 { font-size: 2em; margin-top: .67em; margin-bottom: .67em; font-weight: bold }\n"
+    "h2 { font-size: 1.5em; margin-top: .83em; margin-bottom: .83em; font-weight: bold }\n"
+    "h3 { font-size: 1.17em; margin-top: 1em; margin-bottom: 1em; font-weight: bold }\n"
+    "h4 { margin-top: 1.33em; margin-bottom: 1.33em; font-weight: bold }\n"
+    "h5 { font-size: .83em; margin-top: 1.67em; margin-bottom: 1.67em; font-weight: bold }\n"
+    "h6 { font-size: .67em; margin-top: 2.33em; margin-bottom: 2.33em; font-weight: bold }\n"
+    "b, strong, th, dt { font-weight: bold }\n"
+    "i, em, cite, var, dfn, address { font-style: italic }\n"
+    "pre, code, kbd, samp, tt, listing, xmp, plaintext { font-family: monospace }\n"
+    "pre, listing, xmp, plaintext { white-space: pre }\n"
+    "nobr { white-space: nowrap }\n"
+    "small { font-size: smaller }\n"
+    "big { font-size: larger }\n"
+    "sub { font-size: smaller; vertical-align: sub }\n"
+    "sup { font-size: smaller; vertical-align: super }\n"
+    "u, ins { text-decoration: underline }\n"
+    "center { text-align: center }\n"
+    "hr { border-top: 1px solid #9a9a9a; margin-top: 8px; margin-bottom: 8px }\n"
+    "mark { background-color: #ffff00; color: #000000 }\n"
+    "fieldset { border: 2px solid #c0c0c0; margin-left: 2px; margin-right: 2px;"
+    " padding: .35em .75em .625em }\n"
+    "legend { padding-left: 2px; padding-right: 2px }\n"
+    "table { display: table; border-spacing: 2px; box-sizing: border-box; text-indent: 0 }\n"
+    "thead, tbody, tfoot { display: table-row-group; vertical-align: middle }\n"
+    "tr { display: table-row }\n"
+    "td, th { display: table-cell; padding: 1px; vertical-align: inherit }\n"
+    "th { text-align: center }\n"
+    "caption { display: table-caption; text-align: center }\n"
+    "col, colgroup { display: table-column }\n"
+    "img, input, select, textarea, button, video, audio, canvas, iframe, object, embed, svg,"
+    " progress, meter { display: inline-block }\n"
+    "dialog { display: none }\n"
+    "summary { font-weight: bold }\n";
 
 css_sheet_t *css_create(int viewport_width)
 {
@@ -1781,6 +3146,11 @@ css_sheet_t *css_create(int viewport_width)
     sheet->viewport = viewport_width;
     for (int i = 0; i < BUCKETS; i++)
         sheet->buckets[i] = -1;
+    /* Jede Seite beginnt mit den Grundregeln des Browsers (nur css_match_full sieht sie). */
+    sheet->adding_ua = true;
+    css_add(sheet, ua_rules, strlen(ua_rules));
+    sheet->adding_ua = false;
+    sheet->ua_rules = sheet->rule_count;
     return sheet;
 }
 
@@ -1831,7 +3201,7 @@ bool css_add(css_sheet_t *sheet, const char *text, size_t length)
 
 int css_rule_count(const css_sheet_t *sheet)
 {
-    return sheet ? sheet->rule_count : 0;
+    return sheet ? sheet->rule_count - sheet->ua_rules : 0;
 }
 
 /* --- Einzelne Auswahlen (querySelector) -------------------------------------------------------- */
