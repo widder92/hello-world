@@ -36,6 +36,7 @@ typedef struct {
      * trägt hier deren größte Schrift (sonst 0) und reicht in die nächste Zeile.
      */
     uint8_t tall;
+    int8_t shift;                       /* Grundlinie um so viele Pixel tiefer als die der Zeile */
     uint32_t node;                      /* Nummer des Elements laut data-hx (für Skripte), oder 0 */
 } span_t;
 
@@ -47,6 +48,9 @@ typedef struct {
     uint8_t filler;                     /* diese Zeile ist der untere Teil einer solchen */
     uint8_t align;                      /* 0/1 links, 2 Mitte, 3 rechts (wie CSS_LEFT ...) */
     uint32_t background;                /* Hintergrund der ganzen Zeile, oder 0 */
+    /* Lage auf der Seite in Pixeln (siehe "Lage" unten): Oberkante, Höhe, Grundlinie ab Oberkante */
+    int32_t y;
+    uint16_t height, baseline;
 } line_t;
 
 typedef enum {
@@ -69,6 +73,7 @@ typedef struct {
     int first_option, option_count, selected;
     int width;                          /* Breite auf dem Bildschirm, in Zeichen */
     int line, column;                   /* Platz auf der Seite; line -1: unsichtbar */
+    int x, y, w, h;                     /* Lage in Pixeln; h 0: unsichtbar */
     uint32_t node;                      /* Nummer des Elements laut data-hx, oder 0 */
 } widget_t;
 
@@ -81,6 +86,7 @@ typedef struct {
 typedef struct {
     char *id;
     int line;
+    int y;                              /* Lage in Pixeln */
 } anchor_t;
 
 /*
@@ -95,9 +101,36 @@ typedef struct {
     int line, rows;
     int column;                         /* Einrückung in Zeichen */
     int width, height;                  /* Größe auf dem Bildschirm; 0: unbekannt */
+    int x, y;                           /* Lage in Pixeln; y < 0: steht nirgends */
     bool ready;                         /* war beim Setzen der Seite geladen */
     uint32_t node;                      /* Nummer des Elements laut data-hx, oder 0 */
 } page_image_t;
+
+/*
+ * Lage: Jede Seite beschreibt am Ende, wo ihre Teile stehen - in Pixeln, von
+ * der linken oberen Ecke des Seiteninhalts aus. Zeilen stehen nicht mehr in
+ * einem festen Raster untereinander; mehrere können nebeneinander liegen
+ * (Spalten). Dazu kommen Kästen: Flächen mit Hintergrund und Rahmen, die unter
+ * dem Text liegen.
+ */
+typedef struct {
+    int32_t x, y, w, h;                 /* Außenkante des Rahmens */
+    uint32_t background;                /* HTML_COLOR_SET plus Farbe, oder 0: keiner */
+    uint8_t border[4];                  /* Breite des Rahmens oben, rechts, unten, links */
+    uint32_t border_color[4];           /* je 0xRRGGBB */
+    uint8_t radius;                     /* runde Ecken: Halbmesser in Pixeln */
+    uint8_t dashed;                     /* Rahmen gestrichelt (1) oder gepunktet (2) */
+    int16_t link;                       /* der Kasten gehört zu diesem Link, oder -1 */
+    uint32_t node;                      /* Nummer des Elements, oder 0 */
+} box_t;
+
+/* Die Teile der Seite in der Reihenfolge, in der sie gezeichnet werden */
+enum { PAINT_BOX, PAINT_LINE, PAINT_IMAGE, PAINT_WIDGET };
+
+typedef struct {
+    uint8_t kind;
+    int32_t index;
+} paint_t;
 
 /* Was der Seitenaufbau über ein Bild wissen kann */
 typedef enum { PICTURE_UNKNOWN, PICTURE_READY, PICTURE_BROKEN } picture_state_t;
@@ -135,6 +168,13 @@ typedef struct {
     page_image_t *images;
     int image_count, image_cap;
     int heading_line;                   /* Zeile der ersten Hauptüberschrift oder -1 */
+    box_t *boxes;
+    int box_count, box_cap;
+    paint_t *paint;
+    int paint_count, paint_cap;
+    int height;                         /* Höhe der ganzen Seite in Pixeln */
+    int heading_y;                      /* Lage der ersten Hauptüberschrift oder -1 */
+    bool rows;                          /* im Zeilenraster gesetzt (der einfache Seitenaufbau) */
     bool pixels;                        /* Spalten und Breiten der Stücke sind Pixel, nicht Zeichen */
     uint32_t background;                /* Hintergrund der Seite laut ihrer Gestaltung, oder 0 */
     bool failed;                        /* Speicher ging aus - die Seite ist unvollständig */
@@ -201,6 +241,18 @@ page_t *html_layout_pictures(const char *html, size_t len, const char *base_url,
 /* Wie html_layout(), aber für reinen Text (alles wird wörtlich gezeigt). */
 page_t *html_plain_text(const char *text, size_t len, int columns);
 void page_free(page_t *page);
+
+/*
+ * Rechnet eine im Zeilenraster gesetzte Seite (html_layout und Verwandte) in
+ * Lagen um: Zeilen der Höhe row_height untereinander, Zeichen der Breite
+ * cell_width. text_size ist die Schriftgröße des Fließtexts. Danach sind alle
+ * Spalten und Breiten Pixel. false bei Speichermangel.
+ */
+bool page_place_rows(page_t *page, int row_height, int cell_width, int text_size);
+
+/* Für den Seitenaufbau: hängt einen Kasten bzw. einen Eintrag der Zeichenfolge an; -1/false bei Speichermangel. */
+int page_add_box(page_t *page, const box_t *box);
+bool page_add_paint(page_t *page, uint8_t kind, int index);
 
 /* Ersetzt den Inhalt eines Felds; false bei Speichermangel. */
 bool widget_set_value(widget_t *w, const char *text, size_t len);

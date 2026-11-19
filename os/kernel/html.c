@@ -212,6 +212,129 @@ static char *duplicate(const char *text, size_t len)
     return copy;
 }
 
+int page_add_box(page_t *page, const box_t *box)
+{
+    if (!ENSURE(page, page->boxes, page->box_count, page->box_cap))
+        return -1;
+    page->boxes[page->box_count] = *box;
+    return page->box_count++;
+}
+
+bool page_add_paint(page_t *page, uint8_t kind, int index)
+{
+    if (!ENSURE(page, page->paint, page->paint_count, page->paint_cap))
+        return false;
+    page->paint[page->paint_count].kind = kind;
+    page->paint[page->paint_count].index = index;
+    page->paint_count++;
+    return true;
+}
+
+/* Ein Kasten nur mit Hintergrund */
+static bool plain_box(page_t *page, int x, int y, int w, int h, uint32_t background)
+{
+    box_t box;
+    memset(&box, 0, sizeof(box));
+    box.x = x;
+    box.y = y;
+    box.w = w;
+    box.h = h;
+    box.background = background;
+    box.link = -1;
+    int index = page_add_box(page, &box);
+    return index >= 0 && page_add_paint(page, PAINT_BOX, index);
+}
+
+bool page_place_rows(page_t *page, int row_height, int cell_width, int text_size)
+{
+    int unit = page->pixels ? 1 : cell_width;
+    page->rows = true;
+    page->box_count = 0;
+    page->paint_count = 0;
+    page->height = page->line_count * row_height;
+    page->heading_y = page->heading_line >= 0 ? page->heading_line * row_height : -1;
+    for (int i = 0; i < page->image_count; i++)
+        page->images[i].y = -1;
+
+    /* zuunterst die hinterlegten Abschnitte: über die ganze Breite */
+    for (int i = 0; i < page->line_count; i++) {
+        line_t *line = &page->lines[i];
+        line->y = i * row_height;
+        line->height = (uint16_t)(line->tall ? 2 * row_height : row_height);
+        if (line->background && !line->filler && line->image < 0 &&
+            !plain_box(page, -64, line->y, 16000, line->height, line->background))
+            return false;
+    }
+    for (int i = 0; i < page->line_count; i++) {
+        line_t *line = &page->lines[i];
+        /* Alle Stücke einer Zeile stehen auf derselben Grundlinie: der der größten Schrift */
+        int largest = text_size;
+        for (uint32_t k = 0; k < line->count; k++) {
+            const span_t *span = &page->spans[line->first + k];
+            if (span->widget < 0 && !(span->style & (STYLE_MONO | STYLE_ASIDE)) && !span->tall &&
+                span->size > largest)
+                largest = span->size;
+        }
+        int baseline = line->tall ? 4 + (largest * 9 + 5) / 10 : largest >= 17 ? 16 : 15;
+        line->baseline = (uint16_t)baseline;
+        if (line->image >= 0 && line->image < page->image_count && line->image_row == 0) {
+            page_image_t *image = &page->images[line->image];
+            image->x = image->column * unit;
+            image->y = line->y;
+        }
+        for (uint32_t k = 0; k < line->count; k++) {
+            span_t *span = &page->spans[line->first + k];
+            if (!page->pixels) {
+                span->column = (uint16_t)(span->column * unit);
+                span->width = (uint16_t)(span->width * unit);
+                span->style |= STYLE_MONO;
+            }
+            bool aside = span->style & STYLE_ASIDE;
+            /* Stücke eines Kastens neben dem Text stehen in einfacher Zeilenhöhe, Stücke aus
+               einer Spalte so hoch wie ihre Zeile dort */
+            int own = aside ? (span->size >= 17 ? 16 : 15)
+                    : span->tall ? 4 + (span->tall * 9 + 5) / 10 : baseline;
+            span->shift = (int8_t)(own - baseline);
+            if (span->image >= 0 && span->image < page->image_count) {
+                if (span->image_row == 0) {
+                    page->images[span->image].x = span->column;
+                    page->images[span->image].y = line->y;
+                }
+                continue;
+            }
+            if (span->widget >= 0)
+                continue;
+            if (span->background) {
+                int height = (line->tall || span->tall) && !aside ? 2 * row_height : row_height;
+                if (!plain_box(page, span->column, line->y, span->width, height, span->background))
+                    return false;
+                span->background = 0;
+            }
+        }
+    }
+    for (int i = 0; i < page->image_count; i++) {
+        if (page->images[i].y >= 0 && !page_add_paint(page, PAINT_IMAGE, i))
+            return false;
+    }
+    for (int i = 0; i < page->line_count; i++) {
+        if (page->lines[i].count > 0 && !page_add_paint(page, PAINT_LINE, i))
+            return false;
+    }
+    for (int i = 0; i < page->widget_count; i++) {
+        widget_t *w = &page->widgets[i];
+        w->x = w->column * unit;
+        w->y = w->line * row_height;
+        w->w = w->width * cell_width;
+        w->h = w->line >= 0 && w->kind != W_HIDDEN ? row_height - 1 : 0;
+        if (w->h > 0 && !page_add_paint(page, PAINT_WIDGET, i))
+            return false;
+    }
+    for (int i = 0; i < page->anchor_count; i++)
+        page->anchors[i].y = page->anchors[i].line * row_height;
+    page->pixels = true;
+    return !page->failed;
+}
+
 bool widget_set_value(widget_t *w, const char *text, size_t len)
 {
     char *copy = duplicate(text, len);
@@ -251,6 +374,8 @@ void page_free(page_t *page)
     kfree(page->pool);
     kfree(page->spans);
     kfree(page->lines);
+    kfree(page->boxes);
+    kfree(page->paint);
     kfree(page->links);
     kfree(page->widgets);
     kfree(page->options);

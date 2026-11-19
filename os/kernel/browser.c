@@ -45,8 +45,9 @@
 #define ROW_H        20
 #define STATUS_H     26
 #define STATUS_Y     (HEIGHT - STATUS_H)
-#define ROWS         ((STATUS_Y - CONTENT_Y - 4) / ROW_H)
-#define CONTENT_H    (ROWS * ROW_H)
+#define CONTENT_H    (STATUS_Y - CONTENT_Y - 4)
+#define SCROLL_STEP  (3 * ROW_H)                     /* ein Schritt mit Pfeiltaste oder Mausrad */
+#define SCROLL_PAGE  (CONTENT_H - 2 * ROW_H)         /* ein Schritt mit Bild auf/ab */
 #define SCROLL_W     10
 #define SCROLL_X     (WIDTH - SCROLL_W - 4)
 #define LAYOUT_W     (SCROLL_X - CONTENT_X - 6)      /* Breite des Seiteninhalts in Pixeln */
@@ -129,7 +130,7 @@ typedef struct {
     size_t source_len;
     bool source_html;
     int page_columns;                   /* für diese Breite ist die Seite gesetzt */
-    int scroll;
+    int scroll;                         /* so viele Pixel der Seite liegen über dem Fenster */
     int focus;                          /* Formularfeld mit der Schreibmarke oder -1 */
     char *history[HISTORY_MAX];         /* besuchte Adressen; die oberste ist die aktuelle */
     int history_count;
@@ -801,8 +802,13 @@ static int page_text_width(void *ctx, const char *text, size_t len, uint8_t styl
 static page_t *layout_page(browser_t *b, const char *source, size_t len, const char *url,
                            bool html, const css_sheet_t *css, bool scripts)
 {
-    if (!html)
-        return html_plain_text(source, len, COLUMNS);
+    page_t *page;
+    if (!html) {
+        page = html_plain_text(source, len, COLUMNS);
+        if (page)
+            page_place_rows(page, ROW_H, FONT_W, TEXT_SIZE);
+        return page;
+    }
     html_pictures_t pictures = picture_source(b);
     html_text_t text = {
         .cell_width = FONT_W, .width = page_text_width,
@@ -812,7 +818,10 @@ static page_t *layout_page(browser_t *b, const char *source, size_t len, const c
         .text_color = C_TEXT, .link_color = C_LINK, .page_color = C_BACKGROUND,
         .css = css, .scripts = scripts,
     };
-    return html_layout_rich(source, len, url, LAYOUT_W, &pictures, &text);
+    page = html_layout_rich(source, len, url, LAYOUT_W, &pictures, &text);
+    if (page)
+        page_place_rows(page, ROW_H, FONT_W, TEXT_SIZE);
+    return page;
 }
 
 /* --- Skripte: Einstellung, Dateien, Rückfragen ---------------------------------------------- */
@@ -1647,6 +1656,18 @@ static int text_lines_before(const page_t *page, int line)
     return count;
 }
 
+/* Die erste Zeile (in der Reihenfolge der Seite), die an oder unter dieser Höhe beginnt; sonst -1 */
+static int line_from(const page_t *page, int y)
+{
+    for (int i = 0; i < page->line_count; i++) {
+        if (page->lines[i].y >= y)
+            return i;
+    }
+    return -1;
+}
+
+static int same_place(const page_t *old, const page_t *fresh, int scroll);
+
 /*
  * Setzt die gezeigte Seite neu: für eine andere Fensterbreite oder (force)
  * weil Bilder angekommen sind. Was der Benutzer in Formularfelder eingetragen
@@ -1680,29 +1701,33 @@ static void relayout(browser_t *b, bool force)
         b->overlay = OVERLAY_NONE;
     }
 
-    if (b->page_columns == LAYOUT_W && b->scroll < old->line_count) {
+    int top = old->rows ? b->scroll / ROW_H : 0;
+    if (!old->rows || !fresh->rows) {
+        b->scroll = same_place(old, fresh, b->scroll);
+    } else if (b->page_columns == LAYOUT_W && top < old->line_count) {
         /*
          * Gleiche Breite: Der Text ist derselbe geblieben, nur Bilder haben
          * ihre Größe geändert. Die oberste sichtbare Zeile wiederfinden.
          */
-        const line_t *top = &old->lines[b->scroll];
-        if (top->image >= 0 && top->image < fresh->image_count) {
-            const page_image_t *image = &fresh->images[top->image];
-            int row = top->image_row < image->rows ? top->image_row : image->rows - 1;
-            b->scroll = image->line + (row > 0 ? row : 0);
+        const line_t *first = &old->lines[top];
+        int line;
+        if (first->image >= 0 && first->image < fresh->image_count) {
+            const page_image_t *image = &fresh->images[first->image];
+            int row = first->image_row < image->rows ? first->image_row : image->rows - 1;
+            line = image->line + (row > 0 ? row : 0);
         } else {
-            int wanted = text_lines_before(old, b->scroll), seen = 0, line = 0;
-            for (; line < fresh->line_count; line++) {
+            int wanted = text_lines_before(old, top), seen = 0;
+            for (line = 0; line < fresh->line_count; line++) {
                 if (fresh->lines[line].image >= 0)
                     continue;
                 if (seen == wanted)
                     break;
                 seen++;
             }
-            b->scroll = line;
         }
+        b->scroll = line * ROW_H + b->scroll % ROW_H;
     } else {
-        b->scroll = old->line_count > 0 ? b->scroll * fresh->line_count / old->line_count : 0;
+        b->scroll = old->height > 0 ? (int)((int64_t)b->scroll * fresh->height / old->height) : 0;
     }
     b->page = fresh;
     b->page_columns = LAYOUT_W;
@@ -1730,15 +1755,27 @@ static int form_by_node(const page_t *page, uint32_t node)
     return -1;
 }
 
-/* Die erste Zeile, in der etwas vom Element steht, oder -1. */
-static int first_line_of(const page_t *page, uint32_t node)
+/* Wo auf der Seite das Element beginnt (seine erste Zeile, sein Kasten, Bild oder Feld), oder -1 */
+static int node_top(const page_t *page, uint32_t node)
 {
     for (int line = 0; line < page->line_count; line++) {
         const line_t *l = &page->lines[line];
         for (uint32_t i = 0; i < l->count; i++) {
             if (page->spans[l->first + i].node == node)
-                return line;
+                return l->y;
         }
+    }
+    for (int i = 0; i < page->box_count; i++) {
+        if (page->boxes[i].node == node)
+            return page->boxes[i].y;
+    }
+    for (int i = 0; i < page->image_count; i++) {
+        if (page->images[i].node == node && page->images[i].y >= 0)
+            return page->images[i].y;
+    }
+    for (int i = 0; i < page->widget_count; i++) {
+        if (page->widgets[i].node == node && page->widgets[i].h > 0)
+            return page->widgets[i].y;
     }
     return -1;
 }
@@ -1748,18 +1785,22 @@ static int same_place(const page_t *old, const page_t *fresh, int scroll)
 {
     if (scroll <= 0)
         return 0;
-    for (int line = scroll; line < old->line_count && line < scroll + 30; line++) {
+    int tries = 0;
+    for (int line = 0; line < old->line_count && tries < 30; line++) {
         const line_t *l = &old->lines[line];
+        if (l->y < scroll)
+            continue;
         uint32_t node = 0;
         for (uint32_t i = 0; i < l->count && !node; i++)
             node = old->spans[l->first + i].node;
         if (!node)
             continue;
-        int before = first_line_of(old, node), after = first_line_of(fresh, node);
-        if (after >= 0)
+        tries++;
+        int before = node_top(old, node), after = node_top(fresh, node);
+        if (after >= 0 && before >= 0)
             return after + (scroll - before);
     }
-    return scroll;
+    return old->height > 0 && !fresh->rows ? (int)((int64_t)scroll * fresh->height / old->height) : scroll;
 }
 
 /*
@@ -1931,8 +1972,8 @@ static void take_incoming(browser_t *b)
     set_address(b, strcmp(b->url, START_PAGE) == 0 ? "" : b->url);
 
     /* Steht die Hauptüberschrift weit unten (lange Menüs davor), dort beginnen. */
-    int heading = b->page->heading_line;
-    b->scroll = heading > ROWS / 2 ? heading - 1 : 0;
+    int heading = b->page->heading_y;
+    b->scroll = heading > CONTENT_H / 2 ? heading - ROW_H : 0;
     if (b->scroll > 0 && !b->status[0])
         set_status(b, false, "Zum Seitenanfang mit Pos1 - dort stehen Menüs und Links");
     relayout(b, false);                 /* falls das Fenster inzwischen breiter oder schmaler ist */
@@ -2064,8 +2105,8 @@ static bool span_searched(const browser_t *b, const span_t *span)
 static void find_step(browser_t *b, int step)
 {
     const page_t *page = b->page;
-    int from[3] = { step == 0 ? b->scroll : b->find_line, step == 0 ? -1 : b->find_span,
-                    step == 0 ? -1 : b->find_offset };
+    int from[3] = { step == 0 ? (page ? line_from(page, b->scroll) : 0) : b->find_line,
+                    step == 0 ? -1 : b->find_span, step == 0 ? -1 : b->find_offset };
     int first[3] = { -1, 0, 0 }, prev[3] = { -1, 0, 0 }, last[3] = { -1, 0, 0 }, next[3] = { -1, 0, 0 };
     int hits = 0, prev_number = 0, next_number = 0;
     b->find_hits = 0;
@@ -2115,8 +2156,9 @@ static void find_step(browser_t *b, int step)
     b->find_line = chosen[0];
     b->find_span = chosen[1];
     b->find_offset = chosen[2];
-    if (b->find_line < b->scroll || b->find_line >= b->scroll + ROWS - 1)
-        b->scroll = b->find_line > 3 ? b->find_line - 3 : 0;
+    int found_y = page->lines[b->find_line].y;
+    if (found_y < b->scroll || found_y >= b->scroll + CONTENT_H - 2 * ROW_H)
+        b->scroll = found_y - 3 * ROW_H;
     clamp_scroll(b);
 }
 
@@ -2370,18 +2412,19 @@ static void draw_widget(const browser_t *b, surface_t *s, int index, int x, int 
 {
     const page_t *page = b->page;
     const widget_t *w = &page->widgets[index];
-    int width = w->width * FONT_W;
+    int width = w->w, high = w->h;
+    int cells = width / FONT_W;         /* so viele Zeichen der Rasterschrift passen hinein */
     bool focused = index == b->focus;
     char stars[64];
-    int box_y = y;                      /* Rahmen: ganze Zeile */
-    y += (ROW_H - 1 - FONT_H) / 2;      /* Text: mittig darin */
+    int box_y = y;                      /* Rahmen: der ganze Platz des Felds */
+    y += (high - FONT_H) / 2;           /* Text: mittig darin */
 
     switch (w->kind) {
     case W_TEXT: case W_PASSWORD: case W_TEXTAREA: case W_SELECT: {
-        gfx_fill(s, x, box_y, width, ROW_H - 1, C_FIELD);
-        gfx_frame(s, x, box_y, width, ROW_H - 1, focused ? C_FOCUS : C_BORDER);
+        gfx_fill(s, x, box_y, width, high, C_FIELD);
+        gfx_frame(s, x, box_y, width, high, focused ? C_FOCUS : C_BORDER);
         const char *text = w->value ? w->value : "";
-        int columns = w->width - 2;
+        int columns = cells - 2;
         if (w->kind == W_PASSWORD) {
             size_t n = 0;
             for (const char *p = text; *p && n + 1 < sizeof(stars); p++) {
@@ -2422,8 +2465,8 @@ static void draw_widget(const browser_t *b, surface_t *s, int index, int x, int 
             gfx_fill(s, x + 7, y + 5, 7, 7, w->kind == W_RADIO ? C_FOCUS : C_TEXT);
         break;
     case W_SUBMIT: case W_BUTTON:
-        gfx_fill(s, x, box_y, width, ROW_H - 1, focused ? C_FOCUS : C_BUTTON);
-        draw_clipped(s, x + 2 * FONT_W, y, w->label ? w->label : "", w->width - 4,
+        gfx_fill(s, x, box_y, width, high, focused ? C_FOCUS : C_BUTTON);
+        draw_clipped(s, x + 2 * FONT_W, y, w->label ? w->label : "", cells - 4,
                      C_BUTTON_TXT, false);
         break;
     case W_HIDDEN:
@@ -2432,11 +2475,11 @@ static void draw_widget(const browser_t *b, surface_t *s, int index, int x, int 
 }
 
 /*
- * Zeichnet die Zeile row eines Bildblocks an die Stelle y: einen Streifen des
- * Bildes - oder, solange es fehlt, den freigehaltenen Platz mit Ersatztext.
+ * Zeichnet ein Bild der Seite an die Stelle (x, y) - oder, solange es fehlt,
+ * den freigehaltenen Platz mit Ersatztext. Gezeichnet wird nur, was im
+ * Ausschnitt der Seite liegt.
  */
-static void draw_picture_row(browser_t *b, surface_t *s, const page_image_t *image,
-                             int row, int x, int y)
+static void draw_picture(browser_t *b, surface_t *s, const page_image_t *image, int x, int y)
 {
     int right = SCROLL_X - 2;
 
@@ -2457,163 +2500,208 @@ static void draw_picture_row(browser_t *b, surface_t *s, const page_image_t *ima
             bitmap = pic->shown;
         }
         if (bitmap) {
-            int first = row * ROW_H;
-            for (int line = 0; line < ROW_H && first + line < bitmap->height; line++) {
+            int skip = x < 0 ? -x : 0;
+            int count = bitmap->width - skip;
+            if (x + skip + count > right)
+                count = right - x - skip;
+            for (int line = 0; line < bitmap->height && count > 0; line++) {
                 int ty = y + line;
                 if (ty < CONTENT_Y || ty >= CONTENT_Y + CONTENT_H || ty >= s->height)
                     continue;
-                int count = bitmap->width;
-                if (x + count > right)
-                    count = right - x;
-                if (count > 0)
-                    memcpy(s->pixels + (size_t)ty * s->stride + x,
-                           bitmap->pixels + (size_t)(first + line) * bitmap->width,
-                           (size_t)count * sizeof(uint32_t));
+                memcpy(s->pixels + (size_t)ty * s->stride + x + skip,
+                       bitmap->pixels + (size_t)line * bitmap->width + skip,
+                       (size_t)count * sizeof(uint32_t));
             }
             return;
         }
     }
 
     /* Platzhalter */
-    if (image->width > 0) {
-        int height = image->height - row * ROW_H;
-        gfx_fill(s, x, y, image->width, height > ROW_H ? ROW_H : height, C_PLACEHOLDER);
+    if (image->width > 0)
+        gfx_fill(s, x, y, image->width, image->height, C_PLACEHOLDER);
+    char text[160];
+    if (image->alt)
+        ksnprintf(text, sizeof(text), "[Bild: %s]", image->alt);
+    else
+        strlcpy(text, "[Bild]", sizeof(text));
+    int room = image->width > 0 && !image->rows ? image->width : right - x;
+    draw_clipped(s, x + (image->width > 0 ? 4 : 0), y + 2, text, (room - 8) / FONT_W,
+                 image->link >= 0 ? C_LINK : C_MUTED, false);
+}
+
+/* Ein Kasten: Hintergrund und Rahmen */
+static void draw_box(surface_t *s, const box_t *box, int x, int y)
+{
+    int w = box->w, h = box->h;
+    if (box->background) {
+        color_t color = box->background & 0xFFFFFF;
+        int r = box->radius;
+        if (r > w / 2)
+            r = w / 2;
+        if (r > h / 2)
+            r = h / 2;
+        if (r < 2) {
+            gfx_fill(s, x, y, w, h, color);
+        } else {
+            /* runde Ecken: oben und unten Zeile für Zeile schmaler */
+            gfx_fill(s, x, y + r, w, h - 2 * r, color);
+            for (int i = 0; i < r; i++) {
+                int dy = r - i, inset = r;
+                while (inset > 0 && (r - inset + 1) * (r - inset + 1) + dy * dy <= r * r)
+                    inset--;
+                gfx_fill(s, x + inset, y + i, w - 2 * inset, 1, color);
+                gfx_fill(s, x + inset, y + h - 1 - i, w - 2 * inset, 1, color);
+            }
+        }
     }
-    if (row == 0) {
-        char text[160];
-        if (image->alt)
-            ksnprintf(text, sizeof(text), "[Bild: %s]", image->alt);
-        else
-            strlcpy(text, "[Bild]", sizeof(text));
-        draw_clipped(s, x + (image->width > 0 ? 4 : 0), y, text, (right - x - 8) / FONT_W,
-                     image->link >= 0 ? C_LINK : C_MUTED, false);
+    static const int step[3] = { 0, 6, 2 };
+    int gap = step[box->dashed < 3 ? box->dashed : 0];
+    for (int side = 0; side < 4; side++) {
+        int width = box->border[side];
+        if (!width)
+            continue;
+        color_t color = box->border_color[side] & 0xFFFFFF;
+        bool flat = side == 0 || side == 2;                     /* oben, unten: waagerecht */
+        int bx = side == 1 ? x + w - width : x, by = side == 2 ? y + h - width : y;
+        int bw = flat ? w : width, bh = flat ? width : h;
+        int r = box->radius > 1 && box->radius <= w / 2 && box->radius <= h / 2 ? box->radius : 0;
+        if (flat) {
+            bx += r;
+            bw -= 2 * r;
+        } else {
+            by += r;
+            bh -= 2 * r;
+        }
+        if (!gap) {
+            gfx_fill(s, bx, by, bw, bh, color);
+        } else if (flat) {
+            for (int at = 0; at < bw; at += 2 * gap)
+                gfx_fill(s, bx + at, by, at + gap > bw ? bw - at : gap, bh, color);
+        } else {
+            for (int at = 0; at < bh; at += 2 * gap)
+                gfx_fill(s, bx, by + at, bw, at + gap > bh ? bh - at : gap, color);
+        }
+    }
+    if (box->radius > 1 && (box->border[0] || box->border[1] || box->border[2] || box->border[3])) {
+        /* der Rahmen um runde Ecken: vier Viertelkreise */
+        int r = box->radius > w / 2 ? w / 2 : box->radius;
+        if (r > h / 2)
+            r = h / 2;
+        int width = box->border[0] ? box->border[0] : box->border[3] ? box->border[3] : 1;
+        color_t color = box->border_color[box->border[0] ? 0 : 3] & 0xFFFFFF;
+        for (int dy = 0; dy < r; dy++) {
+            for (int dx = 0; dx < r; dx++) {
+                int far = (r - dx) * (r - dx) + (r - dy) * (r - dy);
+                if (far > r * r || far <= (r - width) * (r - width))
+                    continue;
+                gfx_fill(s, x + dx, y + dy, 1, 1, color);
+                gfx_fill(s, x + w - 1 - dx, y + dy, 1, 1, color);
+                gfx_fill(s, x + dx, y + h - 1 - dy, 1, 1, color);
+                gfx_fill(s, x + w - 1 - dx, y + h - 1 - dy, 1, 1, color);
+            }
+        }
     }
 }
 
+static void draw_line(browser_t *b, surface_t *s, int index, int y)
+{
+    const page_t *page = b->page;
+    const line_t *line = &page->lines[index];
+    for (uint32_t i = 0; i < line->count; i++) {
+        const span_t *span = &page->spans[line->first + i];
+        if (span->widget >= 0 || span->image >= 0)
+            continue;
+        int x = CONTENT_X + span->column;
+        int baseline = y + line->baseline + span->shift;
+        bool grid = text_is_grid(span->style);
+        int size = span->size ? span->size : TEXT_SIZE;
+        const char *text = page->pool + span->text;
+        if (span->background || span_searched(b, span)) {
+            /* hinterlegter Text und Fundstellen: so hoch wie die Schrift */
+            int top = baseline - (grid ? 13 : size) + 1, height = (grid ? 13 : size) + 4;
+            if (span->background)
+                gfx_fill(s, x, top, span->width, height, span->background & 0xFFFFFF);
+            /* Suchen auf der Seite: jede Fundstelle gelb, die aktuelle kräftiger */
+            for (int at = span_searched(b, span) ? text_find(text, span->bytes, 0, b->find_text, b->find_len) : -1;
+                 at >= 0;
+                 at = text_find(text, span->bytes, (size_t)at + b->find_len, b->find_text, b->find_len)) {
+                bool current = index == b->find_line && (int)i == b->find_span && at == b->find_offset;
+                int left = page_text_width(NULL, text, (size_t)at, span->style, span->size);
+                int wide = page_text_width(NULL, text + at, b->find_len, span->style, span->size);
+                gfx_fill(s, x + left - 1, top, wide + 2, height,
+                         current ? RGB(255, 170, 60) : RGB(255, 240, 130));
+            }
+        }
+        color_t color = span->color ? (span->color & 0xFFFFFF)
+                      : span->style & STYLE_LINK ? C_LINK
+                      : span->style & STYLE_HEADING ? C_HEADING
+                      : span->style & STYLE_MUTED ? C_MUTED : C_TEXT;
+        if (grid) {
+            /* Rasterschrift: Zeichen für Zeichen in festen Schritten */
+            const char *end = text + span->bytes;
+            int cx = x;
+            while (text < end) {
+                uint32_t cp = utf8_next(&text);
+                gfx_glyph(s, cx, baseline - 12, cp, color, span->style & STYLE_BOLD);
+                cx += FONT_W;
+            }
+        } else {
+            font_draw(s, x, baseline, text, span->bytes, size, text_flags(span->style), color);
+        }
+        if (span->style & STYLE_UNDERLINE)
+            gfx_fill(s, x, baseline + 2, span->width, 1, color);
+    }
+}
+
+/*
+ * Zeichnet den sichtbaren Ausschnitt der Seite: ihre Teile in der Reihenfolge,
+ * die der Seitenaufbau festgelegt hat (Kästen unter dem, was in ihnen steht).
+ */
 static void draw_page(browser_t *b, surface_t *s)
 {
     const page_t *page = b->page;
     gfx_set_clip(s, rect_make(0, CONTENT_Y, SCROLL_X - 2, CONTENT_H));
-    /*
-     * Zeilen mit großer Schrift sind zwei Zeilen hoch - in Spalten auch
-     * einzelne Stücke. Damit deren untere Hälfte nicht fehlt, wird die Zeile
-     * über dem Ausschnitt immer mitgezeichnet (ihr oberer Teil fällt ihm zum
-     * Opfer).
-     */
-    int first_row = b->scroll > 0 && b->scroll < page->line_count ? -1 : 0;
-    int unit = page->pixels ? 1 : FONT_W;
-
-    /*
-     * Erst alle Hintergründe, dann der Inhalt: Hohe Stücke reichen in die
-     * nächste Zeile, und deren Hintergrund darf sie nicht übermalen.
-     */
-    for (int row = first_row; row < ROWS && b->scroll + row < page->line_count; row++) {
-        const line_t *line = &page->lines[b->scroll + row];
-        int y = CONTENT_Y + row * ROW_H;
-        if (line->background && !line->filler && line->image < 0)   /* hinterlegter Abschnitt */
-            gfx_fill(s, 0, y, SCROLL_X - 2, line->tall ? 2 * ROW_H : ROW_H,
-                     line->background & 0xFFFFFF);
-    }
-    for (int row = first_row; row < ROWS && b->scroll + row < page->line_count; row++) {
-        const line_t *line = &page->lines[b->scroll + row];
-        int y = CONTENT_Y + row * ROW_H;
-        for (uint32_t i = 0; i < line->count; i++) {
-            const span_t *span = &page->spans[line->first + i];
-            int x = CONTENT_X + span->column * unit;
-            bool aside = span->style & STYLE_ASIDE;
-            int height = (line->tall || span->tall) && !aside ? 2 * ROW_H : ROW_H;
-            if (span->widget >= 0 || span->image >= 0)
-                continue;
-            if (span->background)
-                gfx_fill(s, x, y, span->width * unit, height, span->background & 0xFFFFFF);
-            /* Suchen auf der Seite: jede Fundstelle gelb, die aktuelle kräftiger */
-            if (span_searched(b, span)) {
-                const char *text = page->pool + span->text;
-                for (int at = text_find(text, span->bytes, 0, b->find_text, b->find_len); at >= 0;
-                     at = text_find(text, span->bytes, (size_t)at + b->find_len, b->find_text,
-                                    b->find_len)) {
-                    bool current = b->scroll + row == b->find_line && (int)i == b->find_span &&
-                                   at == b->find_offset;
-                    int left = page_text_width(NULL, text, (size_t)at, span->style, span->size);
-                    int wide = page_text_width(NULL, text + at, b->find_len, span->style, span->size);
-                    gfx_fill(s, x + left - 1, y, wide + 2, height,
-                             current ? RGB(255, 170, 60) : RGB(255, 240, 130));
-                }
-            }
+    int top = b->scroll, bottom = b->scroll + CONTENT_H;
+    for (int i = 0; i < page->paint_count; i++) {
+        const paint_t *item = &page->paint[i];
+        switch (item->kind) {
+        case PAINT_BOX: {
+            const box_t *box = &page->boxes[item->index];
+            if (box->y < bottom && box->y + box->h > top)
+                draw_box(s, box, CONTENT_X + box->x, CONTENT_Y + box->y - top);
+            break;
         }
-    }
-
-    for (int row = first_row; row < ROWS && b->scroll + row < page->line_count; row++) {
-        const line_t *line = &page->lines[b->scroll + row];
-        int y = CONTENT_Y + row * ROW_H;
-        /*
-         * Die untere Hälfte einer hohen Zeile und Zeilen eines Bildes tragen
-         * selbst keinen Text - wohl aber Stücke von Kästen neben dem Text.
-         */
-        if (line->image >= 0 && line->image < page->image_count)
-            draw_picture_row(b, s, &page->images[line->image], line->image_row,
-                             CONTENT_X + page->images[line->image].column * unit, y);
-
-        /* Alle Stücke einer Zeile stehen auf derselben Grundlinie: der der größten Schrift */
-        int largest = TEXT_SIZE;
-        for (uint32_t i = 0; i < line->count; i++) {
-            const span_t *span = &page->spans[line->first + i];
-            if (span->widget < 0 && !(span->style & (STYLE_MONO | STYLE_ASIDE)) && !span->tall &&
-                span->size > largest)
-                largest = span->size;
+        case PAINT_LINE: {
+            const line_t *line = &page->lines[item->index];
+            /* etwas Luft: Unterlängen und hohe Stücke reichen über die Zeile hinaus */
+            if (line->y - 40 < bottom && line->y + line->height + 40 > top)
+                draw_line(b, s, item->index, CONTENT_Y + line->y - top);
+            break;
         }
-        int line_baseline = line->tall ? y + 4 + (largest * 9 + 5) / 10
-                                       : y + (largest >= 17 ? 16 : 15);
-
-        for (uint32_t i = 0; i < line->count; i++) {
-            const span_t *span = &page->spans[line->first + i];
-            int x = CONTENT_X + span->column * unit;
-            if (span->widget >= 0) {
-                draw_widget(b, s, span->widget, x, y);
-                continue;
-            }
-            if (span->image >= 0 && span->image < page->image_count) {
-                /* Bild in einer Tabellenzelle oder einem Kasten neben dem Text */
-                draw_picture_row(b, s, &page->images[span->image], span->image_row, x, y);
-                continue;
-            }
-            /* Stücke eines Kastens neben dem Text stehen immer in einfacher Zeilenhöhe */
-            bool aside = span->style & STYLE_ASIDE;
-            int baseline = aside ? y + (span->size >= 17 ? 16 : 15) : line_baseline;
-            /* ... und Stücke aus einer Spalte so hoch wie ihre Zeile dort */
-            if (span->tall && !aside)
-                baseline = y + 4 + (span->tall * 9 + 5) / 10;
-            color_t color = span->color ? (span->color & 0xFFFFFF)
-                          : span->style & STYLE_LINK ? C_LINK
-                          : span->style & STYLE_HEADING ? C_HEADING
-                          : span->style & STYLE_MUTED ? C_MUTED : C_TEXT;
-            const char *text = page->pool + span->text;
-            if (!page->pixels || text_is_grid(span->style)) {
-                /* Rasterschrift: Zeichen für Zeichen in festen Schritten */
-                const char *end = text + span->bytes;
-                int cx = x;
-                while (text < end) {
-                    uint32_t cp = utf8_next(&text);
-                    gfx_glyph(s, cx, baseline - 12, cp, color, span->style & STYLE_BOLD);
-                    cx += FONT_W;
-                }
-            } else {
-                font_draw(s, x, baseline, text, span->bytes, span->size ? span->size : TEXT_SIZE,
-                          text_flags(span->style), color);
-            }
-            if (span->style & STYLE_UNDERLINE)
-                gfx_fill(s, x, baseline + 2, span->width * unit, 1, color);
+        case PAINT_IMAGE: {
+            const page_image_t *image = &page->images[item->index];
+            int height = image->height > 0 ? image->height : ROW_H;
+            if (image->y < bottom && image->y + height > top)
+                draw_picture(b, s, image, CONTENT_X + image->x, CONTENT_Y + image->y - top);
+            break;
+        }
+        case PAINT_WIDGET: {
+            const widget_t *w = &page->widgets[item->index];
+            if (w->h > 0 && w->y < bottom && w->y + w->h > top)
+                draw_widget(b, s, item->index, CONTENT_X + w->x, CONTENT_Y + w->y - top);
+            break;
+        }
         }
     }
     gfx_reset_clip(s);
 
     /* Rollbalken */
     gfx_fill(s, SCROLL_X, CONTENT_Y, SCROLL_W, CONTENT_H, C_TOOLBAR);
-    if (page->line_count > ROWS) {
-        int h = CONTENT_H * ROWS / page->line_count;
+    if (page->height > CONTENT_H) {
+        int h = (int)((int64_t)CONTENT_H * CONTENT_H / page->height);
         if (h < 16)
             h = 16;
-        int y = CONTENT_Y + (CONTENT_H - h) * b->scroll / (page->line_count - ROWS);
+        int y = CONTENT_Y + (int)((int64_t)(CONTENT_H - h) * b->scroll / (page->height - CONTENT_H));
         gfx_fill(s, SCROLL_X, y, SCROLL_W, h, C_BORDER);
     }
 }
@@ -2861,19 +2949,20 @@ static void dialog_loop(browser_t *b)
 
 static void clamp_scroll(browser_t *b)
 {
-    int max = b->page && b->page->line_count > ROWS ? b->page->line_count - ROWS : 0;
+    int max = b->page && b->page->height > CONTENT_H ? b->page->height - CONTENT_H : 0;
     if (b->scroll > max)
         b->scroll = max;
     if (b->scroll < 0)
         b->scroll = 0;
 }
 
-static void show_line(browser_t *b, int line)
+/* Rollt so, dass der Streifen ab y mit der Höhe h zu sehen ist. */
+static void show_place(browser_t *b, int y, int h)
 {
-    if (line < b->scroll)
-        b->scroll = line > 2 ? line - 2 : 0;
-    else if (line >= b->scroll + ROWS)
-        b->scroll = line - ROWS + 3;
+    if (y < b->scroll)
+        b->scroll = y - 2 * ROW_H;
+    else if (y + h > b->scroll + CONTENT_H)
+        b->scroll = y + h - CONTENT_H + 2 * ROW_H;
     clamp_scroll(b);
 }
 
@@ -3061,7 +3150,7 @@ static void follow_link(browser_t *b, const char *target)
     if (mark) {
         for (int i = 0; b->page && i < b->page->anchor_count; i++) {
             if (strcmp(b->page->anchors[i].id, mark) == 0) {
-                b->scroll = b->page->anchors[i].line;
+                b->scroll = b->page->anchors[i].y;
                 clamp_scroll(b);
                 return;
             }
@@ -3127,10 +3216,10 @@ static void focus_next(browser_t *b, int step)
             index = 0;
         if (index < 0)
             index = n - 1;
-        if (page->widgets[index].line >= 0) {
+        if (page->widgets[index].h > 0) {
             set_focus(b, index);
             b->address_focus = false;
-            show_line(b, page->widgets[index].line);
+            show_place(b, page->widgets[index].y, page->widgets[index].h);
             return;
         }
     }
@@ -3192,8 +3281,8 @@ static void key_pressed(browser_t *b, int key, int mods)
         } else if (key == '\n') {
             find_step(b, mods & MOD_SHIFT ? -1 : 1);
         } else if (key == KEY_UP || key == KEY_DOWN || key == KEY_PAGE_UP || key == KEY_PAGE_DOWN) {
-            b->scroll += key == KEY_UP ? -3 : key == KEY_DOWN ? 3
-                       : key == KEY_PAGE_UP ? -(ROWS - 2) : ROWS - 2;
+            b->scroll += key == KEY_UP ? -SCROLL_STEP : key == KEY_DOWN ? SCROLL_STEP
+                       : key == KEY_PAGE_UP ? -SCROLL_PAGE : SCROLL_PAGE;
             clamp_scroll(b);
         } else if (!(mods & MOD_CTRL) && type_into(b->find_text, &b->find_len, sizeof(b->find_text), key)) {
             /* gesucht wird ohne Rücksicht auf Groß- und Kleinschreibung: klein merken */
@@ -3322,13 +3411,13 @@ static void key_pressed(browser_t *b, int key, int mods)
     }
 
     switch (key) {
-    case KEY_UP:        b->scroll -= 3; break;
-    case KEY_DOWN:      b->scroll += 3; break;
-    case KEY_PAGE_UP:   b->scroll -= ROWS - 2; break;
+    case KEY_UP:        b->scroll -= SCROLL_STEP; break;
+    case KEY_DOWN:      b->scroll += SCROLL_STEP; break;
+    case KEY_PAGE_UP:   b->scroll -= SCROLL_PAGE; break;
     case KEY_PAGE_DOWN:
-    case ' ':           b->scroll += ROWS - 2; break;
+    case ' ':           b->scroll += SCROLL_PAGE; break;
     case KEY_HOME:      b->scroll = 0; break;
-    case KEY_END:       b->scroll = page ? page->line_count : 0; break;
+    case KEY_END:       b->scroll = page ? page->height : 0; break;
     case '\b':          go_back(b); return;
     default:            return;
     }
@@ -3337,9 +3426,9 @@ static void key_pressed(browser_t *b, int key, int mods)
 
 static void scroll_to_mouse(browser_t *b, int y)
 {
-    if (!b->page || b->page->line_count <= ROWS)
+    if (!b->page || b->page->height <= CONTENT_H)
         return;
-    b->scroll = (y - CONTENT_Y) * b->page->line_count / CONTENT_H - ROWS / 2;
+    b->scroll = (int)((int64_t)(y - CONTENT_Y) * b->page->height / CONTENT_H) - CONTENT_H / 2;
     clamp_scroll(b);
 }
 
@@ -3398,40 +3487,57 @@ static void mouse_pressed(browser_t *b, int x, int y)
     } else if (page && x >= SCROLL_X - 2 && y >= CONTENT_Y && y < CONTENT_Y + CONTENT_H) {
         scroll_to_mouse(b, y);
     } else if (page && y >= CONTENT_Y && y < CONTENT_Y + CONTENT_H && !b->busy) {
-        int line = b->scroll + (y - CONTENT_Y) / ROW_H;
-        int unit = page->pixels ? 1 : FONT_W;
-        int column = (x - CONTENT_X) / unit;
+        /*
+         * Was liegt an dieser Stelle zuoberst? Die Teile der Seite von hinten
+         * nach vorn durchgehen - das zuletzt Gezeichnete liegt oben.
+         */
+        int px = x - CONTENT_X, py = y - CONTENT_Y + b->scroll;
         b->address_focus = false;
-        if (line >= page->line_count || x < CONTENT_X) {
-            set_focus(b, -1);
-            return;
-        }
-        const line_t *l = &page->lines[line];
-        if (l->image >= 0 && l->image < page->image_count) {
-            /* Bild in einem Link: ein Klick darauf folgt dem Link */
-            const page_image_t *image = &page->images[l->image];
-            int left = CONTENT_X + image->column * unit;
-            int width = image->width > 120 ? image->width : 120;
-            set_focus(b, -1);
-            if (x >= left && x < left + width && page_click(b, image->node) && image->link >= 0)
-                follow_link(b, page->links[image->link]);
-            return;
-        }
-        for (uint32_t i = 0; i < l->count; i++) {
-            const span_t *span = &page->spans[l->first + i];
-            if (column < span->column || column >= span->column + span->width)
-                continue;
-            if (span->bytes == 0 && span->widget < 0 && span->image < 0)
-                continue;               /* nur der farbige Kasten einer Tabellenzelle */
-            if (span->widget >= 0) {
-                activate_widget(b, span->widget);
+        for (int i = page->paint_count - 1; i >= 0; i--) {
+            const paint_t *item = &page->paint[i];
+            if (item->kind == PAINT_WIDGET) {
+                const widget_t *w = &page->widgets[item->index];
+                if (w->h > 0 && px >= w->x && px < w->x + w->w && py >= w->y && py < w->y + w->h) {
+                    activate_widget(b, item->index);
+                    return;
+                }
+            } else if (item->kind == PAINT_IMAGE) {
+                /* Bild in einem Link: ein Klick darauf folgt dem Link */
+                const page_image_t *image = &page->images[item->index];
+                int width = image->width > 120 || !page->rows ? image->width : 120;
+                int height = image->height > 0 ? image->height : ROW_H;
+                if (px >= image->x && px < image->x + width && py >= image->y && py < image->y + height) {
+                    set_focus(b, -1);
+                    if (page_click(b, image->node) && image->link >= 0)
+                        follow_link(b, page->links[image->link]);
+                    return;
+                }
+            } else if (item->kind == PAINT_LINE) {
+                const line_t *l = &page->lines[item->index];
+                if (py < l->y || py >= l->y + l->height)
+                    continue;
+                for (uint32_t k = 0; k < l->count; k++) {
+                    const span_t *span = &page->spans[l->first + k];
+                    if (px < span->column || px >= span->column + span->width)
+                        continue;
+                    if (span->bytes == 0 || span->widget >= 0 || span->image >= 0)
+                        continue;
+                    /* Die Skripte der Seite erfahren von jedem Klick - und können ihn für sich behalten. */
+                    set_focus(b, -1);
+                    if (page_click(b, span->node) && span->link >= 0)
+                        follow_link(b, page->links[span->link]);
+                    return;
+                }
+            } else if (item->kind == PAINT_BOX) {
+                const box_t *box = &page->boxes[item->index];
+                if ((!box->node && box->link < 0) || px < box->x || px >= box->x + box->w ||
+                    py < box->y || py >= box->y + box->h)
+                    continue;
+                set_focus(b, -1);
+                if (page_click(b, box->node) && box->link >= 0)
+                    follow_link(b, page->links[box->link]);
                 return;
             }
-            /* Die Skripte der Seite erfahren von jedem Klick - und können ihn für sich behalten. */
-            set_focus(b, -1);
-            if (page_click(b, span->node) && span->link >= 0)
-                follow_link(b, page->links[span->link]);
-            return;
         }
         set_focus(b, -1);
     }
@@ -3567,7 +3673,7 @@ void browser_app(void *arg)
             key_pressed(b, ev.key, ev.mods);
             script_settle(b);
         } else if (ev.type == EV_SCROLL && b->overlay == OVERLAY_NONE) {
-            b->scroll -= 3 * ev.y;      /* Mausrad: drei Zeilen je Raste */
+            b->scroll -= SCROLL_STEP * ev.y;        /* Mausrad: drei Zeilen je Raste */
             clamp_scroll(b);
         } else if (ev.type == EV_MOUSE_DOWN) {
             dragging = ev.x >= SCROLL_X - 2 && b->overlay == OVERLAY_NONE;
