@@ -1045,6 +1045,46 @@ int main(int argc, char **argv)
     check(s != NULL && reported == 1, "Fähigkeitsproben der großen Seiten");
     script_destroy(s);
 
+    /* 4b2. Auswahlen nach Geschwistern, Stellung und Zustand - in querySelector und in der Gestaltung */
+    {
+        css_sheet_t *css = NULL;
+        reported = 0;
+        s = load_styled("<html><head><style>li:nth-child(2n) { display: none } #k:checked + span { display: none }"
+                        " li:last-child { visibility: hidden }</style></head><body>" PRE
+                        "<ul id=l><li>a</li><li class=x>b</li><li>c</li><li>d</li><li>e</li></ul>"
+                        "<input type=checkbox id=k><span id=s>neben dem Feld</span><p id=leer></p><script>\n"
+                        "function q(sel) { return [].map.call(document.querySelectorAll(sel), function (e) { return e.textContent; }).join(''); }\n"
+                        "eq(q('li:first-child'), 'a', ':first-child');\n"
+                        "eq(q('li:last-child'), 'e', ':last-child');\n"
+                        "eq(q('li:nth-child(odd)'), 'ace', ':nth-child(odd)');\n"
+                        "eq(q('li:nth-child(-n+2)'), 'ab', ':nth-child(-n+2)');\n"
+                        "eq(q('li:nth-last-child(2)'), 'd', ':nth-last-child');\n"
+                        "eq(q('li.x + li'), 'c', 'direkt danach');\n"
+                        "eq(q('li.x ~ li'), 'cde', 'irgendwo danach');\n"
+                        "eq(q('li:not(.x):not(:first-child)'), 'cde', ':not');\n"
+                        "eq(q('ul > :is(.x, :last-child)'), 'be', ':is');\n"
+                        "eq(q('p:empty').length + '|' + document.querySelectorAll(':empty').length, '0|2', ':empty');\n"
+                        "eq(document.querySelector('li:nth-child(4)').matches('li + li + li + li'), true, 'matches');\n"
+                        "eq(document.querySelector('li.x').closest('ul:not(.y)').id, 'l', 'closest');\n"
+                        "var k = document.getElementById('k'), sp = document.getElementById('s');\n"
+                        "eq([document.querySelectorAll(':checked').length, k.matches(':enabled'), k.matches(':disabled'), getComputedStyle(sp).display].join(), '0,true,false,inline', 'Feld: nicht angekreuzt');\n"
+                        "k.checked = true;\n"
+                        "eq([document.querySelectorAll('input:checked').length, getComputedStyle(sp).display].join(), '1,none', 'angekreuzt: Die Regel für den Nachbarn gilt');\n"
+                        "k.disabled = true; eq([k.matches(':enabled'), k.matches(':disabled')].join(), 'false,true', 'ausgeschaltet');\n"
+                        "var li = document.querySelectorAll('li');\n"
+                        "eq([].map.call(li, function (e) { return getComputedStyle(e).display === 'none' ? '-' : '+'; }).join(''), '+-+-+', 'jedes zweite ausgeblendet');\n"
+                        "li[0].parentNode.removeChild(li[0]);\n"
+                        "eq([].map.call(document.querySelectorAll('li'), function (e) { return getComputedStyle(e).display === 'none' ? '-' : '+'; }).join(''), '+-+-', 'nach dem Entfernen zählt es neu');\n"
+                        "var fehler = ''; try { document.querySelector('li:nth-child(x)'); } catch (e) { fehler = e.name; }\n"
+                        "eq(fehler, 'SyntaxError', 'unlesbare Auswahl');\n"
+                        "fertig();</script></body></html>", &css, 0);
+        check(s != NULL && reported == 1, "Auswahlen nach Geschwistern, Stellung und Zustand");
+        if (s && reported != 1)
+            printf("  letzte Meldung: %s\n", last_log);
+        script_destroy(s);
+        css_free(css);
+    }
+
     /* 4c. Maße und Lage der Elemente, Rollen, "ist es im Bild?" */
     static const char page_measure[] =
         "<html><head><style>body{margin:0} #kopf{height:50px;padding:10px 20px;border:3px solid #000}"

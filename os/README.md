@@ -417,7 +417,8 @@ Was er kann:
   - **Nebeneinander:** `float` und `clear` (der Text fließt an Kästen
     vorbei), `display: flex` (Richtung, Umbruch, `gap`, `justify-content`,
     `align-items`, `flex: 1`, `order`, `margin: auto`), `display: grid`
-    (feste Spalten, Anteile mit `fr`, `minmax`, `repeat`, „so viele, wie
+    (feste Spalten, Anteile mit `fr`, `minmax` – solche Spalten geben nach,
+    wenn es eng wird –, `repeat`, „so viele, wie
     passen", Kinder über mehrere Spalten oder Zeilen, benannte Flächen mit
     `grid-template-areas`), `inline-block`.
   - **Frei platziert:** `position: relative`, `absolute`, `fixed` (steht am
@@ -429,14 +430,23 @@ Was er kann:
     und die alten Attribute (`border`, `cellpadding`, `width`, `bgcolor`,
     `align`).
   - **Auswahl und Rangfolge:** Element, Klasse, Kennung, Verschachtelung,
-    Attribute (`a[href^="http"]`), `!important`, Variablen (`var(--name)`),
-    `@media` nach Fensterbreite und -höhe (auch mit `calc()`), `@supports`.
-    Jede Seite beginnt mit den
-    Grundregeln, die alle Browser mitbringen (Absätze haben Abstand,
-    Überschriften sind groß, Listen eingerückt). Regeln, die sich hier nicht
-    prüfen lassen (`:hover`, Nachbarn), bleiben aus.
-  - Knöpfe bekommen Farbe, Schrift und runde Ecken von der Seite;
-    Eingabefelder ihre Größe.
+    Attribute (`a[href^="http"]`) und seit 0.26 auch Geschwister (`h2 + p`,
+    `h2 ~ p`), die Stellung unter den Geschwistern (`:first-child`,
+    `:last-child`, `:only-child`, `:nth-child(2n+1)`, dasselbe unter
+    Gleichnamigen mit `-of-type`, `:empty`), Verneinung und Auswahl aus
+    mehreren (`:not(…)`, `:is(…)`, `:where(…)`), Zustände von Feldern
+    (`:checked`, `:enabled`, `:disabled`) und `:lang(…)`. Dazu
+    `!important`, `inherit`, Variablen (`var(--name)`), `@supports` und
+    `@media` nach Fensterbreite und -höhe (auch mit `calc()`) – wird das
+    Fenster breiter oder schmaler, gelten die Bedingungen neu. Jede Seite
+    beginnt mit den Grundregeln, die alle Browser mitbringen (Absätze haben
+    Abstand, Überschriften sind groß, Listen eingerückt). Regeln, die sich
+    hier nicht prüfen lassen (`:hover`, `:focus`, `:has(…)`), bleiben aus.
+  - **Knöpfe** (`<button>`, seit 0.26) sind Kästen wie alle anderen: mit
+    ihrem Inhalt (Text, Symbole, Bilder) und dem Aussehen, das die Seite
+    ihnen gibt. Schaltflächen von Formularen (`<input type="submit">`)
+    bekommen Farbe, Schrift und runde Ecken von der Seite; Eingabefelder
+    ihre Größe.
   - Wäre Text auf seinem Hintergrund kaum zu lesen – etwa helle Schrift auf
     einem Hintergrundbild, das nicht gezeigt wird –, nimmt der Browser eine
     lesbare Farbe.
@@ -475,8 +485,8 @@ Was er **nicht** kann – und das ist bei heutigen Webseiten viel:
   Seite (`overflow: auto`/`scroll`: Solche Kästen werden so groß wie ihr
   Inhalt), kreisförmige und schräge Verläufe (sie erscheinen einfarbig bzw.
   gerade), mehrere Hintergrundbilder übereinander, Zähler in Zusätzen,
-  Symbole aus Symbolschriften (sie bleiben leer), Zustände wie `:hover`,
-  mehrspaltiger Text.
+  Symbole aus Symbolschriften und aus Masken (sie bleiben leer), Zustände
+  wie `:hover` und `:focus`, mehrspaltiger Text.
   Was am Fenster haften soll (`position: fixed`, `sticky`), steht fest in
   der Seite. Eingabefelder sehen immer gleich aus. Gesetzt wird in der
   eingebauten Schrift (die Schriftarten der Seite werden nicht geladen);
@@ -577,6 +587,25 @@ Abbild steht; ändern Skripte es, setzt der Browser die Seite neu.
 - Ein- und Ausblenden: Skripte erfahren, was laut Stylesheet zu sehen ist
   (`getComputedStyle(…).display`, `offsetWidth`), und was sie per
   `style.display` zeigen, erscheint.
+- **Maße und Lage** (seit 0.26): Skripte erfahren, wo ein Element auf der
+  Seite steht und wie groß es ist – `getBoundingClientRect`, `offsetTop`,
+  `offsetLeft`, `offsetWidth`/`-Height`, `offsetParent`, `clientWidth`/
+  `-Height`, `scrollHeight`, `getComputedStyle(…).width` und Verwandte in
+  Pixeln, `document.elementFromPoint`. Die Zahlen kommen aus demselben
+  Seitenaufbau, der auch anzeigt; hat ein Skript die Seite seit der letzten
+  Frage verändert, wird sie zum Messen eigens neu gesetzt.
+- **Rollen** (seit 0.26): `window.scrollTo`, `scrollBy`,
+  `element.scrollIntoView` und `scrollTop` bewegen die Anzeige; `scrollY`
+  stimmt, und rollt der Benutzer, erfahren es die Skripte (`scroll`).
+  **„Ist es im Bild?"** – `IntersectionObserver` prüft wirklich, was im
+  sichtbaren Ausschnitt liegt (mit Rand und Schwellen): Bilder und Inhalte,
+  die eine Seite erst beim Hinrollen lädt, erscheinen dann. `ResizeObserver`
+  meldet geänderte Größen.
+- **Fenstergröße** (seit 0.26): Wird das Fenster größer oder kleiner,
+  erfahren es die Skripte (`resize`, `innerWidth`, `matchMedia(…)` samt
+  `change`).
+
+  ![Eine Testseite misst ihre Kästen nach – Breite, Höhe, Lage und Abstände stimmen – und zeigt oben, wie weit gerollt ist und was gerade im Bild liegt](docs/screenshot-masse.png)
 - **jQuery** (getestet mit 3.7) läuft samt Selektoren, Ein-/Ausblenden,
   Animationen (in Schritten) und `$.ajax`.
 - **React** (getestet mit 18.2, wie es WordPress mitbringt): Komponenten mit
@@ -592,13 +621,18 @@ Abbild steht; ändern Skripte es, setzt der Browser die Seite neu.
   Englisch; `WeakRef` hält sein Ziel fest.
 - Alles, was zeichnet oder abspielt: Canvas, WebGL, Video, Ton. Kein
   `localStorage` über das Fenster hinaus, keine Web Worker, kein WebSocket.
-- Maße und Positionen: Wo ein Element steht und wie groß es ist, erfahren
-  Skripte nicht (sichtbare Elemente melden eine angenommene Größe; nur die
-  Größe des Fensters stimmt, auch in `matchMedia`). Seiten, deren Skripte
-  danach umbauen, können deshalb anders angeordnet sein als ohne Skripte –
-  bei Wikipedia steht dann das Inhaltsverzeichnis über dem Artikel statt
-  daneben. Menüs, die unter dem Mauszeiger aufklappen, und alles mit Ziehen
-  gehen nicht.
+- Bei Maßen und beim Rollen: Rollen lässt sich nur die ganze Seite, nicht
+  ein Bereich darin (`overflow: auto`); was am Fenster haften soll
+  (`position: fixed`, `sticky`), steht fest in der Seite – Skripte, die
+  damit rechnen, liegen daneben. Ein Skript, das abwechselnd ändert und
+  misst, lässt die Seite jedes Mal neu setzen; damit das nicht ausufert,
+  bekommt es je Ereignis nach zwölf Mal oder 0,8 Sekunden (beim Laden: nach
+  sechzig Mal oder vier Sekunden) die Maße vom letzten Stand. In der einfachen Darstellung
+  (Strg+E) gibt es keine Maße – dort gilt weiter die alte Annahme (alles
+  Sichtbare steht am Seitenanfang und ist „im Bild").
+- Maus: Menüs, die unter dem Mauszeiger aufklappen (`mouseover`, `:hover`),
+  und alles mit Ziehen gehen nicht. `MutationObserver` gibt es nur als
+  Hülle: Wer darüber Änderungen der Seite mitbekommen will, erfährt nichts.
 - Beim Nachladen: Antworten kommen als Ganzes, nicht als Strom
   (`response.body`), und als Text (`text()`, `json()`) – Binärdaten wie
   Bilder (`blob()`) gehen nicht. Skriptdateien, Module und Daten werden
@@ -613,9 +647,21 @@ Abbild steht; ändern Skripte es, setzt der Browser die Seite neu.
 Unterm Strich: Menüs zum Aufklappen, Formularprüfung, „Mehr anzeigen",
 jQuery- und React-Seiten, die WordPress-Verwaltung funktionieren, auch wenn
 sie die neuesten Sprachmittel benutzen, ihre Skripte als Module laden, erst
-später nachfordern oder ihre Inhalte von einem zweiten Server holen. Seiten,
-die Zeichenflächen, Maße und Positionen brauchen, und große Web-Anwendungen
-(Google Maps, YouTube, der Block-Editor von WordPress) noch nicht.
+später nachfordern, ihre Inhalte von einem zweiten Server holen oder Bilder
+erst beim Hinrollen laden. Seiten, die Zeichenflächen brauchen, und große
+Web-Anwendungen (Google Maps, YouTube, der Block-Editor von WordPress) noch
+nicht.
+
+**Wikipedia als Probe.** Bis 0.25 liefen die Skripte von Wikipedia hier gar
+nicht an: Die Seite prüft zuerst, ob der Browser ein paar neuere
+Sprachmittel kennt, und eines fehlte (`RegExp.dotAll`) – sie zeigte sich
+dann wie ohne JavaScript. Seit 0.26 besteht HelloOS diese Probe; mit
+eingeschaltetem JavaScript laufen die Skripte der Seite (in QEMU geprüft):
+Das Inhaltsverzeichnis steht links und lässt sich mit „Verbergen" einklappen,
+rechts die Leiste „Erscheinungsbild", und im schmalen Fenster wandert das
+Inhaltsverzeichnis hinter einen Knopf – wie in den großen Browsern. Nicht
+zu sehen sind die Symbole der Knöpfe (sie kommen aus einer Technik, die es
+hier nicht gibt), und was am Fenster haften soll, rollt mit der Seite weg.
 
 **Wie Generatoren und `async` hier funktionieren.** Die Maschine führt den
 Programmbaum direkt aus; wo eine Funktion gerade steht, steckt also im
@@ -1037,7 +1083,7 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `kernel/crypto_*.c` | SHA-2, HMAC/HKDF, ChaCha20-Poly1305, AES-CTR, X25519, Ed25519, RSA, ECDSA, ECDH |
 | `kernel/x509.c`, `kernel/tls_roots.*` | Zertifikate lesen und prüfen, eingebaute Wurzelzertifikate |
 | `kernel/tls.c`, `kernel/http.c`, `kernel/url.c` | TLS 1.3, HTTP-Client, Web-Adressen |
-| `kernel/layout.c` | der Seitenaufbau mit Kastenmodell: aus dem Abbild der Seite und ihren Stylesheets werden Kästen, Zeilen, Bilder und Felder mit ihrer Lage |
+| `kernel/layout.c` | der Seitenaufbau mit Kastenmodell: aus dem Abbild der Seite und ihren Stylesheets werden Kästen, Zeilen, Bilder und Felder mit ihrer Lage; auf Wunsch hält er fest, wo jedes Element steht (für Skripte) |
 | `kernel/html.c`, `kernel/browser.c` | die einfache Darstellung im Zeilenraster (und was beide Seitenaufbauten teilen); das Browser-Fenster |
 | `kernel/css.c` | Stylesheets lesen und auf Elemente anwenden; die Grundregeln des Browsers |
 | `kernel/js_*.c`, `kernel/js.h`, `kernel/jslib.js` | die JavaScript-Maschine: Quelltext lesen (`js_parse.c`), ausführen (`js_run.c`), Werte und Speicherbereinigung (`js_core.c`), Zahlen (`js_num.c`), eingebaute Objekte (`js_lib*.c` und – in JavaScript selbst geschrieben – `jslib.js`), Symbole und Iteratoren (`js_sym.c`), `Map`/`Set` (`js_coll.c`), Generatoren und `async` (`js_co.c`), `Proxy`/`Reflect` (`js_proxy.c`), Module (`js_module.c`), reguläre Ausdrücke (`js_regex.c`), typisierte Felder (`js_typed.c`) |
@@ -1067,11 +1113,11 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `tests/heap_test.c` | Kernel-Heap prüfen: zufälliges Anfordern und Freigeben, Verkettungen, voller Speicher |
 | `tests/js_test.c`, `tests/js/*.js`, `tests/js_oracle.js` | JavaScript-Maschine prüfen (auch mit ständiger Speicherbereinigung und mit verstümmelten Skripten); die Erwartungen prüft Node.js gegen, wenn es installiert ist |
 | `tests/dom_test.c` | Seitenabbild prüfen: lesen, umbauen, Quelltext erzeugen, beschädigte Seiten |
-| `tests/script_test.c` | Skripte von Webseiten prüfen: Abbild, Ereignisse, Laden, Zeitgeber, Nachladen, Grenzen, beschädigte Seiten |
+| `tests/script_test.c` | Skripte von Webseiten prüfen: Abbild, Ereignisse, Laden, Zeitgeber, Nachladen, Maße und Lage (mit dem echten Seitenaufbau), Rollen, Beobachter, Fenstergröße, Grenzen, beschädigte Seiten |
 | `tests/hid_test.c` | Auswertung der HID-Berichte prüfen (Mäuse, Tastaturen, Funkempfänger) |
 | `tests/image_test.c`, `tests/image_test.py` | Bild-Dekoder gegen eine Referenz prüfen, auch mit beschädigten Dateien |
-| `tests/css_test.c` | Stylesheets prüfen: Auswahlen (auch nach Attributen), Rangfolge, Farben, Variablen, `@media`, Breiten, Abstände, Rahmen, Raster, Längen mit `calc()`, beschädigte Eingaben |
-| `tests/layout_test.c` | den Seitenaufbau mit Kastenmodell prüfen: kleine Seiten setzen und nachmessen, wo Kästen und Zeilen stehen; dazu tausende beschädigte Seiten |
+| `tests/css_test.c` | Stylesheets prüfen: Auswahlen (nach Attributen, Geschwistern, Stellung und Zuständen; `:not`, `:is`), Rangfolge, Farben, Variablen, `@media`, Breiten, Abstände, Rahmen, Raster, Längen mit `calc()`, beschädigte Eingaben |
+| `tests/layout_test.c` | den Seitenaufbau mit Kastenmodell prüfen: kleine Seiten setzen und nachmessen, wo Kästen und Zeilen stehen (auch die Lage der Elemente, wie Skripte sie erfahren); dazu tausende beschädigte Seiten |
 | `tests/layout_view.c` | Werkzeug: setzt eine HTML-Datei auf dem Entwicklungsrechner und schreibt sie als Bild |
 | `tests/http_test.c` | den HTTP-Client prüfen, mit einem ausgedachten Netz: Anfragen, Antworten, Weiterleitungen, die Sperre fürs Heimnetz |
 | `tests/font_test.c`, `tests/font_test.py` | Schriftrenderer Zeichen für Zeichen gegen FreeType prüfen, auch mit beschädigten Schriftdateien |
@@ -1091,8 +1137,8 @@ gehalten. Naheliegende nächste Schritte:
 - User-Modus (Ring 3) mit Systemaufrufen und getrennten Adressräumen
 - Programme aus Dateien laden (ELF), mehrere Prozessorkerne
 - Symbole auf dem Desktop, ein Dateimanager, Fenster an den Kanten ziehen und minimieren
-- im Browser: Rollbereiche in der Seite (`overflow: auto`), Zustände (`:hover`), Schatten, Durchsichtigkeit; WebP- und SVG-Bilder; Tabs
-- JavaScript: Zeichenflächen (Canvas); Maße und Positionen der Elemente; eine Schutzwand zwischen Skripten und System (dafür braucht es den User-Modus)
+- im Browser: Rollbereiche in der Seite (`overflow: auto`), Zustände (`:hover`), was am Fenster haftet (`position: sticky`), Schatten, Durchsichtigkeit; WebP- und SVG-Bilder; Tabs
+- JavaScript: Zeichenflächen (Canvas); Ereignisse der Maus (`mouseover`), `MutationObserver`; eine Schutzwand zwischen Skripten und System (dafür braucht es den User-Modus)
 - echte Schrift auch in Terminal, Editor und Eingabefeldern; Hinting für schärfere kleine Schrift
 
 ## Die ältere 32-Bit-Version

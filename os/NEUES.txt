@@ -1,3 +1,9 @@
+HelloOS 0.26
+- Browser: Skripte erfahren, wo etwas auf der Seite steht und wie groß es ist. Bilder und Inhalte, die eine Seite erst lädt, wenn man zu ihnen hinrollt, erscheinen jetzt; Skripte können die Seite rollen ("nach oben", "zum Abschnitt") und merken, wenn du rollst oder das Fenster größer ziehst.
+- Browser: Wikipedia und ähnliche Seiten starten ihre Skripte jetzt wirklich (bisher gaben sie nach einer Eignungsprobe auf). Mit eingeschaltetem JavaScript steht bei Wikipedia das Inhaltsverzeichnis links und lässt sich einklappen.
+- Browser: Viele Seiten sehen richtiger aus - Regeln für "das erste", "jedes zweite", "das danach", "alle außer" gelten jetzt, Knöpfe zeigen ihren echten Inhalt, und nach dem Vergrößern des Fensters ordnet sich die Seite neu an.
+- Noch nicht möglich: Menüs unter dem Mauszeiger, Bereiche zum Rollen innerhalb einer Seite, Schatten, Bewegung, Schriften der Seite; Zeichenflächen, Video und Ton; Tabs. JavaScript bleibt ausgeliefert ausgeschaltet.
+
 HelloOS 0.25
 - Browser: Hintergrundbilder und Farbverläufe. Fotos hinter einem Abschnitt, gekachelte Muster, kleine Symbole aus einer Sammelgrafik und Verläufe (von oben nach unten oder von links nach rechts) erscheinen jetzt. Bilder behalten ihre durchsichtigen Stellen - ein Logo auf farbigem Grund hat keinen hellen Kasten mehr um sich.
 - Browser: Zusätze vor und nach Elementen (::before, ::after) - Anführungszeichen, Haken statt Listenpunkten, Markierungen an Links, Zierlinien.
@@ -13,8 +19,3 @@ HelloOS 0.23
 - Browser: Daten von anderen Servern. Skripte dürfen jetzt auch von einem zweiten Server nachladen (fetch, XMLHttpRequest) - mit den Schutzregeln der großen Browser: Die Antwort sieht ein Skript nur, wenn der fremde Server es dieser Seite erlaubt; deine Cookies gehen dorthin nur mit dessen ausdrücklicher Erlaubnis; vor Ungewöhnlichem (PUT, DELETE, eigene Kopfzeilen) wird der Server erst gefragt. Viele Seiten, die bisher leer blieben, zeigen damit ihre Inhalte.
 - Schutz fürs Heimnetz: Die Skripte einer Seite aus dem Internet erreichen nur öffentliche Adressen - nicht deinen Router, Drucker oder andere Geräte zu Hause.
 - Noch nicht möglich: Abstände, Rahmen und frei platzierte Elemente; Zeichenflächen, Video und Ton; Tabs. JavaScript bleibt ausgeliefert ausgeschaltet; die Skripte laufen weiterhin ohne Schutzwand zum System.
-
-HelloOS 0.22
-- Browser: Module. Skripte, die als Module geladen werden (script type="module", import/export, import() zur Laufzeit, Übersetzungstabellen), laufen jetzt - so liefern viele aktuelle Seiten ihre Skripte aus.
-- Browser: Nachfordern. Fügt eine Seite nach dem Laden weitere Skriptdateien ein, werden sie geholt und ausgeführt; fügt ein Skript Stylesheets ein oder ändert sie, wird die Gestaltung der Seite neu zusammengesetzt.
-- Noch nicht möglich: Daten von einem anderen Server als dem der Seite nachladen (fetch, XMLHttpRequest über Servergrenzen) - Seiten, die ihre Inhalte so holen, bleiben leer. JavaScript bleibt ausgeliefert ausgeschaltet; die Skripte laufen weiterhin ohne Schutzwand zum System.
