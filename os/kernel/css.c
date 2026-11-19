@@ -28,7 +28,8 @@ enum { P_COLOR, P_BACKGROUND, P_BACKGROUND_COLOR, P_WEIGHT, P_STYLE, P_SIZE, P_A
        P_BORDER_COLOR, P_BORDER_TOP_WIDTH, P_BORDER_RIGHT_WIDTH, P_BORDER_BOTTOM_WIDTH,
        P_BORDER_LEFT_WIDTH, P_BORDER_TOP_STYLE, P_BORDER_RIGHT_STYLE, P_BORDER_BOTTOM_STYLE,
        P_BORDER_LEFT_STYLE, P_BORDER_TOP_COLOR, P_BORDER_RIGHT_COLOR, P_BORDER_BOTTOM_COLOR,
-       P_BORDER_LEFT_COLOR, P_BREAK, P_WORD_BREAK, P_OPACITY, P_BACKGROUND_IMAGE, P_COUNT };
+       P_BORDER_LEFT_COLOR, P_BREAK, P_WORD_BREAK, P_OPACITY, P_BACKGROUND_IMAGE, P_GRID_AREA,
+       P_GRID_ROW, P_MASK, P_CAPTION_SIDE, P_COUNT };
 
 /* Die Einzelangaben für Kästen: Jede hat ihren eigenen Rang (Kurzschreibweisen setzen mehrere) */
 enum { L_DISPLAY, L_POSITION, L_BOX_SIZING, L_WHITE_SPACE, L_VALIGN, L_TRANSFORM, L_OVERFLOW,
@@ -38,7 +39,8 @@ enum { L_DISPLAY, L_POSITION, L_BOX_SIZING, L_WHITE_SPACE, L_VALIGN, L_TRANSFORM
        L_BORDER_COLOR = L_BORDER_STYLE + 4, L_INSET = L_BORDER_COLOR + 4, L_WIDTH = L_INSET + 4,
        L_HEIGHT, L_MIN_WIDTH, L_MAX_WIDTH, L_MIN_HEIGHT, L_MAX_HEIGHT, L_FONT_SIZE, L_LINE_HEIGHT,
        L_INDENT, L_RADIUS, L_GAP_ROW, L_GAP_COLUMN, L_BASIS, L_SPACING, L_GROW, L_SHRINK, L_ZINDEX,
-       L_ORDER, L_GRID, L_GRID_ITEM, L_BREAK, L_OPACITY, L_BG_IMAGE, L_COUNT };
+       L_ORDER, L_GRID, L_GRID_ITEM, L_BREAK, L_OPACITY, L_BG_IMAGE, L_AREAS, L_GRID_AREA,
+       L_GRID_ROW, L_MASK, L_CAPTION, L_COUNT };
 
 static const struct {
     const char *name;
@@ -93,6 +95,11 @@ static const struct {
     { "border-right-color", P_BORDER_RIGHT_COLOR }, { "border-bottom-color", P_BORDER_BOTTOM_COLOR },
     { "border-left-color", P_BORDER_LEFT_COLOR }, { "overflow-wrap", P_BREAK }, { "word-wrap", P_BREAK },
     { "word-break", P_WORD_BREAK }, { "opacity", P_OPACITY }, { "background-image", P_BACKGROUND_IMAGE },
+    { "grid-area", P_GRID_AREA }, { "grid-row", P_GRID_ROW }, { "mask", P_MASK },
+    { "mask-image", P_MASK }, { "-webkit-mask", P_MASK }, { "-webkit-mask-image", P_MASK },
+    { "mask-size", P_MASK }, { "-webkit-mask-size", P_MASK }, { "mask-position", P_MASK },
+    { "-webkit-mask-position", P_MASK }, { "mask-repeat", P_MASK }, { "-webkit-mask-repeat", P_MASK },
+    { "caption-side", P_CAPTION_SIDE },
 };
 
 enum { S_TAG, S_CLASS, S_ID, S_ROOT, S_ATTR };
@@ -1112,6 +1119,51 @@ static bool grid_track(const css_sheet_t *sheet, const char *text, size_t n, css
     return parse_len(sheet, text, n, LEN_POSITIVE | LEN_NUMBER_PX, &out->size);
 }
 
+/* Die Kennzahl eines Flächennamens (nie 0) */
+static uint16_t area_hash(const char *name, size_t n)
+{
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < n; i++)
+        h = (h ^ (uint8_t)name[i]) * 16777619u;
+    h = (h ^ (h >> 16)) & 0xFFFF;
+    return (uint16_t)(h ? h : 1);
+}
+
+/* Die Zeilen in Anführungszeichen ("kopf kopf" "leiste inhalt"): benannte Flächen eines Rasters */
+static bool grid_areas(const char *text, size_t length, css_style_t *s)
+{
+    uint16_t areas[CSS_AREA_ROWS][CSS_AREA_COLUMNS];
+    int rows = 0, columns = 0;
+    memset(areas, 0, sizeof(areas));
+    for (size_t i = 0; i < length; i++) {
+        if (text[i] != '"' && text[i] != '\'')
+            continue;
+        char quote = text[i++];
+        int column = 0;
+        while (i < length && text[i] != quote) {
+            while (i < length && space(text[i]))
+                i++;
+            size_t start = i;
+            while (i < length && !space(text[i]) && text[i] != quote)
+                i++;
+            if (i > start && rows < CSS_AREA_ROWS && column < CSS_AREA_COLUMNS) {
+                areas[rows][column] = text[start] == '.' ? 0 : area_hash(text + start, i - start);
+                column++;
+            }
+        }
+        if (column > columns)
+            columns = column;
+        if (rows < CSS_AREA_ROWS)
+            rows++;
+    }
+    if (!rows || !columns)
+        return false;
+    memcpy(s->area_map, areas, sizeof(areas));
+    s->area_rows = (uint8_t)rows;
+    s->area_columns = (uint8_t)columns;
+    return true;
+}
+
 /* grid-template-columns: Spalten der Reihe nach, auch mit repeat(...) */
 static bool grid_template(const css_sheet_t *sheet, const char *text, size_t length, css_style_t *s)
 {
@@ -1255,7 +1307,7 @@ static void apply_box(const css_sheet_t *sheet, cascade_t *c, uint8_t property, 
             "table-header-group", "table-footer-group", "table-caption", "table-column",
             "table-column-group", "contents", "ruby", "run-in", NULL };
         static const uint8_t values[] = {
-            CSS_D_NONE, CSS_D_BLOCK, CSS_D_BLOCK, CSS_D_INLINE, CSS_D_INLINE_BLOCK, CSS_D_LIST_ITEM,
+            CSS_D_NONE, CSS_D_BLOCK, CSS_D_FLOW_ROOT, CSS_D_INLINE, CSS_D_INLINE_BLOCK, CSS_D_LIST_ITEM,
             CSS_D_FLEX, CSS_D_FLEX, CSS_D_FLEX, CSS_D_FLEX, CSS_D_INLINE_FLEX, CSS_D_INLINE_FLEX,
             CSS_D_GRID, CSS_D_INLINE_GRID, CSS_D_TABLE, CSS_D_INLINE_TABLE, CSS_D_TABLE_ROW,
             CSS_D_TABLE_CELL, CSS_D_TABLE_GROUP, CSS_D_TABLE_GROUP, CSS_D_TABLE_GROUP,
@@ -1571,16 +1623,61 @@ static void apply_box(const css_sheet_t *sheet, cascade_t *c, uint8_t property, 
             s->gap_column = gaps[property == P_GAP && count > 1 ? 1 : 0];
         break;
     }
+    case P_GRID_AREAS:
+        if (word_is(text, length, "none")) {
+            if (BOX_SET(L_AREAS))
+                s->area_rows = s->area_columns = 0;
+        } else {
+            css_style_t probe;
+            if (grid_areas(text, length, &probe) && BOX_SET(L_AREAS)) {
+                memcpy(s->area_map, probe.area_map, sizeof(s->area_map));
+                s->area_rows = probe.area_rows;
+                s->area_columns = probe.area_columns;
+            }
+        }
+        break;
+    case P_GRID_AREA: {
+        /* der Name einer Fläche - oder "Zeile / Spalte / bis Zeile / bis Spalte" */
+        if (lower(text[0]) >= 'a' && lower(text[0]) <= 'z' && !word_is(text, length, "auto")) {
+            if (next_piece(&p, end, '/', &piece, &n) && BOX_SET(L_GRID_AREA))
+                s->grid_area = area_hash(piece, n);
+        }
+        break;
+    }
+    case P_CAPTION_SIDE:
+        if (BOX_SET(L_CAPTION))
+            s->caption_below = has_word_starting(text, length, "bottom") ||
+                               word_is(text, length, "block-end") ? CSS_YES : CSS_NO;
+        break;
+    case P_MASK:
+        if (BOX_SET(L_MASK))
+            s->masked = word_is(text, length, "none") ? CSS_NO : CSS_YES;
+        break;
     case P_GRID_COLUMNS: case P_GRID_TEMPLATE: {
         const char *from = text;
         if (property == P_GRID_TEMPLATE) {
-            /* "Zeilen / Spalten"; Fassungen mit Flächennamen in Anführungszeichen: nicht hier */
+            /* "Zeilen / Spalten" - die Zeilen auch als benannte Flächen in Anführungszeichen */
             const char *slash = NULL;
+            bool named = false;
+            char quote = 0;
             for (const char *q = text; q < end; q++) {
-                if (*q == '"' || *q == '\'')
-                    return;
-                if (*q == '/')
+                if (quote) {
+                    if (*q == quote)
+                        quote = 0;
+                } else if (*q == '"' || *q == '\'') {
+                    quote = *q;
+                    named = true;
+                } else if (*q == '/') {
                     slash = q;
+                }
+            }
+            if (named) {
+                css_style_t probe;
+                if (grid_areas(text, slash ? (size_t)(slash - text) : length, &probe) && BOX_SET(L_AREAS)) {
+                    memcpy(s->area_map, probe.area_map, sizeof(s->area_map));
+                    s->area_rows = probe.area_rows;
+                    s->area_columns = probe.area_columns;
+                }
             }
             if (!slash)
                 return;
@@ -1597,7 +1694,7 @@ static void apply_box(const css_sheet_t *sheet, cascade_t *c, uint8_t property, 
         }
         break;
     }
-    case P_GRID_COLUMN: {
+    case P_GRID_COLUMN: case P_GRID_ROW: {
         /* "span 2", "1 / 3", "1 / -1", "2 / span 3" */
         long first = 0, second = 0, span = 0;
         bool slash = false;
@@ -1622,12 +1719,20 @@ static void apply_box(const css_sheet_t *sheet, cascade_t *c, uint8_t property, 
             else
                 first = negative ? -value : value;
         }
+        if (!span && second > first && first > 0)
+            span = second - first;
+        if (property == P_GRID_ROW) {
+            if (BOX_SET(L_GRID_ROW)) {
+                s->grid_row = (uint8_t)(first > 0 && first < 200 ? first : 0);
+                s->grid_row_span = (uint8_t)(span > 0 && span < 200 ? span : 0);
+            }
+            break;
+        }
         if (!BOX_SET(L_GRID_ITEM))
             break;
         s->grid_full = second < 0 && first <= 1;
-        if (!span && second > first && first > 0)
-            span = second - first;
         s->grid_span = (uint8_t)(span > 0 && span < 200 ? span : 0);
+        s->grid_column = (uint8_t)(first > 0 && first < 200 ? first : 0);
         break;
     }
     case P_MARGIN: case P_PADDING: case P_INSET: case P_BORDER_WIDTH: {

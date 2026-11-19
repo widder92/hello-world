@@ -87,6 +87,13 @@ void script_set_styles(script_t *s, const struct css_sheet *css);
 /* Führt die Skripte der Seite aus und meldet ihr, dass sie geladen ist. */
 void script_boot(script_t *s);
 
+/*
+ * Das Abbild der Seite, wie es jetzt ist (dom.h): Daraus setzt der Browser die
+ * Seite. Es gehört weiter den Skripten und darf nicht verändert werden.
+ */
+struct dom_doc;
+const struct dom_doc *script_document(const script_t *s);
+
 /* Hat sich das Abbild seit dem letzten script_html() geändert? */
 bool script_changed(const script_t *s);
 /* Quelltext für die Anzeige (kmalloc); jedes Element trägt seine Nummer in data-hx. */

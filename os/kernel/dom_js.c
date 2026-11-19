@@ -2235,6 +2235,11 @@ bool script_changed(const script_t *s)
     return s && s->doc->dirty;
 }
 
+const struct dom_doc *script_document(const script_t *s)
+{
+    return s ? s->doc : NULL;
+}
+
 char *script_html(script_t *s, size_t *len)
 {
     return dom_serialize(s->doc, len);

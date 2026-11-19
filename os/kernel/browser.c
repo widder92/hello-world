@@ -22,8 +22,10 @@
 #include "image.h"
 #include "cpu.h"
 #include "css.h"
+#include "dom.h"
 #include "input.h"
 #include "json.h"
+#include "layout.h"
 #include "memory.h"
 #include "script.h"
 #include "sound.h"
@@ -51,6 +53,7 @@
 #define SCROLL_W     10
 #define SCROLL_X     (WIDTH - SCROLL_W - 4)
 #define LAYOUT_W     (SCROLL_X - CONTENT_X - 6)      /* Breite des Seiteninhalts in Pixeln */
+#define PAGE_W       (SCROLL_X - 2)                  /* ... mit Kastenmodell: bis an den Fensterrand */
 #define COLUMNS      (LAYOUT_W / FONT_W)             /* ... und in Zeichen der Rasterschrift */
 #define HISTORY_MAX  40
 #define PAGE_MAX     (8u * 1024 * 1024)
@@ -798,10 +801,27 @@ static int page_text_width(void *ctx, const char *text, size_t len, uint8_t styl
     return font_width(text, len, size ? size : TEXT_SIZE, text_flags(style));
 }
 
-/* Setzt eine Seite für die jetzige Fensterbreite. */
-static page_t *layout_page(browser_t *b, const char *source, size_t len, const char *url,
-                           bool html, const css_sheet_t *css, bool scripts)
+/* Auskunft für den Seitenaufbau: Ober- und Unterlänge einer Schrift */
+static void page_metrics(void *ctx, uint8_t size, uint8_t style, int *ascent, int *descent)
 {
+    int line;
+    (void)ctx;
+    (void)style;
+    font_metrics(size, ascent, descent, &line);
+}
+
+static bool simple_wanted;              /* einfache Darstellung im Zeilenraster; gilt für alle Fenster */
+
+/*
+ * Setzt eine Seite für die jetzige Fensterbreite: mit Kastenmodell (layout.h)
+ * aus ihrem Abbild - dem der Skripte, wenn sie laufen, sonst einem eigens
+ * gelesenen. Reiner Text und die einfache Darstellung nehmen den Seitenaufbau
+ * im Zeilenraster.
+ */
+static page_t *layout_page(browser_t *b, const char *source, size_t len, const char *url,
+                           bool html, const css_sheet_t *css, const script_t *script)
+{
+    bool scripts = script != NULL;
     page_t *page;
     if (!html) {
         page = html_plain_text(source, len, COLUMNS);
@@ -818,6 +838,18 @@ static page_t *layout_page(browser_t *b, const char *source, size_t len, const c
         .text_color = C_TEXT, .link_color = C_LINK, .page_color = C_BACKGROUND,
         .css = css, .scripts = scripts,
     };
+    if (!simple_wanted && font_available()) {
+        dom_doc *own = script ? NULL : dom_parse(source, len);
+        const dom_doc *doc = script ? script_document(script) : own;
+        layout_options_t options = {
+            .width = PAGE_W, .height = CONTENT_H, .base_url = url, .css = css, .text = &text,
+            .pictures = &pictures, .metrics = page_metrics, .scripts = scripts,
+        };
+        page = doc ? layout_document(doc, &options) : NULL;
+        dom_free(own);
+        if (page)
+            return page;
+    }
     page = html_layout_rich(source, len, url, LAYOUT_W, &pictures, &text);
     if (page)
         page_place_rows(page, ROW_H, FONT_W, TEXT_SIZE);
@@ -839,12 +871,15 @@ static void load_settings(void)
     if (!storage_load(STORAGE_SETTINGS, SETTINGS, 64, &text, &size))
         return;
     javascript_wanted = mentions(text, size, "javascript=1");
+    simple_wanted = mentions(text, size, "darstellung=einfach");
     kfree(text);
 }
 
 static void save_settings(void)
 {
-    const char *text = javascript_wanted ? "javascript=1\n" : "javascript=0\n";
+    char text[64];
+    ksnprintf(text, sizeof(text), "javascript=%d\ndarstellung=%s\n", javascript_wanted ? 1 : 0,
+              simple_wanted ? "einfach" : "voll");
     storage_save(STORAGE_SETTINGS, SETTINGS, text, strlen(text));
 }
 
@@ -1105,9 +1140,10 @@ static uint64_t styles_mark(const char *html, size_t len, const char *url)
 static css_sheet_t *load_styles(browser_t *b, style_cache_t *cache, const char *html, size_t len,
                                 const char *url)
 {
-    css_sheet_t *css = css_create(LAYOUT_W);
+    css_sheet_t *css = css_create(PAGE_W);
     if (!css)
         return NULL;
+    css_set_viewport_height(css, CONTENT_H);
     styles_ctx_t ctx = { b, css, cache, 0, time_ms() + STYLE_TIME_MS };
     html_find_styles(html, len, url, style_found, &ctx);
     return css;
@@ -1390,7 +1426,7 @@ static void worker(void *arg)
         /* "?weg=..." war ein Auftrag, keine Adresse: Die Seite heißt danach wieder wie üblich */
         if (starts_with(url, MARKS_PAGE))
             strlcpy(url, MARKS_PAGE, URL_SIZE);
-        page_t *page = text ? layout_page(b, text, len, url, !source, NULL, false) : NULL;
+        page_t *page = text ? layout_page(b, text, len, url, !source, NULL, NULL) : NULL;
         if (page) {
             deliver(b, page, url, text, len, !source, columns, NULL, NULL);
             set_status(b, false, "");
@@ -1564,7 +1600,7 @@ static void worker(void *arg)
             script_set_styles(script, css);
         }
         uint64_t style_state = html ? styles_mark(content, length, url) : 0;
-        page_t *page = layout_page(b, content, length, url, html, css, script != NULL);
+        page_t *page = layout_page(b, content, length, url, html, css, script);
         if (!page) {
             kfree(content);
             css_free(css);
@@ -1679,7 +1715,7 @@ static void relayout(browser_t *b, bool force)
     if (!old || !b->source || (b->page_columns == LAYOUT_W && !force))
         return;
     page_t *fresh = layout_page(b, b->source, b->source_len, b->url, b->source_html, b->css,
-                                b->script != NULL);
+                                b->script);
     if (!fresh)
         return;
 
@@ -1832,7 +1868,7 @@ static void script_show(browser_t *b)
             b->style_mark = mark;
         }
     }
-    page_t *fresh = source ? layout_page(b, source, len, b->url, true, b->css, true) : NULL;
+    page_t *fresh = source ? layout_page(b, source, len, b->url, true, b->css, b->script) : NULL;
     if (!fresh) {
         kfree(source);
         return;
@@ -2603,6 +2639,12 @@ static void draw_box(surface_t *s, const box_t *box, int x, int y)
     }
 }
 
+/* Seiten im Zeilenraster haben links einen Rand; Seiten mit Kastenmodell bestimmen ihn selbst. */
+static int page_left(const page_t *page)
+{
+    return page->rows ? CONTENT_X : 0;
+}
+
 static void draw_line(browser_t *b, surface_t *s, int index, int y)
 {
     const page_t *page = b->page;
@@ -2611,7 +2653,7 @@ static void draw_line(browser_t *b, surface_t *s, int index, int y)
         const span_t *span = &page->spans[line->first + i];
         if (span->widget >= 0 || span->image >= 0)
             continue;
-        int x = CONTENT_X + span->column;
+        int x = page_left(page) + span->column;
         int baseline = y + line->baseline + span->shift;
         bool grid = text_is_grid(span->style);
         int size = span->size ? span->size : TEXT_SIZE;
@@ -2661,14 +2703,16 @@ static void draw_page(browser_t *b, surface_t *s)
 {
     const page_t *page = b->page;
     gfx_set_clip(s, rect_make(0, CONTENT_Y, SCROLL_X - 2, CONTENT_H));
-    int top = b->scroll, bottom = b->scroll + CONTENT_H;
+    int top = b->scroll, bottom = b->scroll + CONTENT_H, left = page_left(page);
+    if (!page->rows && page->background)        /* der Hintergrund, den die Seite sich gibt */
+        gfx_fill(s, 0, CONTENT_Y, SCROLL_X - 2, CONTENT_H, page->background & 0xFFFFFF);
     for (int i = 0; i < page->paint_count; i++) {
         const paint_t *item = &page->paint[i];
         switch (item->kind) {
         case PAINT_BOX: {
             const box_t *box = &page->boxes[item->index];
             if (box->y < bottom && box->y + box->h > top)
-                draw_box(s, box, CONTENT_X + box->x, CONTENT_Y + box->y - top);
+                draw_box(s, box, left + box->x, CONTENT_Y + box->y - top);
             break;
         }
         case PAINT_LINE: {
@@ -2682,13 +2726,13 @@ static void draw_page(browser_t *b, surface_t *s)
             const page_image_t *image = &page->images[item->index];
             int height = image->height > 0 ? image->height : ROW_H;
             if (image->y < bottom && image->y + height > top)
-                draw_picture(b, s, image, CONTENT_X + image->x, CONTENT_Y + image->y - top);
+                draw_picture(b, s, image, left + image->x, CONTENT_Y + image->y - top);
             break;
         }
         case PAINT_WIDGET: {
             const widget_t *w = &page->widgets[item->index];
             if (w->h > 0 && w->y < bottom && w->y + w->h > top)
-                draw_widget(b, s, item->index, CONTENT_X + w->x, CONTENT_Y + w->y - top);
+                draw_widget(b, s, item->index, left + w->x, CONTENT_Y + w->y - top);
             break;
         }
         }
@@ -3311,6 +3355,14 @@ static void key_pressed(browser_t *b, int key, int mods)
         load(b, MARKS_PAGE, NULL, true);
         return;
     }
+    if ((mods & MOD_CTRL) && key == 5) {                /* Strg+E: einfache Darstellung an/aus */
+        simple_wanted = !simple_wanted;
+        save_settings();
+        relayout(b, true);
+        set_status(b, false, simple_wanted ? "Einfache Darstellung: nur Text, Links, Bilder und Formulare (Strg+E schaltet zurück)"
+                                           : "Volle Darstellung");
+        return;
+    }
     if ((mods & MOD_CTRL) && key == 21) {               /* Strg+U */
         show_source(b);
         return;
@@ -3491,7 +3543,7 @@ static void mouse_pressed(browser_t *b, int x, int y)
          * Was liegt an dieser Stelle zuoberst? Die Teile der Seite von hinten
          * nach vorn durchgehen - das zuletzt Gezeichnete liegt oben.
          */
-        int px = x - CONTENT_X, py = y - CONTENT_Y + b->scroll;
+        int px = x - page_left(page), py = y - CONTENT_Y + b->scroll;
         b->address_focus = false;
         for (int i = page->paint_count - 1; i >= 0; i--) {
             const paint_t *item = &page->paint[i];

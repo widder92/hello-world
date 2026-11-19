@@ -538,6 +538,16 @@ static void test_box_model(void)
           len_is(s.border_width[0], 1000, 0, 0) && len_is(s.border_width[1], 5000, 0, 0) && s.font_size.kind == CSS_LEN_UNSET &&
           len_is(s.height, 20000, 10000, 0) && s.max_width.kind == CSS_LEN_NONE && s.min_width.kind == CSS_LEN_UNSET);
 
+    /* Raster mit benannten Flächen, Platz eines Kinds darin, Symbole über Masken */
+    s = full(sheet, &div, NULL, "grid-template-areas: 'kopf kopf' 'leiste inhalt' '. fuss'; grid-area: inhalt;"
+                                " grid-row: 2 / 4; grid-column: 2; -webkit-mask-image: url(x.svg)");
+    CHECK(s.area_rows == 3 && s.area_columns == 2 && s.area_map[0][0] == s.area_map[0][1] && s.area_map[0][0] != 0 &&
+          s.area_map[1][0] != s.area_map[1][1] && s.area_map[2][0] == 0 && s.grid_area == s.area_map[1][1] &&
+          s.grid_row == 2 && s.grid_row_span == 2 && s.grid_column == 2 && s.masked == CSS_YES);
+    s = full(sheet, &div, NULL, "grid-template: \"a a\" min-content \"b c\" 1fr / 12rem minmax(0, 1fr)");
+    CHECK(s.area_rows == 2 && s.area_columns == 2 && s.area_map[1][0] != s.area_map[1][1] && s.grid_count == 2 &&
+          len_is(s.grid[0].size, 192000, 0, 0) && s.grid[1].fr == 1000);
+
     css_len_t l;
     CHECK(css_length(sheet, "12.5pt", 6, &l) && l.px == 16666 && css_length(sheet, "50vw", 4, &l) && l.px == 500000 &&
           css_length(sheet, "10vh", 4, &l) && l.px == 60000 && css_length(sheet, "auto", 4, &l) && l.kind == CSS_LEN_AUTO &&

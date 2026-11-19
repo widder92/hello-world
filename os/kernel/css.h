@@ -78,7 +78,8 @@ typedef struct {
 enum { CSS_D_NONE = 1, CSS_D_BLOCK, CSS_D_INLINE, CSS_D_INLINE_BLOCK, CSS_D_LIST_ITEM,
        CSS_D_FLEX, CSS_D_INLINE_FLEX, CSS_D_GRID, CSS_D_INLINE_GRID, CSS_D_TABLE,
        CSS_D_INLINE_TABLE, CSS_D_TABLE_ROW, CSS_D_TABLE_CELL, CSS_D_TABLE_GROUP,
-       CSS_D_TABLE_CAPTION, CSS_D_TABLE_COLUMN, CSS_D_CONTENTS };
+       CSS_D_TABLE_CAPTION, CSS_D_TABLE_COLUMN, CSS_D_CONTENTS,
+       CSS_D_FLOW_ROOT };               /* ein Block, der einen eigenen Abschnitt bildet */
 enum { CSS_POS_STATIC = 1, CSS_POS_RELATIVE, CSS_POS_ABSOLUTE, CSS_POS_FIXED, CSS_POS_STICKY };
 enum { CSS_WS_NORMAL = 1, CSS_WS_NOWRAP, CSS_WS_PRE, CSS_WS_PRE_WRAP, CSS_WS_PRE_LINE };
 enum { CSS_VA_BASELINE = 1, CSS_VA_TOP, CSS_VA_MIDDLE, CSS_VA_BOTTOM, CSS_VA_SUB, CSS_VA_SUPER };
@@ -98,6 +99,8 @@ enum { CSS_COLOR_VALUE = 1, CSS_COLOR_CURRENT, CSS_COLOR_TRANSPARENT };
 
 /* Eine Spalte eines Rasters (grid-template-columns) */
 #define CSS_GRID_TRACKS 12
+#define CSS_AREA_ROWS 8
+#define CSS_AREA_COLUMNS 6
 typedef struct {
     css_len_t size;                     /* feste Breite bzw. Mindestbreite (UNSET: keine) */
     int32_t fr;                         /* Anteil am freien Platz mal 1000, oder 0 */
@@ -162,6 +165,18 @@ typedef struct {
     bool grid_auto_fill;                /* so viele Spalten wie passen: die erste Spalte wiederholt sich */
     uint8_t grid_span;                  /* grid-column: über so viele Spalten (0: eine) */
     bool grid_full;                     /* ... oder über alle (1 / -1) */
+    uint8_t grid_column;                /* ... ab dieser Spalte (1 ist die erste; 0: der Reihe nach) */
+    uint8_t grid_row, grid_row_span;    /* grid-row: ab dieser Zeile, über so viele (0: der Reihe nach, eine) */
+    /*
+     * Raster mit benannten Flächen (grid-template-areas): je Zelle eine
+     * Kennzahl des Namens (0: frei). grid_area ist die Kennzahl der Fläche,
+     * in der ein Kind stehen will.
+     */
+    uint8_t area_rows, area_columns;
+    uint16_t area_map[CSS_AREA_ROWS][CSS_AREA_COLUMNS];
+    uint16_t grid_area;
+    uint8_t masked;                     /* CSS_NO/CSS_YES: Der Hintergrund scheint nur durch eine Maske (Symbole) */
+    uint8_t caption_below;              /* CSS_NO/CSS_YES: Beschriftung einer Tabelle darunter (caption-side) */
 } css_style_t;
 
 /* viewport_width: Breite der Anzeige in Pixeln, für @media-Bedingungen */
