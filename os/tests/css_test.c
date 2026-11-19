@@ -28,7 +28,7 @@ static css_node_t node(const char *tag, const char *id, const char *classes,
                        const css_node_t *parent)
 {
     css_node_t n = { tag, strlen(tag), id, id ? strlen(id) : 0, classes,
-                     classes ? strlen(classes) : 0, NULL, 0, parent, NULL };
+                     classes ? strlen(classes) : 0, NULL, 0, parent, NULL, NULL };
     return n;
 }
 
@@ -87,8 +87,8 @@ static void test_selectors(void)
         "span { color: #111 } span.x { color: #222 } div span.x { color: #333 }\n";
     css_sheet_t *sheet = css_create(1000);
     CHECK(sheet && css_add(sheet, text, sizeof(text) - 1));
-    /* die vier Regeln mit Zuständen und Nachbarn fallen weg */
-    CHECK(css_rule_count(sheet) == 18);
+    /* die drei Regeln mit Zuständen, die es hier nie gibt, und fremden Scheinelementen fallen weg */
+    CHECK(css_rule_count(sheet) == 19);
 
     css_node_t html = node("html", NULL, NULL, NULL);
     css_node_t body = node("BODY", NULL, NULL, &html);
@@ -290,7 +290,8 @@ static void test_boxes(void)
         ".oben { position: absolute; top: -1000em } .oben.offen { top: auto }\n"
         ".links { position: relative; left: -9999em } .knapp { top: -40px } .px { top: -9999px }\n"
         ".sprung:not(:focus) { clip: rect(1px,1px,1px,1px) } a.sprung:not( :hover ):not(:active) { color: #010203 }\n"
-        ".sprung:not(.x) { color: #f00 } .sprung:not(:focus { color: #f00 } .sprung:not(:checked) { color: #f00 }\n";
+        ".sprung:not(.x) { background-color: #f00 } .sprung:not(:focus { color: #f00 }\n"
+        ".sprung:not(:checked) { font-weight: bold } .sprung:not(:has(b)) { color: #f00 }\n";
     css_sheet_t *sheet = css_create(1200);
     CHECK(sheet && css_add(sheet, text, sizeof(text) - 1));
     css_node_t body = node("body", NULL, NULL, NULL);
@@ -379,11 +380,120 @@ static void test_boxes(void)
     CHECK(!match(sheet, &left, NULL).off_top && !match(sheet, &near, NULL).off_top &&
           match(sheet, &px, NULL).off_top);
 
-    /* ":not(:focus)" gilt immer; andere Verneinungen entfallen */
-    css_node_t jump = node("a", NULL, "sprung", &body);
+    /* ":not(:focus)" gilt immer; ":not(.x)" prüft wirklich; was sich nicht prüfen lässt, entfällt */
+    css_node_t jump = node("a", NULL, "sprung", &body), jump_x = node("a", NULL, "sprung x", &body);
     s = match(sheet, &jump, NULL);
-    CHECK(s.clipped && s.color == 0x010203);
+    CHECK(s.clipped && s.color == 0x010203 && (s.has & CSS_BACKGROUND) && (s.has & CSS_WEIGHT));
+    s = match(sheet, &jump_x, NULL);
+    CHECK(s.clipped && s.color == 0x010203 && !(s.has & CSS_BACKGROUND));
     css_free(sheet);
+}
+
+/* Ein kleiner Baum für Regeln, die nach Geschwistern und Zuständen fragen */
+static css_node_t kids[12];
+static int kid_count;
+
+static const css_node_t *kid_sibling(const css_node_t *n, int direction)
+{
+    long i = n - kids;
+    if (i < 0 || i >= kid_count)
+        return NULL;
+    for (i += direction; i >= 0 && i < kid_count; i += direction) {
+        if (kids[i].parent == n->parent)
+            return &kids[i];
+    }
+    return NULL;
+}
+
+static bool kid_state(const css_node_t *n, int which)
+{
+    return which == CSS_STATE_EMPTY ? n == &kids[3] : n == &kids[9];
+}
+
+static const css_tree_t kid_tree = { kid_sibling, kid_state };
+
+static void test_structure(void)
+{
+    static const char text[] =
+        "li:first-child { color: #010101 } li:last-child { color: #020202 }\n"
+        "li:nth-child(2n) { background-color: #030303 } li:nth-child( odd ) { font-weight: bold }\n"
+        "li:nth-last-child(2) { font-style: italic } li:nth-child(-n + 2) { text-decoration: underline }\n"
+        "li + li { text-align: center } li:nth-child(3) ~ li { float: left }\n"
+        "h2 + p { color: #040404 } h2 ~ p { background-color: #050505 } h2 + p + p { font-weight: bold }\n"
+        "ul > li:not(:first-child):not(:last-child) { display: none }\n"
+        "li:is(.a, .b, :hover) { visibility: hidden } :where(.a) { color: #060606 }\n"
+        "li.a { color: #070707 } li:empty { text-align: right } p:only-child { color: #f00 }\n"
+        "p:first-of-type { font-style: italic } p:last-of-type { text-decoration: underline }\n"
+        "h2:only-of-type { color: #080808 } p:nth-of-type(2) { text-align: right }\n"
+        "input:checked + span { color: #090909 } input:enabled { color: #0a0a0a } input:disabled { color: #0b0b0b }\n"
+        "div:enabled { color: #f00 } :lang(de) > h2 { font-weight: bold } :lang(en) > h2 { font-style: italic }\n"
+        "li:nth-child(2n+1 of .a) { color: #f00 } li:first-child:hover { color: #f00 } li:has(a) { color: #f00 }\n"
+        "li:is(:hover, :focus) { color: #f00 } p:dir(rtl) { color: #f00 } p:dir(ltr) { clear: both }\n"
+        "span:not(.a, .b) { font-weight: bold } li > :is(b, i):not(.c) { color: #f00 }\n";
+    css_sheet_t *sheet = css_create(1000);
+    CHECK(sheet && css_add(sheet, text, sizeof(text) - 1));
+
+    css_node_t html = node("html", NULL, NULL, NULL);
+    html.attrs = " lang=\"de-AT\"";
+    html.attrs_len = strlen(html.attrs);
+    css_node_t body = node("body", NULL, NULL, &html), ul = node("ul", NULL, NULL, &body);
+    kid_count = 0;
+    for (int i = 0; i < 5; i++)         /* kids[0..4]: fünf Listenpunkte; der zweite hat die Klasse a */
+        kids[kid_count++] = node("li", NULL, i == 1 ? "a" : i == 4 ? "b" : NULL, &ul);
+    kids[kid_count++] = node("h2", NULL, NULL, &body);          /* 5 */
+    kids[kid_count++] = node("p", NULL, NULL, &body);           /* 6 */
+    kids[kid_count++] = node("p", NULL, NULL, &body);           /* 7 */
+    kids[kid_count++] = node_with("input", " disabled", &body); /* 8 */
+    kids[kid_count++] = node("input", NULL, NULL, &body);       /* 9: angekreuzt (laut Baum) */
+    kids[kid_count++] = node("span", NULL, "b", &body);         /* 10 */
+    kids[kid_count++] = node("span", NULL, NULL, &body);        /* 11 */
+    for (int i = 0; i < kid_count; i++)
+        kids[i].tree = &kid_tree;
+
+    css_style_t s[12];
+    for (int i = 0; i < kid_count; i++)
+        s[i] = match(sheet, &kids[i], NULL);
+    /* Stellung unter den Geschwistern */
+    CHECK(s[0].color == 0x010101 && s[4].color == 0x020202 && s[1].color == 0x070707 && !(s[2].has & CSS_COLOR));
+    CHECK(!(s[0].has & CSS_BACKGROUND) && (s[1].has & CSS_BACKGROUND) && (s[3].has & CSS_BACKGROUND) &&
+          !(s[4].has & CSS_BACKGROUND));
+    CHECK(s[0].bold && !s[1].bold && s[2].bold && s[4].bold);
+    CHECK(s[3].italic && !s[4].italic && !s[2].italic);
+    CHECK(s[0].underline && s[1].underline && !s[2].underline);
+    /* Nachbarn */
+    CHECK(!(s[0].has & CSS_ALIGN) && s[1].align == CSS_CENTER && s[4].align == CSS_CENTER);
+    CHECK(!(s[2].has & CSS_FLOAT) && (s[3].has & CSS_FLOAT) && (s[4].has & CSS_FLOAT));
+    CHECK(s[6].color == 0x040404 && !(s[7].has & CSS_COLOR) && (s[6].has & CSS_BACKGROUND) &&
+          (s[7].has & CSS_BACKGROUND) && s[7].bold && !s[6].bold);
+    /* Verneinung und Auswahl aus mehreren */
+    CHECK(!(s[0].has & CSS_DISPLAY) && s[1].display == CSS_NONE && s[3].display == CSS_NONE &&
+          !(s[4].has & CSS_DISPLAY));
+    CHECK(s[1].hidden && s[4].hidden && !s[0].hidden);
+    CHECK(!s[10].bold && s[11].bold);
+    /* ohne Inhalt, einziges Kind, Stellung unter Gleichnamigen */
+    CHECK(s[3].align == CSS_RIGHT && s[2].align == CSS_CENTER);
+    CHECK(s[6].italic && !s[7].italic && s[7].underline && !s[6].underline && s[5].color == 0x080808 &&
+          s[7].align == CSS_RIGHT && !(s[6].has & CSS_ALIGN));
+    /* Zustände von Feldern, Sprache, Schreibrichtung */
+    CHECK(s[10].color == 0x090909 && !(s[11].has & CSS_COLOR));
+    CHECK(s[9].color == 0x0A0A0A && s[8].color == 0x0B0B0B);
+    CHECK(s[5].bold && !s[5].italic && (s[6].has & CSS_CLEAR));
+
+    /* wer die Geschwister nicht kennt, auf den treffen solche Regeln nicht zu */
+    css_node_t alone = node("li", NULL, NULL, &ul);
+    css_style_t a = match(sheet, &alone, NULL);
+    CHECK(!(a.has & CSS_COLOR) && !a.bold && !(a.has & CSS_ALIGN) && !(a.has & CSS_DISPLAY));
+    css_free(sheet);
+
+    /* dieselben Mittel in querySelector */
+    static const char query[] = "UL > LI:nth-child(2), p:last-of-type, li:not(.a):not(:first-child)";
+    css_selector_t *sel = css_selector_parse(query, sizeof(query) - 1);
+    CHECK(sel && css_selector_matches(sel, &kids[1]) && css_selector_matches(sel, &kids[7]) &&
+          css_selector_matches(sel, &kids[2]) && !css_selector_matches(sel, &kids[0]) &&
+          !css_selector_matches(sel, &kids[6]));
+    css_selector_free(sel);
+    CHECK(css_selector_parse("li:nth-child(x)", 15) == NULL && css_selector_parse("li +", 4) == NULL &&
+          css_selector_parse("> li", 4) == NULL && css_selector_parse("li:not(", 7) == NULL);
 }
 
 static void test_media(void)
@@ -671,6 +781,7 @@ int main(void)
     test_attributes();
     test_boxes();
     test_cascade_and_values();
+    test_structure();
     test_media();
     test_box_model();
     test_fuzz();

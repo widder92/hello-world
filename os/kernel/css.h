@@ -27,6 +27,23 @@
 typedef struct css_sheet css_sheet_t;
 
 /* Ein Element der Seite mit dem, woran Regeln es erkennen */
+struct css_node;
+
+/* Zustände eines Elements, die nicht aus seinen Attributen hervorgehen */
+enum { CSS_STATE_EMPTY,                 /* ohne Inhalt (:empty) */
+       CSS_STATE_CHECKED };             /* jetzt angekreuzt bzw. gewählt (:checked) */
+
+/*
+ * Auskunft über die Umgebung eines Elements. Wer den ganzen Baum kennt (dom.c),
+ * gibt sie mit - dann lassen sich auch Regeln prüfen, die nach den Geschwistern
+ * fragen ("a + b", ":first-child", ":nth-child(2n)").
+ */
+typedef struct css_tree {
+    /* das Element davor (direction -1) oder danach (+1) unter demselben Elternteil, oder NULL */
+    const struct css_node *(*sibling)(const struct css_node *node, int direction);
+    bool (*state)(const struct css_node *node, int which);
+} css_tree_t;
+
 typedef struct css_node {
     const char *tag;                    /* Elementname, Groß-/Kleinschreibung egal */
     size_t tag_len;
@@ -43,6 +60,7 @@ typedef struct css_node {
      */
     const char *(*attr)(const struct css_node *node, const char *name, size_t name_len,
                         size_t *value_len);
+    const css_tree_t *tree;             /* Auskunft über Geschwister und Zustände, oder NULL */
 } css_node_t;
 
 enum { CSS_COLOR = 1, CSS_BACKGROUND = 2, CSS_WEIGHT = 4, CSS_SLANT = 8, CSS_SIZE = 16,

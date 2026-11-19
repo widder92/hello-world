@@ -104,23 +104,39 @@ static const struct {
     { "background-size", P_BG_SIZE },
 };
 
-enum { S_TAG, S_CLASS, S_ID, S_ROOT, S_ATTR };
+enum { S_TAG, S_CLASS, S_ID, S_ROOT, S_ATTR,
+       S_NTH,                           /* :nth-child(an+b) und Verwandte: die wievielte Stelle unter den Geschwistern */
+       S_EMPTY, S_CHECKED, S_DISABLED, S_ENABLED,
+       S_LANG,                          /* :lang(de) */
+       S_NOT, S_IS };                   /* :not(...) - keine der Möglichkeiten; :is(...), :where(...) - eine davon */
 
 /* Vergleiche eines Attributs: vorhanden, gleich, Wort darin, Anfang bis "-", Anfang, Ende, enthält */
 enum { A_EXISTS, A_EQUALS, A_WORD, A_DASH, A_PREFIX, A_SUFFIX, A_CONTAINS };
 
-typedef struct {
-    uint8_t kind;
-    uint8_t op;                         /* nur S_ATTR: A_... */
-    bool fold;                          /* nur S_ATTR: Groß-/Kleinschreibung egal */
-    uint16_t length, value_length;
-    const char *name;
-    const char *value;                  /* nur S_ATTR */
-} simple_t;
+/* S_NTH: von hinten gezählt; nur Elemente desselben Namens zählen mit */
+enum { NTH_LAST = 1, NTH_TYPE = 2 };
+
+/* Wie ein Glied der Auswahl zum vorigen steht: darin, direkt darin, direkt danach, irgendwo danach */
+enum { REL_INSIDE, REL_CHILD, REL_NEXT, REL_AFTER };
+
+struct compound;
 
 typedef struct {
+    uint8_t kind;
+    uint8_t op;                         /* S_ATTR: A_...; S_NTH: NTH_...; S_NOT, S_IS: Zahl der Möglichkeiten */
+    bool fold;                          /* nur S_ATTR: Groß-/Kleinschreibung egal */
+    uint16_t length, value_length;
+    int16_t a, b;                       /* nur S_NTH: die Stellen a*n + b (n = 0, 1, 2 ...) */
+    const char *name;
+    union {
+        const char *value;              /* nur S_ATTR */
+        struct compound *inner;         /* S_NOT, S_IS: die Möglichkeiten, je ein Glied (kmalloc) */
+    };
+} simple_t;
+
+typedef struct compound {
     uint8_t count;
-    bool child;                         /* steht direkt unter dem vorigen Glied ("a > b") */
+    uint8_t relation;                   /* REL_...: wie es zum vorigen Glied steht ("a > b", "a + b") */
     simple_t simples[SIMPLES_MAX];
 } compound_t;
 
@@ -2691,8 +2707,65 @@ static bool attribute_matches(const simple_t *s, const css_node_t *node)
     return false;
 }
 
+static const css_node_t *sibling_of(const css_node_t *node, int direction)
+{
+    return node->tree && node->tree->sibling ? node->tree->sibling(node, direction) : NULL;
+}
+
+static bool same_tag(const css_node_t *a, const css_node_t *b)
+{
+    return a->tag_len == b->tag_len && same_text(a->tag, b->tag, a->tag_len, true);
+}
+
+/* Steht das Element unter seinen Geschwistern an einer der Stellen a*n + b? */
+static bool nth_matches(const simple_t *s, const css_node_t *node)
+{
+    if (!node->tree || !node->tree->sibling)
+        return false;                   /* niemand kennt die Geschwister */
+    int direction = (s->op & NTH_LAST) ? 1 : -1, index = 1;
+    for (const css_node_t *p = sibling_of(node, direction); p; p = sibling_of(p, direction)) {
+        if (!(s->op & NTH_TYPE) || same_tag(p, node))
+            index++;
+        if ((s->a == 0 && index > s->b) || index > 100000)
+            return false;
+    }
+    if (s->a == 0)
+        return index == s->b;
+    int d = index - s->b;
+    return d % s->a == 0 && d / s->a >= 0;
+}
+
+/* Formularfelder: Nur sie können ein- oder ausgeschaltet sein (:enabled, :disabled). */
+static bool form_control(const css_node_t *node)
+{
+    static const char *const names[] = { "button", "input", "select", "textarea", "option", "optgroup",
+                                         "fieldset", NULL };
+    for (int i = 0; names[i]; i++) {
+        if (node->tag_len == strlen(names[i]) && same_text(node->tag, names[i], node->tag_len, true))
+            return true;
+    }
+    return false;
+}
+
+/* Fragt das Glied nach Geschwistern oder Inhalt - also nach etwas, das nur der Baum weiß? */
+static bool needs_tree(const compound_t *c)
+{
+    for (int i = 0; i < c->count; i++) {
+        const simple_t *s = &c->simples[i];
+        if (s->kind == S_NTH || s->kind == S_EMPTY)
+            return true;
+        for (int k = 0; (s->kind == S_NOT || s->kind == S_IS) && k < s->op; k++) {
+            if (needs_tree(&s->inner[k]))
+                return true;
+        }
+    }
+    return false;
+}
+
 static bool compound_matches(const compound_t *c, const css_node_t *node)
 {
+    const char *have;
+    size_t n;
     for (int i = 0; i < c->count; i++) {
         const simple_t *s = &c->simples[i];
         switch (s->kind) {
@@ -2700,7 +2773,7 @@ static bool compound_matches(const compound_t *c, const css_node_t *node)
             if (node->tag_len != s->length)
                 return false;
             for (size_t k = 0; k < s->length; k++) {
-                if (lower(node->tag[k]) != s->name[k])
+                if (lower(node->tag[k]) != lower(s->name[k]))
                     return false;
             }
             break;
@@ -2720,25 +2793,91 @@ static bool compound_matches(const compound_t *c, const css_node_t *node)
             if (!attribute_matches(s, node))
                 return false;
             break;
+        case S_NTH:
+            if (!nth_matches(s, node))
+                return false;
+            break;
+        case S_EMPTY:
+            if (!node->tree || !node->tree->state || !node->tree->state(node, CSS_STATE_EMPTY))
+                return false;
+            break;
+        case S_CHECKED:
+            /* der Stand von jetzt, wenn ihn jemand kennt - sonst der aus dem Quelltext */
+            if (node->tree && node->tree->state ? !node->tree->state(node, CSS_STATE_CHECKED)
+                                                : !find_attribute(node, "checked", 7, &have, &n) &&
+                                                  !find_attribute(node, "selected", 8, &have, &n))
+                return false;
+            break;
+        case S_DISABLED: case S_ENABLED:
+            if (!form_control(node) ||
+                find_attribute(node, "disabled", 8, &have, &n) != (s->kind == S_DISABLED))
+                return false;
+            break;
+        case S_LANG: {
+            /* die Sprache steht am Element oder an einem, in dem es steckt */
+            const css_node_t *p = node;
+            while (p && !find_attribute(p, "lang", 4, &have, &n))
+                p = p->parent;
+            if (!p || n < s->length || !same_text(have, s->name, s->length, true) ||
+                (n > s->length && have[s->length] != '-'))
+                return false;
+            break;
+        }
+        case S_NOT:
+            for (int k = 0; k < s->op; k++) {
+                /* "nicht das erste Kind" lässt sich ohne Wissen über die Geschwister nicht bejahen */
+                if ((!node->tree && needs_tree(&s->inner[k])) || compound_matches(&s->inner[k], node))
+                    return false;
+            }
+            break;
+        case S_IS: {
+            bool any = false;
+            for (int k = 0; k < s->op && !any; k++)
+                any = compound_matches(&s->inner[k], node);
+            if (!any)
+                return false;
+            break;
+        }
         }
     }
     return true;
 }
 
-/* Passt die Auswahl bis zum Glied index, wenn dieses für node steht? */
-static bool selector_matches(const rule_t *rule, int index, const css_node_t *node)
+/*
+ * Passt die Auswahl bis zum Glied index, wenn dieses für node steht? steps
+ * begrenzt die Arbeit: Verschachtelte "irgendwo darin / irgendwo danach"
+ * könnten sonst sehr lange probieren.
+ */
+static bool selector_walk(const rule_t *rule, int index, const css_node_t *node, int *steps)
 {
-    if (!node || !compound_matches(&rule->compounds[index], node))
+    if (!node || --*steps < 0 || !compound_matches(&rule->compounds[index], node))
         return false;
     if (index == 0)
         return true;
-    if (rule->compounds[index].child)
-        return selector_matches(rule, index - 1, node->parent);
-    for (const css_node_t *up = node->parent; up; up = up->parent) {
-        if (selector_matches(rule, index - 1, up))
-            return true;
+    switch (rule->compounds[index].relation) {
+    case REL_CHILD:
+        return selector_walk(rule, index - 1, node->parent, steps);
+    case REL_NEXT:
+        return selector_walk(rule, index - 1, sibling_of(node, -1), steps);
+    case REL_AFTER:
+        for (const css_node_t *p = sibling_of(node, -1); p && *steps > 0; p = sibling_of(p, -1)) {
+            if (selector_walk(rule, index - 1, p, steps))
+                return true;
+        }
+        return false;
+    default:
+        for (const css_node_t *up = node->parent; up && *steps > 0; up = up->parent) {
+            if (selector_walk(rule, index - 1, up, steps))
+                return true;
+        }
+        return false;
     }
-    return false;
+}
+
+static bool selector_matches(const rule_t *rule, int index, const css_node_t *node)
+{
+    int steps = 20000;
+    return selector_walk(rule, index, node, &steps);
 }
 
 static void match_bucket(const css_sheet_t *sheet, uint32_t bucket, const css_node_t *node,
@@ -3021,15 +3160,405 @@ static bool parse_attribute(const char *text, size_t length, size_t *at, simple_
     return true;
 }
 
+/* Gibt frei, was die Glieder an Möglichkeiten für :not() und :is() angelegt haben. */
+static void free_compounds(compound_t *list, int count)
+{
+    for (int c = 0; c < count; c++) {
+        for (int k = 0; k < list[c].count; k++) {
+            simple_t *s = &list[c].simples[k];
+            if ((s->kind == S_NOT || s->kind == S_IS) && s->inner) {
+                free_compounds(s->inner, s->op);
+                kfree(s->inner);
+                s->inner = NULL;
+            }
+        }
+    }
+}
+
 /*
- * Liest eine Auswahl ("ul.menu > li a"). Liefert false, wenn etwas darin
- * vorkommt, das wir nicht prüfen können - die Regel entfällt dann.
+ * Was beim Lesen herauskommen kann: prüfbar; trifft hier nie zu (ein Zustand
+ * wie :hover - nichts liegt unter dem Mauszeiger, nichts hat den Fokus); oder
+ * etwas, das sich nicht prüfen lässt.
+ */
+enum { SEL_OK, SEL_NEVER, SEL_UNKNOWN };
+
+typedef struct {
+    int ids, classes, tags;
+} weight_t;
+
+#define ALTERNATIVES_MAX 8
+
+/* "odd", "even", "3", "2n", "-n+3", "2n + 1": die Stellen a*n + b */
+static bool parse_nth(const char *text, size_t n, int16_t *a, int16_t *b)
+{
+    trim(&text, &n);
+    if (word_is(text, n, "odd")) {
+        *a = 2;
+        *b = 1;
+        return true;
+    }
+    if (word_is(text, n, "even")) {
+        *a = 2;
+        *b = 0;
+        return true;
+    }
+    size_t i = 0;
+    int sign = 1, value = 0;
+    bool digits = false;
+    if (i < n && (text[i] == '+' || text[i] == '-'))
+        sign = text[i++] == '-' ? -1 : 1;
+    for (; i < n && text[i] >= '0' && text[i] <= '9' && value < 3000; i++, digits = true)
+        value = value * 10 + (text[i] - '0');
+    if (i >= n || lower(text[i]) != 'n') {
+        *a = 0;                         /* nur eine Zahl: genau diese Stelle */
+        *b = (int16_t)(sign * value);
+        return digits && i == n;
+    }
+    *a = (int16_t)(sign * (digits ? value : 1));
+    i++;
+    while (i < n && space(text[i]))
+        i++;
+    *b = 0;
+    if (i == n)
+        return true;
+    if (text[i] != '+' && text[i] != '-')
+        return false;                   /* auch "2n+1 of .x": lässt sich hier nicht prüfen */
+    sign = text[i++] == '-' ? -1 : 1;
+    while (i < n && space(text[i]))
+        i++;
+    value = 0;
+    digits = false;
+    for (; i < n && text[i] >= '0' && text[i] <= '9' && value < 3000; i++, digits = true)
+        value = value * 10 + (text[i] - '0');
+    *b = (int16_t)(sign * value);
+    return digits && i == n;
+}
+
+static int parse_compound(const char *text, size_t length, size_t *at, compound_t *c, weight_t *w,
+                          uint8_t *pseudo, int depth);
+
+/*
+ * Die Möglichkeiten in den Klammern von :not() und :is(): durch Kommas
+ * getrennt, jede ein einzelnes Glied. Legt sie in *out an (kmalloc).
+ */
+static int parse_alternatives(const char *text, size_t length, bool negated, compound_t **out, int *count,
+                              weight_t *w, int depth)
+{
+    compound_t list[ALTERNATIVES_MAX];
+    int n = 0, result = SEL_OK;
+    bool first = true;
+    *out = NULL;
+    *count = 0;
+    for (size_t i = 0; i <= length && result == SEL_OK;) {
+        size_t start = i;
+        int level = 0;
+        char quote = 0;
+        while (i < length && (level > 0 || quote || text[i] != ',')) {
+            char ch = text[i];
+            if (quote) {
+                if (ch == quote)
+                    quote = 0;
+            } else if (ch == '"' || ch == '\'') {
+                quote = ch;
+            } else if (ch == '(' || ch == '[') {
+                level++;
+            } else if ((ch == ')' || ch == ']') && level > 0) {
+                level--;
+            }
+            i++;
+        }
+        const char *one = text + start;
+        size_t len = i - start, used = 0;
+        i++;
+        trim(&one, &len);
+        if (len == 0)
+            continue;
+        compound_t c;
+        weight_t inner = { 0, 0, 0 };
+        int kind = n < ALTERNATIVES_MAX ? parse_compound(one, len, &used, &c, &inner, NULL, depth + 1)
+                                        : SEL_UNKNOWN;
+        if (kind == SEL_OK && used != len) {
+            free_compounds(&c, 1);
+            kind = SEL_UNKNOWN;         /* mehrere Glieder ("a b"): lässt sich so nicht prüfen */
+        }
+        if (kind == SEL_OK) {
+            c.relation = REL_INSIDE;
+            list[n++] = c;
+            if (first && w) {           /* das Gewicht richtet sich (vereinfacht) nach der ersten Möglichkeit */
+                w->ids += inner.ids;
+                w->classes += inner.classes;
+                w->tags += inner.tags;
+            }
+            first = false;
+        } else if (kind == SEL_UNKNOWN && negated) {
+            result = SEL_UNKNOWN;       /* "nicht irgendwas Unbekanntes": lieber die ganze Regel auslassen */
+        }
+        /* sonst: Diese Möglichkeit trifft nie zu - bei :not() stört sie nicht, bei :is() entfällt sie */
+    }
+    if (result == SEL_OK && n > 0) {
+        *out = kmalloc((size_t)n * sizeof(compound_t));
+        if (*out) {
+            memcpy(*out, list, (size_t)n * sizeof(compound_t));
+            *count = n;
+            return SEL_OK;
+        }
+        result = SEL_UNKNOWN;
+    }
+    free_compounds(list, n);
+    return result;
+}
+
+static bool add_simple(compound_t *c, simple_t s)
+{
+    if (c->count >= SIMPLES_MAX)
+        return false;
+    c->simples[c->count++] = s;
+    return true;
+}
+
+/* Eine Bedingung ab ":" (text[*at] steht dahinter): Zustände, Stellung unter Geschwistern, Verneinung */
+static int parse_pseudo(const char *text, size_t length, size_t *at, compound_t *c, weight_t *w,
+                        uint8_t *pseudo, int depth)
+{
+    static const char *const never[] = {
+        "hover", "active", "focus", "focus-visible", "focus-within", "target", "target-within",
+        "visited", "indeterminate", "invalid", "user-invalid", "out-of-range", "fullscreen", "modal",
+        "popover-open", "picture-in-picture", "playing", "paused", "autofill", "-webkit-autofill",
+        "-moz-focusring", "-moz-ui-invalid", "defined", "open", "current", "past", "future", NULL };
+    size_t i = *at;
+    bool element = i < length && text[i] == ':';        /* "::after": ein Scheinelement */
+    if (element)
+        i++;
+    size_t start = i;
+    while (i < length && name_char(text[i]))
+        i++;
+    const char *name = text + start, *arg = NULL;
+    size_t n = i - start, arg_n = 0;
+    if (n == 0)
+        return SEL_UNKNOWN;
+    if (i < length && text[i] == '(') {
+        size_t open = ++i;
+        int level = 1;
+        char quote = 0;
+        for (; i < length && level > 0; i++) {
+            char ch = text[i];
+            if (quote)
+                quote = ch == quote ? 0 : quote;
+            else if (ch == '"' || ch == '\'')
+                quote = ch;
+            else if (ch == '(')
+                level++;
+            else if (ch == ')')
+                level--;
+        }
+        if (level > 0)
+            return SEL_UNKNOWN;
+        arg = text + open;
+        arg_n = i - 1 - open;
+        trim(&arg, &arg_n);
+    }
+    *at = i;
+
+    if (!arg && (word_is(name, n, "after") || word_is(name, n, "before"))) {
+        /* ein Scheinelement vor oder nach dem Inhalt: Die Regel gilt ihm, nicht dem Element */
+        if (!pseudo || i != length || depth > 0)
+            return SEL_UNKNOWN;
+        *pseudo = lower(name[0]) == 'b' ? 1 : 2;
+        return SEL_OK;
+    }
+    if (element)
+        return SEL_UNKNOWN;             /* ::placeholder, ::selection ...: gibt es hier nicht */
+    if (w)
+        w->classes++;
+
+    simple_t s = { 0 };
+    if (!arg) {
+        static const struct {
+            const char *name;
+            uint8_t kind, op;
+            bool both;                  /* ":only-...": von vorn und von hinten die erste Stelle */
+        } plain[] = {
+            { "root", S_ROOT, 0, false }, { "empty", S_EMPTY, 0, false }, { "checked", S_CHECKED, 0, false },
+            { "disabled", S_DISABLED, 0, false }, { "enabled", S_ENABLED, 0, false },
+            { "first-child", S_NTH, 0, false }, { "last-child", S_NTH, NTH_LAST, false },
+            { "only-child", S_NTH, 0, true }, { "first-of-type", S_NTH, NTH_TYPE, false },
+            { "last-of-type", S_NTH, NTH_TYPE | NTH_LAST, false }, { "only-of-type", S_NTH, NTH_TYPE, true },
+        };
+        for (unsigned k = 0; k < sizeof(plain) / sizeof(plain[0]); k++) {
+            if (!word_is(name, n, plain[k].name))
+                continue;
+            s.kind = plain[k].kind;
+            s.op = plain[k].op;
+            s.b = 1;
+            if (!add_simple(c, s))
+                return SEL_UNKNOWN;
+            if (plain[k].both) {
+                s.op |= NTH_LAST;
+                if (!add_simple(c, s))
+                    return SEL_UNKNOWN;
+            }
+            return SEL_OK;
+        }
+        if (word_is(name, n, "link") || word_is(name, n, "any-link")) {
+            /* Links gelten als unbesucht; gemeint sind nur <a>-Elemente */
+            return add_simple(c, (simple_t){ .kind = S_TAG, .length = 1, .name = "a" }) ? SEL_OK : SEL_UNKNOWN;
+        }
+        if (word_is(name, n, "scope"))
+            return SEL_OK;              /* ohne Bezugselement: die ganze Seite */
+        for (int k = 0; never[k]; k++) {
+            if (word_is(name, n, never[k]))
+                return SEL_NEVER;
+        }
+        return SEL_UNKNOWN;
+    }
+
+    bool last = word_is(name, n, "nth-last-child") || word_is(name, n, "nth-last-of-type");
+    bool typed = word_is(name, n, "nth-of-type") || word_is(name, n, "nth-last-of-type");
+    if (last || typed || word_is(name, n, "nth-child")) {
+        s.kind = S_NTH;
+        s.op = (uint8_t)((last ? NTH_LAST : 0) | (typed ? NTH_TYPE : 0));
+        return parse_nth(arg, arg_n, &s.a, &s.b) && add_simple(c, s) ? SEL_OK : SEL_UNKNOWN;
+    }
+    if (word_is(name, n, "lang")) {
+        if (arg_n >= 2 && (arg[0] == '"' || arg[0] == '\'') && arg[arg_n - 1] == arg[0]) {
+            arg++;
+            arg_n -= 2;
+        }
+        for (size_t k = 0; k < arg_n; k++) {
+            if (!name_char(arg[k]))
+                return SEL_UNKNOWN;     /* Listen und Platzhalter */
+        }
+        if (arg_n == 0 || arg_n > 60)
+            return SEL_UNKNOWN;
+        s.kind = S_LANG;
+        s.name = arg;
+        s.length = (uint16_t)arg_n;
+        return add_simple(c, s) ? SEL_OK : SEL_UNKNOWN;
+    }
+    if (word_is(name, n, "dir"))        /* geschrieben wird hier immer von links nach rechts */
+        return word_is(arg, arg_n, "ltr") ? SEL_OK : word_is(arg, arg_n, "rtl") ? SEL_NEVER : SEL_UNKNOWN;
+
+    bool negated = word_is(name, n, "not");
+    bool weightless = word_is(name, n, "where");
+    if (negated || weightless || word_is(name, n, "is") || word_is(name, n, "matches") ||
+        word_is(name, n, "-webkit-any") || word_is(name, n, "-moz-any")) {
+        if (depth >= 3)
+            return SEL_UNKNOWN;
+        compound_t *inner;
+        int count;
+        if (w)
+            w->classes--;               /* das Gewicht kommt von dem, was in den Klammern steht */
+        int result = parse_alternatives(arg, arg_n, negated, &inner, &count, weightless ? NULL : w, depth);
+        if (result != SEL_OK)
+            return result;
+        if (count == 0)                 /* :not(:hover) trifft immer zu; :is(:hover) nie */
+            return negated ? SEL_OK : SEL_NEVER;
+        s.kind = negated ? S_NOT : S_IS;
+        s.op = (uint8_t)count;
+        s.inner = inner;
+        if (!add_simple(c, s)) {
+            free_compounds(inner, count);
+            kfree(inner);
+            return SEL_UNKNOWN;
+        }
+        return SEL_OK;
+    }
+    return SEL_UNKNOWN;                 /* :has() und anderes */
+}
+
+/*
+ * Liest ein Glied der Auswahl ("li.aktiv[data-x]:first-child") ab text[*at]
+ * bis zum nächsten Leerraum oder Verknüpfungszeichen.
+ */
+static int parse_compound(const char *text, size_t length, size_t *at, compound_t *c, weight_t *w,
+                          uint8_t *pseudo, int depth)
+{
+    size_t i = *at;
+    bool any = false;
+    int result = SEL_OK;
+    c->count = 0;
+    c->relation = REL_INSIDE;
+    while (result != SEL_UNKNOWN && i < length && !space(text[i]) && text[i] != '>' && text[i] != '+' &&
+           text[i] != '~' && text[i] != ',') {
+        simple_t s = { 0 };
+        if (text[i] == '*') {
+            i++;
+            any = true;
+            continue;
+        }
+        if (text[i] == '&') {
+            result = SEL_UNKNOWN;       /* verschachtelte Regeln */
+            break;
+        }
+        if (text[i] == '[') {
+            if (!parse_attribute(text, length, &i, &s) || !add_simple(c, s))
+                result = SEL_UNKNOWN;
+            if (w)
+                w->classes++;
+            any = true;
+            continue;
+        }
+        if (text[i] == ':') {
+            i++;
+            int one = parse_pseudo(text, length, &i, c, w, pseudo, depth);
+            if (one != SEL_OK)
+                result = one == SEL_UNKNOWN || result == SEL_UNKNOWN ? SEL_UNKNOWN : SEL_NEVER;
+            any = true;
+            continue;
+        }
+        if (text[i] == '.' || text[i] == '#') {
+            s.kind = text[i] == '.' ? S_CLASS : S_ID;
+            i++;
+        } else if (name_char(text[i])) {
+            s.kind = S_TAG;
+        } else {
+            result = SEL_UNKNOWN;       /* Klammern, Sonderzeichen */
+            break;
+        }
+        size_t start = i;
+        while (i < length && (name_char(text[i]) || text[i] == '\\'))
+            i++;
+        if (i == start || i - start > 200) {
+            result = SEL_UNKNOWN;
+            break;
+        }
+        for (size_t k = start; k < i; k++) {
+            if (text[k] == '\\')
+                result = SEL_UNKNOWN;   /* maskierte Zeichen: selten, wird ausgelassen */
+        }
+        s.name = text + start;
+        s.length = (uint16_t)(i - start);
+        if (!add_simple(c, s))
+            result = SEL_UNKNOWN;
+        if (w) {
+            if (s.kind == S_ID)
+                w->ids++;
+            else if (s.kind == S_CLASS)
+                w->classes++;
+            else
+                w->tags++;
+        }
+        any = true;
+    }
+    *at = i;
+    if (!any && result == SEL_OK)
+        result = SEL_UNKNOWN;
+    if (result != SEL_OK)
+        free_compounds(c, 1);
+    return result;
+}
+
+/*
+ * Liest eine Auswahl ("ul.menu > li + li a:not(.aus)"). Liefert false, wenn
+ * etwas darin vorkommt, das sich hier nicht prüfen lässt oder nie zutrifft -
+ * die Regel entfällt dann.
  */
 static bool parse_selector(const char *text, size_t length, compound_t *out, int *count,
                            uint32_t *specificity, uint8_t *pseudo)
 {
-    int ids = 0, classes = 0, tags = 0;
-    bool child = false;
+    weight_t w = { 0, 0, 0 };
+    uint8_t relation = REL_INSIDE;
+    bool pending = false;               /* ein Verknüpfungszeichen wartet auf sein Glied */
     size_t i = 0;
     *count = 0;
 
@@ -3038,137 +3567,36 @@ static bool parse_selector(const char *text, size_t length, compound_t *out, int
             i++;
         if (i >= length)
             break;
-        if (text[i] == '>') {
-            if (*count == 0 || child)
-                return false;
-            child = true;
+        if (text[i] == '>' || text[i] == '+' || text[i] == '~') {
+            if (*count == 0 || pending)
+                goto fail;
+            relation = text[i] == '>' ? REL_CHILD : text[i] == '+' ? REL_NEXT : REL_AFTER;
+            pending = true;
             i++;
             continue;
         }
-        if (text[i] == '+' || text[i] == '~' || *count >= COMPOUNDS_MAX)
-            return false;
-
-        compound_t *c = &out[(*count)++];
-        c->count = 0;
-        c->child = child;
-        child = false;
-        bool any = false;
-        while (i < length && !space(text[i]) && text[i] != '>' && text[i] != '+' &&
-               text[i] != '~') {
-            simple_t s = { 0 };
-            if (text[i] == '*') {
-                i++;
-                any = true;
-                continue;
-            }
-            if (text[i] == '[') {
-                if (c->count >= SIMPLES_MAX || !parse_attribute(text, length, &i, &s))
-                    return false;
-                c->simples[c->count++] = s;
-                classes++;
-                any = true;
-                continue;
-            }
-            if (text[i] == '.' || text[i] == '#') {
-                s.kind = text[i] == '.' ? S_CLASS : S_ID;
-                i++;
-            } else if (text[i] == ':') {
-                /* nur ":root" lässt sich ohne Wissen über Zustände prüfen */
-                size_t start = ++i;
-                if (i < length && text[i] == ':')
-                    start = ++i;        /* "::after" */
-                while (i < length && name_char(text[i]))
-                    i++;
-                if (pseudo && i == length && (word_is(text + start, i - start, "after") ||
-                                              word_is(text + start, i - start, "before"))) {
-                    /* ein Scheinelement vor oder nach dem Inhalt: Die Regel gilt ihm, nicht dem Element */
-                    *pseudo = lower(text[start]) == 'b' ? 1 : 2;
-                    any = true;
-                    continue;
-                }
-                if (word_is(text + start, i - start, "not") && i < length && text[i] == '(') {
-                    /*
-                     * ":not(:focus)" und Ähnliches trifft immer zu: Hier hat
-                     * nichts den Fokus und nichts liegt unter dem Mauszeiger.
-                     * Jede andere Verneinung wird ausgelassen.
-                     */
-                    static const char *const states[] = { "focus", "hover", "active",
-                                                          "focus-visible", "focus-within",
-                                                          "target" };
-                    size_t inner = ++i;
-                    while (i < length && text[i] != ')')
-                        i++;
-                    if (i >= length)
-                        return false;
-                    const char *what = text + inner;
-                    size_t n = i - inner;
-                    i++;
-                    trim(&what, &n);
-                    bool state = false;
-                    for (unsigned k = 0; k < sizeof(states) / sizeof(states[0]); k++) {
-                        if (n > 1 && what[0] == ':' && word_is(what + 1, n - 1, states[k]))
-                            state = true;
-                    }
-                    if (!state)
-                        return false;
-                    classes++;
-                    any = true;
-                    continue;
-                }
-                if (word_is(text + start, i - start, "root")) {
-                    s.kind = S_ROOT;
-                } else if (word_is(text + start, i - start, "link") ||
-                           word_is(text + start, i - start, "any-link")) {
-                    /* Links gelten als unbesucht; gemeint sind nur <a>-Elemente */
-                    if (c->count >= SIMPLES_MAX)
-                        return false;
-                    c->simples[c->count++] = (simple_t){ .kind = S_TAG, .length = 1, .name = "a" };
-                    any = true;
-                    classes++;
-                    continue;
-                } else {
-                    return false;
-                }
-                if (c->count >= SIMPLES_MAX)
-                    return false;
-                c->simples[c->count++] = s;
-                classes++;
-                any = true;
-                continue;
-            } else if (name_char(text[i])) {
-                s.kind = S_TAG;
-            } else {
-                return false;           /* Klammern, Sonderzeichen */
-            }
-            size_t start = i;
-            while (i < length && (name_char(text[i]) || text[i] == '\\'))
-                i++;
-            if (i == start || i - start > 200 || c->count >= SIMPLES_MAX)
-                return false;
-            for (size_t k = start; k < i; k++) {
-                if (text[k] == '\\')
-                    return false;       /* maskierte Zeichen: selten, wird ausgelassen */
-            }
-            s.name = text + start;
-            s.length = (uint16_t)(i - start);
-            c->simples[c->count++] = s;
-            if (s.kind == S_ID)
-                ids++;
-            else if (s.kind == S_CLASS)
-                classes++;
-            else
-                tags++;
-            any = true;
-        }
-        if (!any)
-            return false;
+        if (*count >= COMPOUNDS_MAX)
+            goto fail;
+        compound_t *c = &out[*count];
+        if (parse_compound(text, length, &i, c, &w, pseudo, 0) != SEL_OK)
+            goto fail;
+        c->relation = relation;
+        (*count)++;
+        relation = REL_INSIDE;
+        pending = false;
+        if (i < length && text[i] == ',')
+            goto fail;
     }
-    if (*count == 0 || child)
-        return false;
-    *specificity = ((uint32_t)(ids > 255 ? 255 : ids) << 16) |
-                   ((uint32_t)(classes > 255 ? 255 : classes) << 8) |
-                   (uint32_t)(tags > 255 ? 255 : tags);
+    if (*count == 0 || pending)
+        goto fail;
+    *specificity = ((uint32_t)(w.ids > 255 ? 255 : w.ids) << 16) |
+                   ((uint32_t)(w.classes > 255 ? 255 : w.classes < 0 ? 0 : w.classes) << 8) |
+                   (uint32_t)(w.tags > 255 ? 255 : w.tags);
     return true;
+fail:
+    free_compounds(out, *count);
+    *count = 0;
+    return false;
 }
 
 typedef struct {
@@ -3266,6 +3694,7 @@ static void add_rule(css_sheet_t *sheet, const char *selectors, size_t selectors
                              sizeof(rule_t), RULES_MAX);
         compound_t *copy = rules ? kmalloc((size_t)count * sizeof(compound_t)) : NULL;
         if (!rules || !copy) {
+            free_compounds(compounds, count);
             sheet->failed = true;
             return;
         }
@@ -3576,8 +4005,10 @@ void css_free(css_sheet_t *sheet)
 {
     if (!sheet)
         return;
-    for (int i = 0; i < sheet->rule_count; i++)
+    for (int i = 0; i < sheet->rule_count; i++) {
+        free_compounds(sheet->rules[i].compounds, sheet->rules[i].compound_count);
         kfree(sheet->rules[i].compounds);
+    }
     while (sheet->chunks) {
         chunk_t *next = sheet->chunks->next;
         kfree(sheet->chunks);
@@ -3669,6 +4100,7 @@ css_selector_t *css_selector_parse(const char *text, size_t length)
         }
         compound_t *copy = kmalloc((size_t)count * sizeof(compound_t));
         if (!copy) {
+            free_compounds(compounds, count);
             css_selector_free(sel);
             return NULL;
         }
@@ -3709,7 +4141,9 @@ void css_selector_free(css_selector_t *selector)
 {
     if (!selector)
         return;
-    for (int i = 0; i < selector->count; i++)
+    for (int i = 0; i < selector->count; i++) {
+        free_compounds(selector->rules[i].compounds, selector->rules[i].compound_count);
         kfree(selector->rules[i].compounds);
+    }
     kfree(selector);
 }

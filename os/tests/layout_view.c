@@ -286,6 +286,8 @@ static void draw_page(const page_t *page)
             bool button = w->kind == W_SUBMIT || w->kind == W_BUTTON;
             const char *text = button ? w->label : w->kind == W_SELECT && w->option_count
                                    ? page->options[w->first_option + w->selected].label : w->value;
+            if (w->boxed)
+                continue;               /* <button>: Die Seite hat ihn samt Inhalt gezeichnet */
             if (w->kind == W_CHECKBOX || w->kind == W_RADIO) {
                 fill(w->x + 4, w->y + 3, 13, 13, 0xA0A4AC);
                 fill(w->x + 5, w->y + 4, 11, 11, 0xFFFFFF);

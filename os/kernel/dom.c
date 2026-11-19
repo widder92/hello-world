@@ -85,6 +85,38 @@ static const char *css_attr(const css_node_t *css, const char *name, size_t name
     return NULL;
 }
 
+/* Auskunft für Auswahlregeln: das Element davor oder danach unter demselben Elternteil */
+static const css_node_t *css_sibling(const css_node_t *css, int direction)
+{
+    const dom_node *n = (const dom_node *)css;
+    for (n = direction < 0 ? n->prev : n->next; n; n = direction < 0 ? n->prev : n->next) {
+        if (n->type == DOM_ELEMENT)
+            return &n->css;
+    }
+    return NULL;
+}
+
+/* ... und Zustände: ohne Inhalt (:empty), angekreuzt oder gewählt (:checked) */
+static bool css_state(const css_node_t *css, int which)
+{
+    const dom_node *n = (const dom_node *)css;
+    if (which == CSS_STATE_EMPTY) {
+        for (const dom_node *c = n->first; c; c = c->next) {
+            if (c->type == DOM_ELEMENT || (c->type == DOM_TEXT && c->text_len > 0))
+                return false;
+        }
+        return true;
+    }
+    if (which == CSS_STATE_CHECKED) {
+        if (dom_is(n, "option"))
+            return dom_attr_get(n, "selected") != NULL;
+        return n->checked >= 0 ? n->checked != 0 : dom_attr_get(n, "checked") != NULL;
+    }
+    return false;
+}
+
+static const css_tree_t css_tree = { css_sibling, css_state };
+
 /* Hält fest, woran Auswahlregeln das Element erkennen */
 static void refresh_css(dom_node *node)
 {
@@ -98,6 +130,7 @@ static void refresh_css(dom_node *node)
     node->css.classes = classes;
     node->css.classes_len = classes ? strlen(classes) : 0;
     node->css.attr = css_attr;
+    node->css.tree = &css_tree;
     node->css.parent = node->parent && node->parent->type == DOM_ELEMENT ? &node->parent->css : NULL;
 }
 
