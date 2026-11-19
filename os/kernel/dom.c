@@ -130,6 +130,13 @@ static dom_node *node_new(dom_doc *doc, int type)
     return n;
 }
 
+/* Das Abbild hat sich geändert: Was daraus angezeigt und gemessen wurde, ist überholt. */
+static void touch(dom_doc *doc)
+{
+    doc->dirty = true;
+    doc->version++;
+}
+
 dom_node *dom_node_by_id(const dom_doc *doc, uint32_t id)
 {
     return doc && id >= 1 && id <= doc->count ? doc->nodes[id - 1] : NULL;
@@ -204,7 +211,7 @@ void dom_remove(dom_node *child)
         parent->last = child->prev;
     child->parent = child->prev = child->next = NULL;
     refresh_css(child);
-    child->doc->dirty = true;
+    touch(child->doc);
 }
 
 static void link_before(dom_node *parent, dom_node *child, dom_node *ref)
@@ -241,7 +248,7 @@ bool dom_insert(dom_node *parent, dom_node *child, dom_node *ref)
         dom_remove(child);
         link_before(parent, child, ref);
     }
-    parent->doc->dirty = true;
+    touch(parent->doc);
     return true;
 }
 
@@ -337,7 +344,7 @@ bool dom_attr_set(dom_node *node, const char *name, const char *value, size_t va
         return false;
     }
     refresh_css(node);
-    doc->dirty = true;
+    touch(doc);
     return true;
 }
 
@@ -358,7 +365,7 @@ void dom_attr_remove(dom_node *node, const char *name)
     give(node->doc, a->value, strlen(a->value) + 1);
     *a = node->attrs[--node->attr_count];
     refresh_css(node);
-    node->doc->dirty = true;
+    touch(node->doc);
 }
 
 /* --- Ausgabe ---------------------------------------------------------------------------------- */
@@ -511,7 +518,7 @@ bool dom_set_field_value(dom_node *node, const char *text, size_t len)
             }
             index++;
         }
-        doc->dirty = true;
+        touch(doc);
         return true;
     }
     char *copy = copy_text(doc, text, len);
@@ -521,7 +528,7 @@ bool dom_set_field_value(dom_node *node, const char *text, size_t len)
         give(doc, node->value, strlen(node->value) + 1);
     node->value = copy;
     node->has_value = true;
-    doc->dirty = true;
+    touch(doc);
     return true;
 }
 
@@ -1155,12 +1162,12 @@ bool dom_set_inner_html(dom_node *node, const char *html, size_t len)
             return false;
         t->raw = one_of(node->name, raw_tags);
         link_before(node, t, NULL);
-        doc->dirty = true;
+        touch(doc);
         return true;
     }
     builder b = { doc, node, node, NULL, NULL, NULL, true, depth_of(node) };
     build(&b, html, len);
-    doc->dirty = true;
+    touch(doc);
     return !doc->failed;
 }
 
@@ -1176,12 +1183,12 @@ bool dom_set_text(dom_node *node, const char *text, size_t len)
         give(doc, node->text, (size_t)node->text_len + 1);
         node->text = copy;
         node->text_len = (uint32_t)len;
-        doc->dirty = true;
+        touch(doc);
         return true;
     }
     while (node->first)
         dom_remove(node->first);
-    doc->dirty = true;
+    touch(doc);
     if (len == 0)
         return true;
     dom_node *t = dom_create_text(doc, text, len);

@@ -8,6 +8,8 @@
 #include "../kernel/script.h"
 #include "../kernel/css.h"
 #include "../kernel/html.h"
+#include "../kernel/dom.h"
+#include "../kernel/layout.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -281,6 +283,76 @@ static script_t *load(const char *html, uint32_t budget)
     script_t *s = script_create(html, strlen(html), "https://a.de/pfad/seite.html?x=1#teil", &host);
     if (s)
         script_boot(s);
+    return s;
+}
+
+/* --- Maße: Die Seite wird mit dem echten Seitenaufbau gesetzt (Schrift: 8 Pixel je Zeichen) --- */
+
+static int measure_count;
+static const char *measure_css_seen;
+
+static int fake_width(void *ctx, const char *text, size_t len, uint8_t style, uint8_t size)
+{
+    (void)ctx; (void)style; (void)size;
+    int n = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (((uint8_t)text[i] & 0xC0) != 0x80)
+            n++;
+    }
+    return n * 8;
+}
+
+static picture_state_t no_picture(void *ctx, const char *url, int *w, int *h)
+{
+    (void)ctx; (void)url; (void)w; (void)h;
+    return PICTURE_UNKNOWN;
+}
+
+static bool lay_out(const struct dom_doc *doc, const struct css_sheet *css, script_geometry_t *out)
+{
+    html_text_t text = { .cell_width = 8, .width = fake_width, .base_size = 16, .text_color = 0x222630,
+                         .link_color = 0x1E5ABE, .page_color = 0xFCFCFA, .css = css, .scripts = true };
+    html_pictures_t pictures = { .cell_width = 1, .line_height = 20, .max_rows = 34, .lookup = no_picture };
+    layout_options_t options = { .width = 900, .height = 600, .base_url = "https://a.de/pfad/seite.html",
+                                 .css = css, .text = &text, .pictures = &pictures, .scripts = true,
+                                 .geometry = true };
+    page_t *page = layout_document(doc, &options);
+    if (!page)
+        return false;
+    out->rects = page->rects;
+    out->count = page->rect_count;
+    out->width = page->width;
+    out->height = page->height;
+    page->rects = NULL;
+    page_free(page);
+    return out->rects != NULL;
+}
+
+static bool on_measure(void *ctx, const struct dom_doc *doc, const struct css_sheet *css, const char *url,
+                       script_geometry_t *out)
+{
+    (void)ctx;
+    if (strcmp(url, "https://a.de/pfad/seite.html?x=1#teil") != 0)
+        return false;
+    measure_count++;
+    measure_css_seen = (const char *)css;
+    return lay_out(doc, css, out);
+}
+
+/* Wie load_styled(), aber die Skripte erfahren auch, wo die Elemente stehen */
+static script_t *load_measured(const char *html, css_sheet_t **css, uint32_t budget)
+{
+    script_host_t host = { .fetch = NULL, .request = on_request, .log = on_log, .alert = on_alert,
+                           .confirm = on_confirm, .cancelled = on_cancelled, .measure = on_measure,
+                           .width = 900, .height = 600, .budget_ms = budget };
+    script_t *s = script_create(html, strlen(html), "https://a.de/pfad/seite.html?x=1#teil", &host);
+    if (!s)
+        return NULL;
+    *css = css_create(900);
+    css_set_viewport_height(*css, 600);
+    html_find_styles(html, strlen(html), "https://a.de/pfad/seite.html", note_style, *css);
+    script_set_styles(s, *css);
+    script_boot(s);
     return s;
 }
 
@@ -952,6 +1024,184 @@ int main(int argc, char **argv)
               strstr(request_log, "GET https://10.1.2.3:8080/offen-nicht;") && public_only_seen == 0,
               "Seite aus dem eigenen Netz: Anfragen dorthin gehen hinaus (und brauchen wie überall die Erlaubnis des Servers)");
         script_destroy(s);
+    }
+
+    /* 4b. Fähigkeitsproben: Große Seiten prüfen so, ob sich ihre Skripte hier überhaupt lohnen */
+    reported = 0;
+    s = load("<html><body>" PRE "<script>\n"
+             "eq('querySelector' in document, true, 'document.querySelector');\n"
+             "eq('localStorage' in window, true, 'localStorage');\n"
+             "eq(/./.dotAll, false, 'RegExp: dotAll');\n"
+             "eq(/./s.dotAll, true, 'RegExp: Schalter s');\n"
+             "eq('fromEntries' in Object, true, 'Object.fromEntries');\n"
+             "var probe; try { new Function('try { async function* x() {} } catch {}'); probe = true; } catch (e) { probe = String(e); }\n"
+             "eq(probe, true, 'async function* und catch ohne Namen');\n"
+             "probe = 0; try { new Function('(async (a = 0,) => a)'); probe = true; } catch (e) { probe = String(e); }\n"
+             "eq(probe, true, 'async-Pfeilfunktion mit Vorgabewert');\n"
+             "eq(/./g.flags, 'g', 'RegExp: flags');\n"
+             "eq(typeof Promise.prototype['finally'], 'function', 'Promise.finally');\n"
+             "eq(typeof window.IntersectionObserver + typeof window.ResizeObserver + typeof window.requestAnimationFrame, 'functionfunctionfunction', 'Beobachter');\n"
+             "fertig();</script></body></html>", 0);
+    check(s != NULL && reported == 1, "Fähigkeitsproben der großen Seiten");
+    script_destroy(s);
+
+    /* 4c. Maße und Lage der Elemente, Rollen, "ist es im Bild?" */
+    static const char page_measure[] =
+        "<html><head><style>body{margin:0} #kopf{height:50px;padding:10px 20px;border:3px solid #000}"
+        " #links{float:left;width:200px;height:300px} #rechts{margin-left:200px;height:300px;position:relative}"
+        " #frei{position:absolute;left:30px;top:40px;width:60px;height:20px}"
+        " #weg{display:none} .hoch{height:1500px} #unten{height:100px} #rand{box-sizing:border-box;width:300px;"
+        "padding:10px;border:5px solid #000;height:80px}</style></head><body>" PRE
+        "<div id=kopf>Kopf <b id=fett>fett</b></div><div id=links></div>"
+        "<div id=rechts><div id=frei></div><p id=absatz style='margin:0'>Text im Absatz</p></div>"
+        "<div id=weg><span id=drin>nie</span></div><div id=rand></div><div class=hoch id=hoch></div>"
+        "<div id=unten></div><div id=ende></div><p id=aus></p>"
+        "<script>function g(i) { return document.getElementById(i); }\n"
+        "var r = g('kopf').getBoundingClientRect();\n"
+        "eq([r.left, r.top, r.width, r.height, r.right, r.bottom, r.x, r.y].join(), '0,0,900,76,900,76,0,0', 'Kasten: Lage samt Rahmen');\n"
+        "eq([g('kopf').offsetWidth, g('kopf').offsetHeight, g('kopf').clientWidth, g('kopf').clientHeight, g('kopf').clientTop, g('kopf').clientLeft].join(), '900,76,894,70,3,3', 'offset- und client-Maße');\n"
+        "var f = g('fett').getBoundingClientRect();\n"
+        "eq([f.left, f.top, f.width, f.height].join(), '63,13,32,20', 'Element im Text: die Fläche seiner Zeichen');\n"
+        "eq([g('fett').offsetWidth, g('fett').clientWidth, g('fett').offsetParent === document.body].join(), '32,0,true', 'Element im Text: keine Innenfläche');\n"
+        "eq([g('links').offsetLeft, g('links').offsetTop, g('rechts').offsetLeft, g('rechts').offsetTop].join(), '0,76,200,76', 'nebeneinander');\n"
+        "eq(g('frei').offsetParent, g('rechts'), 'offsetParent: das Element mit position');\n"
+        "eq([g('frei').offsetLeft, g('frei').offsetTop, g('frei').getBoundingClientRect().left, g('frei').getBoundingClientRect().top].join(), '30,40,230,116', 'frei platziert');\n"
+        "eq([g('weg').offsetWidth, g('weg').offsetHeight, g('weg').getClientRects().length, g('drin').offsetWidth, g('weg').offsetParent].join(), '0,0,0,0,', 'Ausgeblendetes hat keinen Platz');\n"
+        "eq(g('absatz').getClientRects().length, 1, 'Sichtbares hat eine Fläche');\n"
+        "var c = getComputedStyle(g('kopf'));\n"
+        "eq([c.width, c.height, c.paddingLeft, c.paddingTop, c.borderTopWidth, c.getPropertyValue('border-left-width'), c.position].join(), '854px,50px,20px,10px,3px,3px,static', 'getComputedStyle: Maße in Pixeln');\n"
+        "eq([getComputedStyle(g('rand')).width, g('rand').offsetWidth, g('rand').clientWidth, getComputedStyle(g('fett')).width, getComputedStyle(g('frei')).position, getComputedStyle(g('rechts')).position].join(), '300px,300,290,auto,absolute,relative', 'border-box, Text, position');\n"
+        "var html = document.documentElement;\n"
+        "eq([html.clientWidth, html.clientHeight, window.innerWidth, window.innerHeight].join(), '900,600,900,600', 'der sichtbare Ausschnitt');\n"
+        "eq([html.scrollHeight, html.scrollWidth, document.body.offsetHeight, html.offsetHeight].join(), '2072,900,2056,2072', 'Höhe der ganzen Seite (unten der Abstand des letzten Absatzes)');\n"
+        /* Messen nach einer Änderung: Die Seite wird neu gesetzt */
+        "g('kopf').style.height = '100px';\n"
+        "eq([g('kopf').offsetHeight, g('links').offsetTop, html.scrollHeight].join(), '126,126,2122', 'nach einer Änderung stimmen die Maße wieder');\n"
+        "var neu = document.createElement('div'); neu.style.cssText = 'width:40px;height:30px'; neu.id = 'neu';\n"
+        "eq(neu.offsetWidth, 0, 'noch nicht in der Seite: kein Platz');\n"
+        "document.body.insertBefore(neu, g('kopf'));\n"
+        "eq([neu.offsetWidth, neu.offsetHeight, g('kopf').offsetTop].join(), '40,30,30', 'ein neues Element');\n"
+        "document.body.removeChild(neu); g('kopf').style.height = '';\n"
+        /* Rollen */
+        "eq([window.scrollY, window.pageYOffset, html.scrollTop, document.body.scrollTop].join(), '0,0,0,0', 'am Anfang oben');\n"
+        "var gerollt = 0; window.addEventListener('scroll', function () { gerollt++; });\n"
+        "document.addEventListener('scroll', function (e) { gerollt += 10; check(e.target === document, 'scroll kommt vom Dokument'); });\n"
+        "window.scrollTo(0, 500);\n"
+        "eq([window.scrollY, html.scrollTop, g('kopf').getBoundingClientRect().top, g('kopf').offsetTop].join(), '500,500,-500,0', 'gerollt: Lage im Ausschnitt, nicht auf der Seite');\n"
+        "window.scrollBy(0, 100); eq(window.pageYOffset, 600, 'scrollBy');\n"
+        "window.scrollTo({ top: 99999, behavior: 'smooth' }); eq(window.scrollY, 1472, 'nicht weiter als bis ans Ende');\n"
+        "window.scrollTo(0, -5); eq(window.scrollY, 0, 'nicht vor den Anfang');\n"
+        "g('unten').scrollIntoView(); eq(window.scrollY, 1472, 'scrollIntoView: so weit es geht');\n"
+        "g('hoch').scrollIntoView(); eq(window.scrollY, 456, 'scrollIntoView: an den oberen Rand');\n"
+        "g('rand').scrollIntoView({ block: 'nearest' }); eq(window.scrollY, 376, 'nearest: gerade so ins Bild');\n"
+        "g('rand').scrollIntoView({ block: 'nearest' }); eq(window.scrollY, 376, 'nearest: schon im Bild - nichts tun');\n"
+        "g('rand').scrollIntoView({ block: 'center' }); eq(window.scrollY, 116, 'center');\n"
+        "html.scrollTop = 0; eq(window.scrollY, 0, 'scrollTop setzen');\n"
+        "eq([document.elementFromPoint(250, 120) === g('frei'), document.elementFromPoint(70, 20) === g('fett'), document.elementFromPoint(100, 200) === g('links'), document.elementFromPoint(-1, 5), document.elementFromPoint(5, 9999)].join(), 'true,true,true,,', 'elementFromPoint');\n"
+        "var breit = 0; window.addEventListener('resize', function () { breit = window.innerWidth + 'x' + window.innerHeight; });\n"
+        "var schmal = window.matchMedia('(max-width: 800px)'), wechsel = [];\n"
+        "schmal.addEventListener('change', function (e) { wechsel.push('a' + e.matches + (this === schmal)); });\n"
+        "schmal.addListener(function (e) { wechsel.push('b' + e.matches); }); schmal.onchange = function (e) { wechsel.push('c' + e.media); };\n"
+        "window.matchMedia('(min-width: 100px)').addEventListener('change', function () { wechsel.push('falsch'); });\n"
+        /* Beobachter */
+        "var gesehen = [], io = new IntersectionObserver(function (liste, wer) {\n"
+        "  check(wer === io, 'der Beobachter kommt mit');\n"
+        "  liste.forEach(function (e) { gesehen.push(e.target.id + (e.isIntersecting ? '+' : '-') + Math.round(e.intersectionRatio * 100)); });\n"
+        "}, { rootMargin: '0px 0px 100px 0px' });\n"
+        "eq([io.root, io.rootMargin, io.thresholds.join()].join('|'), '|0px 0px 100px 0px|0', 'Angaben des Beobachters');\n"
+        "io.observe(g('kopf')); io.observe(g('unten')); io.observe(g('weg')); io.observe(g('kopf'));\n"
+        "var halb = [], io2 = new IntersectionObserver(function (l) { l.forEach(function (e) { halb.push((e.isIntersecting ? '+' : '-') + Math.round(e.intersectionRatio * 100)); }); }, { threshold: [0.5, 1] });\n"
+        "io2.observe(g('rand'));\n"
+        "var groessen = [], ro = new ResizeObserver(function (l) { l.forEach(function (e) { groessen.push(e.target.id + ':' + e.contentRect.width + 'x' + e.contentRect.height + '/' + e.borderBoxSize[0].blockSize); }); });\n"
+        "ro.observe(g('kopf'));\n"
+        "var fehler = ''; try { new IntersectionObserver(function () {}, { rootMargin: '1em' }); } catch (e) { fehler = e.name; }\n"
+        "eq(fehler, 'SyntaxError', 'rootMargin nur in px und %');\n"
+        "function stand() { g('aus').textContent = gesehen.join(' ') + ' | ' + halb.join(' ') + ' | ' + groessen.join(' ') + ' | ' + gerollt; }\n"
+        "fertig();</script></body></html>";
+    {
+        css_sheet_t *css = NULL;
+        measure_count = 0;
+        reported = 0;
+        s = load_measured(page_measure, &css, 0);
+        check(s != NULL && reported == 1, "Seite mit Maßen geladen und geprüft");
+        if (s && reported != 1)
+            printf("  letzte Meldung: %s\n", last_log);
+        if (s) {
+            check(measure_count >= 3 && measure_count <= 8 && measure_css_seen == (const char *)css,
+                  "die Seite wird nur neu gesetzt, wenn sie sich geändert hat");
+            uint32_t node, button;
+            char wish[64];
+            check(script_wish(s, wish, sizeof(wish), &node, &button) == SCRIPT_SCROLL && node == 0 &&
+                  script_wish(s, wish, sizeof(wish), &node, &button) == SCRIPT_NOTHING,
+                  "Rollen kommt beim Browser als Wunsch an - nur der letzte Stand");
+            run_timers(s, 3);
+            script_eval(s, "stand()");
+            check(page_has(s, ">kopf+100 unten-0 weg-0 | +100 | kopf:854x50/76 | 11</p>"),
+                  "Beobachter melden den Anfangsstand; scroll wurde einmal gemeldet");
+            /* der Benutzer rollt: Die Skripte erfahren es, die Beobachter prüfen */
+            check(script_view(s, 0) == true && script_view(s, 0) == false,
+                  "die Seite steht: eine Prüfung der Beobachter, dann kein Aufruf mehr");
+            int before_view = measure_count;
+            check(script_view(s, 1400) == true, "gerollt: Die Skripte erfahren es");
+            script_eval(s, "eq(window.scrollY, 1400, 'scrollY nach dem Rollen von Hand'); stand()");
+            check(page_has(s, ">kopf+100 unten-0 weg-0 kopf-0 unten+100 | +100 -0 | kopf:854x50/76 | 22</p>"),
+                  "nach dem Rollen: oben aus dem Bild, unten im Bild");
+            check(measure_count == before_view, "Rollen allein setzt die Seite nicht neu");
+            /* die Seite ändert sich: Der Browser setzt sie und gibt die Lage gleich mit */
+            before_view = measure_count;
+            script_eval(s, "g('kopf').style.height = '70px'; g('unten').style.display = 'none'");
+            script_geometry_t geo = { 0 };
+            check(lay_out(script_document(s), css, &geo), "Seite gesetzt");
+            script_set_geometry(s, &geo);
+            check(geo.rects == NULL && script_view(s, 1400) == true, "geänderte Seite: Beobachter prüfen erneut");
+            script_eval(s, "stand()");
+            check(page_has(s, "unten+100 unten-0 | +100 -0 | kopf:854x50/76 kopf:854x70/96 | 22</p>") &&
+                  measure_count == before_view,
+                  "Beobachter sehen die neue Größe - ohne dass eigens gesetzt wird");
+            check(script_view(s, 1400) == true && script_view(s, 1400) == false,
+                  "(die Meldung hat das Abbild geändert: noch eine Prüfung, dann Ruhe)");
+            /* das Fenster bekommt eine andere Größe */
+            script_resize(s, 700, 500);
+            script_eval(s, "g('aus').textContent = 'fenster ' + breit + ' ' + document.documentElement.clientWidth + ' ' + window.matchMedia('(max-width: 800px)').matches + ' ' + schmal.matches + ' ' + wechsel.join()");
+            check(page_has(s, ">fenster 700x500 700 true true c(max-width: 800px),atruetrue,btrue</p>"),
+                  "resize: Die Skripte erfahren die neue Größe des Fensters - auch wer auf eine Bedingung wartet (matchMedia)");
+            script_resize(s, 900, 600);
+            script_eval(s, "g('aus').textContent = 'zurück ' + schmal.matches + ' ' + wechsel.length");
+            check(page_has(s, ">zurück false 6</p>"), "... und zurück");
+            /* abmelden */
+            script_eval(s, "io.disconnect(); io2.unobserve(g('rand')); ro.disconnect(); g('kopf').style.height = '10px'");
+            check(script_view(s, 1400) == false, "niemand beobachtet mehr");
+            /* ein Skript, das abwechselnd ändert und misst, setzt die Seite nicht endlos neu */
+            before_view = measure_count;
+            script_eval(s, "var sum = 0; for (var i = 0; i < 200; i++) { g('kopf').style.height = (20 + i) + 'px'; sum += g('kopf').offsetHeight; }"
+                           " g('aus').textContent = 'summe ' + (sum > 0) + ' ' + (g('weg').offsetWidth === 0) + ' ' + (g('kopf').offsetWidth > 0)");
+            check(measure_count - before_view == 12 && page_has(s, ">summe true true true</p>"),
+                  "ändern und messen im Wechsel: nach zwölf Mal bleibt es beim letzten Stand");
+            before_view = measure_count;
+            script_eval(s, "g('aus').textContent = 'danach ' + g('kopf').offsetHeight");
+            check(measure_count - before_view == 1 && page_has(s, ">danach 245</p>"),
+                  "beim nächsten Ereignis stimmen die Maße wieder");
+            script_destroy(s);
+        }
+        css_free(css);
+    }
+    /* ohne Auskunft über die Lage (kein Seitenaufbau zur Hand) bleibt es bei den Annahmen */
+    {
+        css_sheet_t *css = NULL;
+        reported = 0;
+        s = load_styled("<html><head><style>#weg{display:none}</style></head><body>" PRE
+                        "<p id=a>da</p><p id=weg>fort</p><script>\n"
+                        "var a = document.getElementById('a'), weg = document.getElementById('weg');\n"
+                        "eq([a.offsetWidth, a.offsetHeight, a.getClientRects().length, weg.offsetWidth, weg.getClientRects().length].join(), '100,20,1,0,0', 'angenommene Maße');\n"
+                        "eq([document.documentElement.clientWidth, document.body.offsetWidth, window.scrollY].join(), '900,900,0', 'ganze Seite: so groß wie das Fenster');\n"
+                        "var da = []; new IntersectionObserver(function (l) { l.forEach(function (e) { da.push(e.target.id + e.isIntersecting); }); }).observe(a);\n"
+                        "setTimeout(function () { eq(da.join(), 'atrue', 'alles Sichtbare gilt als im Bild'); fertig(); }, 0);\n"
+                        "</script></body></html>", &css, 0);
+        if (s)
+            run_timers(s, 2);
+        check(s != NULL && reported == 1, "ohne Seitenaufbau: Annahmen wie bisher");
+        script_destroy(s);
+        css_free(css);
     }
 
     /* Das Fenster wird geschlossen: Laufende Skripte enden sofort */

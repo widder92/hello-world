@@ -183,6 +183,7 @@ typedef struct {
     script_t *incoming_script;
     uint32_t incoming_submit;           /* beim Laden wollte ein Skript dieses Formular absenden */
     uint32_t incoming_button;
+    int incoming_scroll;                /* ... oder die Seite an diese Stelle rollen (-1: nein) */
     bool script_loading;                /* der Helfer führt gerade Skripte aus */
     uint64_t script_next;               /* dann sind die nächsten Zeitgeber fällig */
     uint64_t script_show_after;         /* Änderungen durch Zeitgeber: frühestens dann neu setzen */
@@ -824,19 +825,9 @@ static bool simple_wanted;              /* einfache Darstellung im Zeilenraster;
  * gelesenen. Reiner Text und die einfache Darstellung nehmen den Seitenaufbau
  * im Zeilenraster.
  */
-static page_t *layout_page(browser_t *b, const char *source, size_t len, const char *url,
-                           bool html, const css_sheet_t *css, const script_t *script)
+static html_text_t page_text(const browser_t *b, const css_sheet_t *css, bool scripts)
 {
-    bool scripts = script != NULL;
-    page_t *page;
-    if (!html) {
-        page = html_plain_text(source, len, COLUMNS);
-        if (page)
-            page_place_rows(page, ROW_H, FONT_W, TEXT_SIZE);
-        return page;
-    }
-    html_pictures_t pictures = picture_source(b);
-    html_text_t text = {
+    return (html_text_t){
         .cell_width = FONT_W, .width = page_text_width,
         .base_size = (uint8_t)b->text_size,
         .heading_size = { (uint8_t)(26 * b->text_size / TEXT_SIZE), (uint8_t)(21 * b->text_size / TEXT_SIZE),
@@ -844,18 +835,50 @@ static page_t *layout_page(browser_t *b, const char *source, size_t len, const c
         .text_color = C_TEXT, .link_color = C_LINK, .page_color = C_BACKGROUND,
         .css = css, .scripts = scripts,
     };
+}
+
+/* Die Lage der Elemente gehört ab jetzt den Skripten (page behält sie nicht). */
+static void take_geometry(page_t *page, script_geometry_t *out)
+{
+    out->rects = page->rects;
+    out->count = page->rect_count;
+    out->width = page->width;
+    out->height = page->height;
+    page->rects = NULL;
+    page->rect_count = 0;
+}
+
+static page_t *layout_page(browser_t *b, const char *source, size_t len, const char *url,
+                           bool html, const css_sheet_t *css, script_t *script)
+{
+    bool scripts = script != NULL;
+    page_t *page;
+    script_geometry_t geometry = { 0 };
+    if (!html) {
+        page = html_plain_text(source, len, COLUMNS);
+        if (page)
+            page_place_rows(page, ROW_H, FONT_W, TEXT_SIZE);
+        return page;
+    }
+    html_pictures_t pictures = picture_source(b);
+    html_text_t text = page_text(b, css, scripts);
     if (!simple_wanted && font_available()) {
         dom_doc *own = script ? NULL : dom_parse(source, len);
         const dom_doc *doc = script ? script_document(script) : own;
         layout_options_t options = {
             .width = PAGE_W, .height = CONTENT_H, .base_url = url, .css = css, .text = &text,
-            .pictures = &pictures, .metrics = page_metrics, .scripts = scripts,
+            .pictures = &pictures, .metrics = page_metrics, .scripts = scripts, .geometry = scripts,
         };
         page = doc ? layout_document(doc, &options) : NULL;
         dom_free(own);
-        if (page)
+        if (page) {
+            /* die Skripte erfahren gleich, wo alles steht - sie müssen dann nicht eigens danach fragen */
+            take_geometry(page, &geometry);
+            script_set_geometry(script, &geometry);
             return page;
+        }
     }
+    script_set_geometry(script, &geometry);     /* im Zeilenraster: Die Lage ist für Skripte unbekannt */
     page = html_layout_rich(source, len, url, LAYOUT_W, &pictures, &text);
     if (page)
         page_place_rows(page, ROW_H, FONT_W, TEXT_SIZE);
@@ -1035,13 +1058,38 @@ static bool script_confirm(void *ctx, const char *text)
     return script_ask(ctx, text, true);
 }
 
+/*
+ * Auskunft für die Skripte: setzt die Seite, wie sie jetzt ist, und meldet, wo
+ * ihre Elemente stehen. In der einfachen Darstellung gibt es diese Auskunft
+ * nicht - dort steht nichts so, wie die Seite es gestaltet.
+ */
+static bool script_measure(void *ctx, const struct dom_doc *doc, const struct css_sheet *css,
+                           const char *url, script_geometry_t *out)
+{
+    browser_t *b = ctx;
+    if (simple_wanted || !font_available())
+        return false;
+    html_pictures_t pictures = picture_source(b);
+    html_text_t text = page_text(b, css, true);
+    layout_options_t options = {
+        .width = PAGE_W, .height = CONTENT_H, .base_url = url, .css = css, .text = &text,
+        .pictures = &pictures, .metrics = page_metrics, .scripts = true, .geometry = true,
+    };
+    page_t *page = layout_document(doc, &options);
+    if (!page)
+        return false;
+    take_geometry(page, out);
+    page_free(page);
+    return out->rects != NULL;
+}
+
 static script_host_t script_host(browser_t *b)
 {
     script_host_t host = {
         .fetch = script_fetch, .request = script_request, .alert = script_alert,
-        .confirm = script_confirm,
+        .confirm = script_confirm, .measure = script_measure,
         .cancelled = script_cancelled, .ctx = b,
-        .width = LAYOUT_W, .height = CONTENT_H,
+        .width = PAGE_W, .height = CONTENT_H,
     };
     return host;
 }
@@ -1414,6 +1462,7 @@ static void worker(void *arg)
 
     b->job_body = NULL;
     b->incoming_submit = 0;
+    b->incoming_scroll = -1;
     if (!url || !next || !wish || !extra) {
         set_status(b, true, "Nicht genug Speicher");
         goto done;
@@ -1570,6 +1619,8 @@ static void worker(void *arg)
                 if (kind == SCRIPT_SUBMIT) {
                     b->incoming_submit = node;
                     b->incoming_button = button;
+                } else if (kind == SCRIPT_SCROLL) {
+                    b->incoming_scroll = (int)node;
                 } else if (kind == SCRIPT_NAVIGATE && wish[0] != '#' &&
                            url_resolve(url, wish, next, URL_SIZE) && strcmp(next, url) != 0) {
                     away = true;        /* das Skript schickt uns gleich weiter */
@@ -1721,6 +1772,19 @@ static void relayout(browser_t *b, bool force)
     page_t *old = b->page;
     if (!old || !b->source || (b->page_columns == LAYOUT_W && !force))
         return;
+    if (b->page_columns != LAYOUT_W && b->source_html && b->style_cache) {
+        /*
+         * Andere Fensterbreite: Was die Stylesheets davon abhängig machen
+         * (@media, Maße in Teilen der Fensterbreite), gilt jetzt anders - die
+         * Gestaltung wird aus den schon geholten Dateien neu zusammengesetzt.
+         */
+        css_sheet_t *css = load_styles(b, b->style_cache, b->source, b->source_len, b->url);
+        if (css) {
+            script_set_styles(b->script, css);
+            css_free(b->css);
+            b->css = css;
+        }
+    }
     page_t *fresh = layout_page(b, b->source, b->source_len, b->url, b->source_html, b->css,
                                 b->script);
     if (!fresh)
@@ -2021,6 +2085,9 @@ static void take_incoming(browser_t *b)
      */
     int heading = b->page->rows ? b->page->heading_y : -1;
     b->scroll = heading > CONTENT_H / 2 ? heading - ROW_H : 0;
+    if (b->incoming_scroll >= 0 && !b->page->rows)
+        b->scroll = b->incoming_scroll;         /* ein Skript der Seite hat sie schon beim Laden gerollt */
+    b->incoming_scroll = -1;
     if (b->scroll > 0 && !b->status[0])
         set_status(b, false, "Zum Seitenanfang mit Pos1 - dort stehen Menüs und Links");
     relayout(b, false);                 /* falls das Fenster inzwischen breiter oder schmaler ist */
@@ -2514,6 +2581,22 @@ static void draw_widget(const browser_t *b, surface_t *s, int index, int x, int 
             gfx_fill(s, x + 7, y + 5, 7, 7, w->kind == W_RADIO ? C_FOCUS : C_TEXT);
         break;
     case W_SUBMIT: case W_BUTTON:
+        if (w->boxed) {
+            /* <button>: Die Seite hat ihn samt Inhalt gezeichnet - hier nur der Rahmen, wenn er gewählt ist */
+            if (focused) {
+                box_t box;
+                memset(&box, 0, sizeof(box));
+                box.w = width;
+                box.h = high;
+                box.radius = w->radius;
+                for (int i = 0; i < 4; i++) {
+                    box.border[i] = 2;
+                    box.border_color[i] = C_FOCUS;
+                }
+                draw_box(s, &box, x, box_y);
+            }
+            break;
+        }
         if (w->background && font_available()) {
             /* ein Knopf, dem die Seite sein Aussehen gibt */
             box_t box;
@@ -3380,6 +3463,12 @@ static void script_wishes(browser_t *b)
             int form = form_by_node(b->page, node);
             if (form >= 0)
                 send_form(b, form, button ? widget_by_node(b->page, button) : -2, false);
+        } else if (kind == SCRIPT_SCROLL) {
+            script_show(b);             /* die Stelle meint die Seite, wie sie jetzt ist */
+            if (b->page && !b->page->rows) {
+                b->scroll = (int)node;
+                clamp_scroll(b);
+            }
         } else if (kind == SCRIPT_BACK) {
             go_back(b);
         } else if (kind == SCRIPT_RELOAD && b->url[0]) {
@@ -3832,6 +3921,18 @@ void browser_app(void *arg)
                 script_show(b);
                 redraw = true;
             }
+            /*
+             * Der Ausschnitt: Hat der Benutzer gerollt oder sieht die Seite
+             * anders aus, erfahren es die Skripte - und wer wissen wollte, was
+             * ins Bild kommt, bekommt Bescheid. Erst wenn die Anzeige dem
+             * Abbild entspricht: Dann ist auch die Lage der Elemente aktuell.
+             */
+            if (b->page && !b->page->rows && !b->busy && !b->incoming_ready &&
+                !script_changed(b->script) && script_view(b->script, b->scroll)) {
+                script_wishes(b);
+                b->script_next = 0;     /* sie können Zeitgeber gestellt haben */
+                redraw = true;
+            }
         }
         if (b->dialog ? dialog_shown != b->dialog_number : dialog_shown != 0) {
             dialog_shown = b->dialog ? b->dialog_number : 0;
@@ -3882,6 +3983,10 @@ void browser_app(void *arg)
                             (CONTENT_H - 42) / TEXTEDIT_LINE_H);
             relayout(b, false);
             clamp_scroll(b);
+            if (b->script && !b->dialog) {
+                script_resize(b->script, PAGE_W, CONTENT_H);
+                script_settle(b);
+            }
         }
         if (ev.type == EV_KEY) {
             key_pressed(b, ev.key, ev.mods);

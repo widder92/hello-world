@@ -1102,7 +1102,9 @@ static bool grid_track(const css_sheet_t *sheet, const char *text, size_t n, css
             *out = high;
             out->size = low.size;
         } else {
-            *out = high;                /* zwei feste Grenzen: die obere gilt */
+            *out = high;                /* zwei feste Grenzen: die obere gilt - solange der Platz reicht */
+            out->shrinks = !low.fr;
+            out->low = low.size;
         }
         return true;
     }
@@ -2160,8 +2162,34 @@ static void apply(const css_sheet_t *sheet, cascade_t *c, uint8_t property, cons
         }
     }
     trim(&text, &length);
-    if (!length || word_is(text, length, "inherit") || word_is(text, length, "unset") ||
-        word_is(text, length, "initial") || word_is(text, length, "revert"))
+    if (word_is(text, length, "inherit") || word_is(text, length, "unset")) {
+        /*
+         * Bei Angaben, die ohnehin vom umgebenden Element kommen (Schrift,
+         * Textfarbe), heißt das: Was schwächere Regeln festgelegt haben, gilt
+         * nicht mehr. Bei allen anderen bleibt es dabei: wie nicht angegeben.
+         */
+        css_style_t *s = c->style;
+        if (property == P_COLOR && priority >= c->priority[slot]) {
+            s->has &= ~(uint32_t)CSS_COLOR;
+            s->color_inherited = true;
+            c->priority[slot] = priority;
+        }
+        if (c->boxes) {
+            bool all = property == P_FONT;
+            if ((all || property == P_SIZE) && BOX_SET(L_FONT_SIZE))
+                memset(&s->font_size, 0, sizeof(s->font_size));
+            if ((all || property == P_WEIGHT) && BOX_SET(L_WEIGHT))
+                s->font_weight = 0;
+            if ((all || property == P_STYLE) && BOX_SET(L_SLANT))
+                s->font_slant = 0;
+            if ((all || property == P_FAMILY) && BOX_SET(L_FAMILY))
+                s->font_family = 0;
+            if ((all || property == P_LINE_HEIGHT) && BOX_SET(L_LINE_HEIGHT))
+                memset(&s->line_height, 0, sizeof(s->line_height));
+        }
+        return;
+    }
+    if (!length || word_is(text, length, "initial") || word_is(text, length, "revert"))
         return;                         /* gilt wie nicht angegeben */
     if (c->boxes) {
         apply_box(sheet, c, property, text, length, priority, text != resolved);
@@ -2176,6 +2204,7 @@ static void apply(const css_sheet_t *sheet, cascade_t *c, uint8_t property, cons
         if (!css_color(text, length, &color))
             return;
         s->color = color;
+        s->color_inherited = false;
         s->has |= CSS_COLOR;
         break;
     case P_BACKGROUND:
@@ -3516,6 +3545,9 @@ static const char ua_rules[] =
     "col, colgroup { display: table-column }\n"
     "img, input, select, textarea, button, video, audio, canvas, iframe, object, embed, svg,"
     " progress, meter { display: inline-block }\n"
+    "button { box-sizing: border-box; padding: 3px 10px; border: 1px solid #3c465c; border-radius: 4px;"
+    " background-color: #3c465c; color: #f0f2f6; text-align: center; font-size: 14px; font-weight: normal;"
+    " font-style: normal; line-height: normal; white-space: normal }\n"
     "dialog { display: none }\n"
     "summary { font-weight: bold }\n";
 

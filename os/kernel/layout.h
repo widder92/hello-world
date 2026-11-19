@@ -31,6 +31,7 @@ typedef struct {
     void (*metrics)(void *ctx, uint8_t size, uint8_t style, int *ascent, int *descent);
     void *metrics_ctx;
     bool scripts;                       /* die Skripte der Seite laufen */
+    bool geometry;                      /* die Lage jedes Elements festhalten (page->rects) */
 } layout_options_t;
 
 /* Setzt die Seite; NULL bei Speichermangel. Das Abbild bleibt unverändert. */

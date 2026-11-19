@@ -1,5 +1,6 @@
 /* Skripte einer Webseite: Seitenabbild und JavaScript-Maschine verbinden - siehe script.h */
 #include "script.h"
+#include "console.h"
 #include "dom.h"
 #include "html.h"
 #include "js_impl.h"
@@ -57,7 +58,28 @@ struct script {
         bool module;
     } deferred[DEFERRED_MAX];
     int deferred_count;
+    /*
+     * Wo die Elemente stehen: der Stand, als die Seite zuletzt gesetzt wurde.
+     * Er gilt, solange sich weder das Abbild noch die Gestaltung geändert hat.
+     */
+    script_geometry_t geo;
+    bool geo_known;
+    uint32_t geo_version;
+    bool geo_stale;                     /* die Gestaltung ist seither ausgetauscht worden */
+    int geo_runs;                       /* so oft wurde in diesem Lauf eigens neu gesetzt ... */
+    uint64_t geo_ms;                    /* ... und so lange hat es gedauert */
+    int geo_max_runs;
+    uint64_t geo_max_ms;
+    int scroll_y;                       /* diese Höhe der Seite steht oben in der Anzeige */
+    bool watching;                      /* ein Skript beobachtet, was ins Bild kommt */
+    uint32_t seen_version;              /* Stand des Abbilds, als die Beobachter zuletzt prüften */
+    bool seen_any;
 };
+
+#define GEO_BOOT_RUNS  60               /* beim Laden: höchstens so oft eigens neu setzen ... */
+#define GEO_BOOT_MS    4000             /* ... und höchstens so lange */
+#define GEO_RUNS       12               /* je Ereignis oder Zeitgeber */
+#define GEO_MS         800
 
 enum { PROTO_ELEMENT, PROTO_TEXT, PROTO_COMMENT, PROTO_FRAGMENT, PROTO_DOCUMENT };
 
@@ -398,7 +420,7 @@ static const js_host_class style_class = { "CSSStyleDeclaration", style_get, sty
 
 /* berechnete Stile (getComputedStyle): weiter unten */
 static const js_host_class computed_class;
-static bool push_computed(js_state *J, const script_t *s, const dom_node *n, const char *name);
+static bool push_computed(js_state *J, script_t *s, const dom_node *n, const char *name);
 
 static bool style_method(js_state *J, int argc)
 {
@@ -442,6 +464,71 @@ static bool style_method(js_state *J, int argc)
 }
 
 /* --- Was gilt laut Gestaltung? (getComputedStyle, offsetWidth ...) ----------------------------- */
+
+/*
+ * Sorgt dafür, dass die Lage der Elemente zum jetzigen Abbild passt - dazu
+ * wird die Seite, wenn nötig, eigens gesetzt. Das kostet Zeit: Ein Skript, das
+ * abwechselnd ändert und misst, bekommt nach einer Weile den letzten Stand.
+ * Liefert true, wenn s->geo aktuell ist.
+ */
+static bool geometry(js_state *J, script_t *s)
+{
+    if (s->geo_known && !s->geo_stale && s->geo_version == s->doc->version)
+        return true;
+    if (!s->host.measure || s->geo_runs >= s->geo_max_runs || s->geo_ms >= s->geo_max_ms)
+        return false;
+    script_geometry_t fresh;
+    memset(&fresh, 0, sizeof(fresh));
+    uint64_t before = time_ms();
+    bool ok = s->host.measure(s->host.ctx, s->doc, s->css, s->url, &fresh);
+    uint64_t waited = time_ms() - before;
+    s->geo_runs++;
+    s->geo_ms += waited;
+    if (J->deadline)                    /* (die Zeit dafür hat ihre eigene Grenze) */
+        J->deadline += waited;
+    if (s->boot_until)
+        s->boot_until += waited;
+    if (!ok || !fresh.rects) {
+        kfree(fresh.rects);
+        s->geo_max_runs = 0;            /* es geht nicht: in diesem Lauf nicht noch einmal versuchen */
+        return false;
+    }
+    kfree(s->geo.rects);
+    s->geo = fresh;
+    s->geo_known = true;
+    s->geo_stale = false;
+    s->geo_version = s->doc->version;
+    return true;
+}
+
+static bool node_shown(const script_t *s, const dom_node *n);
+
+/*
+ * Die Lage eines Elements. Liefert 1 und *out, wenn es einen Platz auf der
+ * Seite hat; 0, wenn es nicht zu sehen ist; -1, wenn hier niemand die Seite
+ * setzen kann (dann gelten die alten Annahmen).
+ */
+static int node_place(js_state *J, script_t *s, const dom_node *n, node_rect_t *out)
+{
+    static const node_rect_t assumed = { 0, 0, 100, 20, { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, false };
+    bool fresh = geometry(J, s);
+    if (!s->geo_known)
+        return -1;
+    if (n->type != DOM_ELEMENT)
+        return 0;
+    const node_rect_t *r = n->id >= 1 && n->id <= s->geo.count ? &s->geo.rects[n->id - 1] : NULL;
+    if (fresh) {
+        if (!r || r->w < 0)
+            return 0;
+        *out = *r;
+        return 1;
+    }
+    /* veralteter Stand: Ob etwas zu sehen ist, sagt die Gestaltung - die Maße sind die von vorhin */
+    if (!node_shown(s, n))
+        return 0;
+    *out = r && r->w >= 0 ? *r : assumed;
+    return 1;
+}
 
 /* Verbirgt die Gestaltung dieses eine Element? Dieselben Regeln wie beim Seitenaufbau (html.c). */
 static bool node_hidden(const script_t *s, const dom_node *n, css_style_t *cs)
@@ -488,7 +575,50 @@ static bool node_shown(const script_t *s, const dom_node *n)
 }
 
 /* Der Wert, den getComputedStyle für name liefert - soweit er sich hier bestimmen lässt */
-static bool push_computed(js_state *J, const script_t *s, const dom_node *n, const char *name)
+static bool push_px(js_state *J, int px)
+{
+    char text[24];
+    ksnprintf(text, sizeof(text), "%dpx", px);
+    return js_push_cstr(J, text);
+}
+
+/* Maße, die sich erst beim Setzen der Seite ergeben; false: Dazu ist hier nichts bekannt. */
+static bool push_measured(js_state *J, script_t *s, const dom_node *n, const char *name, bool *ok)
+{
+    static const char *const sides[4] = { "top", "right", "bottom", "left" };
+    bool width = strcmp(name, "width") == 0, height = strcmp(name, "height") == 0;
+    int pad = -1, border = -1;
+    for (int i = 0; i < 4; i++) {
+        size_t len = strlen(sides[i]);
+        if (memcmp(name, "padding-", 8) == 0 && strcmp(name + 8, sides[i]) == 0)
+            pad = i;
+        if (memcmp(name, "border-", 7) == 0 && memcmp(name + 7, sides[i], len) == 0 &&
+            strcmp(name + 7 + len, "-width") == 0)
+            border = i;
+    }
+    if (!width && !height && pad < 0 && border < 0)
+        return false;
+    node_rect_t r;
+    if (node_place(J, s, n, &r) != 1)
+        return false;
+    if (pad >= 0) {
+        *ok = push_px(J, r.pad[pad]);
+    } else if (border >= 0) {
+        *ok = push_px(J, r.border[border]);
+    } else if (r.in_text) {
+        *ok = js_push_cstr(J, "auto");
+    } else {
+        css_style_t cs;
+        const char *style = dom_attr_get(n, "style");
+        css_match_full(s->css, &n->css, NULL, 0, style, style ? strlen(style) : 0, &cs);
+        int inner = width ? r.w - r.border[1] - r.border[3] - r.pad[1] - r.pad[3]
+                          : r.h - r.border[0] - r.border[2] - r.pad[0] - r.pad[2];
+        *ok = push_px(J, cs.box_sizing == CSS_BOX_BORDER ? (width ? r.w : r.h) : inner < 0 ? 0 : inner);
+    }
+    return true;
+}
+
+static bool push_computed(js_state *J, script_t *s, const dom_node *n, const char *name)
 {
     static const char *const blocks[] = {
         "address", "article", "aside", "blockquote", "body", "center", "details", "dialog", "dd",
@@ -528,13 +658,23 @@ static bool push_computed(js_state *J, const script_t *s, const dom_node *n, con
         return js_push_cstr(J, (cs.has & CSS_VISIBILITY) && cs.hidden ? "hidden" : "visible");
     if (strcmp(name, "float") == 0)
         return js_push_cstr(J, cs.float_side == CSS_SIDE_LEFT ? "left" : cs.float_side == CSS_SIDE_RIGHT ? "right" : "none");
-    if (strcmp(name, "opacity") == 0 || strcmp(name, "position") == 0) {
+    if (strcmp(name, "position") == 0) {
+        static const char *const names[] = { "static", "static", "relative", "absolute", "fixed", "sticky" };
+        css_style_t full;
+        const char *style = dom_attr_get(n, "style");
+        css_match_full(s->css, &n->css, NULL, 0, style, style ? strlen(style) : 0, &full);
+        return js_push_cstr(J, full.position <= CSS_POS_STICKY ? names[full.position] : "static");
+    }
+    if (strcmp(name, "opacity") == 0) {
         const char *style = dom_attr_get(n, "style"), *value;
         size_t len;
         if (style && find_declaration(style, name, &value, &len))
             return js_push_lstr(J, value, len);
-        return js_push_cstr(J, name[0] == 'o' ? "1" : "static");
+        return js_push_cstr(J, "1");
     }
+    bool measured_ok = false;
+    if (push_measured(J, s, n, name, &measured_ok))
+        return measured_ok;
     /* alles andere: was am Element selbst steht */
     const char *style = dom_attr_get(n, "style"), *value;
     size_t len;
@@ -600,7 +740,7 @@ enum {
     D_PARSE, D_INSERT, D_REMOVE, D_CLONE, D_CONTAINS, D_QUERY, D_MATCHES, D_BYID, D_BYTAG, D_BYCLASS,
     D_VALUE, D_SETVALUE, D_CHECKED, D_SETCHECKED, D_SELECTED, D_SETSELECTED, D_STYLE, D_DATASET,
     D_URL, D_RESOLVE, D_WISH, D_ALERT, D_CONFIRM, D_WRITE, D_SCRIPT, D_SIZE, D_PROTOS, D_DISPATCHER,
-    D_SHOWN, D_COMPUTED, D_REQUEST,
+    D_SHOWN, D_COMPUTED, D_REQUEST, D_RECT, D_PAGE, D_SCROLL, D_WATCH, D_VERSION, D_ANCHOR, D_AT,
 };
 
 static bool lower_name(js_state *J, int i, char *out, size_t size)
@@ -1254,7 +1394,8 @@ static bool dom_fn(js_state *J, int argc)
     switch (kind) {
     case D_DOC: case D_EL: case D_TEXTNODE: case D_COMMENT: case D_FRAG: case D_PARSE: case D_URL:
     case D_RESOLVE: case D_WISH: case D_ALERT: case D_CONFIRM: case D_WRITE: case D_SCRIPT:
-    case D_SIZE: case D_PROTOS: case D_DISPATCHER: case D_REQUEST:
+    case D_SIZE: case D_PROTOS: case D_DISPATCHER: case D_REQUEST: case D_PAGE: case D_SCROLL:
+    case D_WATCH: case D_VERSION: case D_AT:
         break;
     default:
         n = need_node(J, 0);
@@ -1502,6 +1643,116 @@ static bool dom_fn(js_state *J, int argc)
     }
     case D_SHOWN:
         return js_push(J, js_bool(node_shown(s, n)));
+    case D_RECT: {
+        /*
+         * [x, y, Breite, Höhe, Rahmen oben, rechts, unten, links, im Text, Innenabstand oben,
+         * rechts, unten, links]; null: nicht zu sehen; undefined: Hier setzt niemand die Seite.
+         */
+        node_rect_t r;
+        int have = node_place(J, s, n, &r);
+        if (have < 0)
+            return js_push(J, js_undef());
+        if (have == 0)
+            return js_push(J, js_null());
+        js_object *out = js_array_new(J, 13);
+        js_push(J, js_obj(out));
+        js_array_push(J, out, js_num(r.x));
+        js_array_push(J, out, js_num(r.y));
+        js_array_push(J, out, js_num(r.w));
+        js_array_push(J, out, js_num(r.h));
+        for (int i = 0; i < 4; i++)
+            js_array_push(J, out, js_num(r.border[i]));
+        js_array_push(J, out, js_bool(r.in_text));
+        for (int i = 0; i < 4; i++)
+            js_array_push(J, out, js_num(r.pad[i]));
+        return true;
+    }
+    case D_ANCHOR: {
+        /*
+         * Wonach sich offsetTop und offsetLeft richten: das nächste Element
+         * darüber, das seinen Inhalt frei platzieren lässt (position), sonst
+         * <body>; für gewöhnlich Gesetztes auch eine Tabellenzelle.
+         */
+        static const char *const cells[] = { "td", "th", "table", NULL };
+        css_style_t cs;
+        const char *style = dom_attr_get(n, "style");
+        if (n->type != DOM_ELEMENT || dom_is(n, "body") || dom_is(n, "html"))
+            return js_push(J, js_null());
+        css_match_full(s->css, &n->css, NULL, 0, style, style ? strlen(style) : 0, &cs);
+        bool placed = cs.position > CSS_POS_STATIC;
+        if (cs.position == CSS_POS_FIXED)
+            return js_push(J, js_null());
+        for (dom_node *p = n->parent; p && p->type == DOM_ELEMENT; p = p->parent) {
+            if (dom_is(p, "body") || (!placed && name_in(p, cells)))
+                return push_node(J, p);
+            style = dom_attr_get(p, "style");
+            css_match_full(s->css, &p->css, NULL, 0, style, style ? strlen(style) : 0, &cs);
+            if (cs.position > CSS_POS_STATIC)
+                return push_node(J, p);
+        }
+        return js_push(J, js_null());
+    }
+    case D_PAGE: {
+        /* Maße der ganzen Seite, soweit bekannt */
+        geometry(J, s);
+        if (!s->geo_known)
+            return js_push(J, js_undef());
+        js_object *out = js_array_new(J, 2);
+        js_push(J, js_obj(out));
+        js_array_push(J, out, js_num(s->geo.width));
+        js_array_push(J, out, js_num(s->geo.height));
+        return true;
+    }
+    case D_SCROLL: {
+        /* ohne Angabe: wo die Anzeige steht; mit: dorthin rollen */
+        double want;
+        if (argc < 1 || js_arg(J, 0)->t == JS_T_UNDEF)
+            return js_push(J, js_num(s->scroll_y));
+        if (!js_to_number(J, ARGI(0), &want))
+            return false;
+        int32_t y = want != want || want < 0 ? 0 : want > 1e9 ? 1000000000 : (int32_t)want;
+        geometry(J, s);
+        if (s->geo_known) {
+            int view = s->host.height > 0 ? s->host.height : 768;
+            int most = s->geo.height > view ? s->geo.height - view : 0;
+            if (y > most)
+                y = most;
+        }
+        if (y != s->scroll_y) {
+            s->scroll_y = y;
+            /* nur der letzte Wunsch dieser Art zählt */
+            if (s->wish_count > 0 && s->wishes[s->wish_count - 1].kind == SCRIPT_SCROLL)
+                s->wish_count--;
+            add_wish(s, SCRIPT_SCROLL, NULL, (uint32_t)y, 0);
+        }
+        return js_push(J, js_num(s->scroll_y));
+    }
+    case D_AT: {
+        /* das Element an dieser Stelle der Seite: das kleinste, dessen Fläche sie enthält */
+        double x, y;
+        if (!js_to_number(J, ARGI(0), &x) || !js_to_number(J, ARGI(1), &y))
+            return false;
+        geometry(J, s);
+        dom_node *best = NULL;
+        int64_t best_area = 0;
+        for (uint32_t i = 0; s->geo_known && i < s->geo.count && i < doc->count; i++) {
+            const node_rect_t *r = &s->geo.rects[i];
+            if (r->w <= 0 || r->h <= 0 || x < r->x || y < r->y || x >= (double)r->x + r->w ||
+                y >= (double)r->y + r->h)
+                continue;
+            int64_t area = (int64_t)r->w * r->h;
+            if (!best || area <= best_area) {
+                best = doc->nodes[i];
+                best_area = area;
+            }
+        }
+        return best ? push_node(J, best) : js_push(J, js_null());
+    }
+    case D_WATCH:
+        s->watching = argc > 0 && js_truthy(js_arg(J, 0));
+        return js_push(J, js_undef());
+    case D_VERSION:
+        return js_push(J, js_num(doc->version));
     case D_URL:
         return js_push_cstr(J, s->url);
     case D_RESOLVE: {
@@ -1628,7 +1879,9 @@ static const struct {
     { "url", 0, D_URL }, { "resolve", 2, D_RESOLVE }, { "wish", 3, D_WISH }, { "alert", 1, D_ALERT },
     { "confirm", 1, D_CONFIRM }, { "write", 1, D_WRITE }, { "script", 0, D_SCRIPT }, { "size", 0, D_SIZE },
     { "protos", 1, D_PROTOS }, { "dispatcher", 1, D_DISPATCHER }, { "shown", 1, D_SHOWN },
-    { "computed", 1, D_COMPUTED }, { "request", 6, D_REQUEST },
+    { "computed", 1, D_COMPUTED }, { "request", 6, D_REQUEST }, { "rect", 1, D_RECT },
+    { "page", 0, D_PAGE }, { "scroll", 1, D_SCROLL }, { "watch", 1, D_WATCH }, { "version", 0, D_VERSION },
+    { "anchor", 1, D_ANCHOR }, { "at", 2, D_AT },
 };
 
 /* --- Anlegen ------------------------------------------------------------------------------------- */
@@ -1719,6 +1972,7 @@ void script_destroy(script_t *s)
     dom_free(s->doc);
     kfree(s->stack);
     kfree(s->done);
+    kfree(s->geo.rects);
     kfree(s);
 }
 
@@ -2082,7 +2336,7 @@ typedef struct {
     int64_t wait;
 } call_t;
 
-enum { OP_BOOT, OP_CLICK, OP_SUBMIT, OP_FIELD, OP_TICK, OP_EVENT, OP_EVAL };
+enum { OP_BOOT, OP_CLICK, OP_SUBMIT, OP_FIELD, OP_TICK, OP_EVENT, OP_EVAL, OP_VIEW };
 
 static void entry(void *arg)
 {
@@ -2095,6 +2349,11 @@ static void entry(void *arg)
         s->fetch_ms = 0;
         s->fetch_limit = LATE_FETCH_MS;
     }
+    /* ... und seine eigene Grenze dafür, wie oft die Seite zum Messen neu gesetzt wird */
+    s->geo_runs = 0;
+    s->geo_ms = 0;
+    s->geo_max_runs = c->op == OP_BOOT ? GEO_BOOT_RUNS : GEO_RUNS;
+    s->geo_max_ms = c->op == OP_BOOT ? GEO_BOOT_MS : GEO_MS;
     switch (c->op) {
     case OP_BOOT:
         s->booting = true;
@@ -2127,6 +2386,7 @@ static void entry(void *arg)
             break;
         /* Der Stand kommt von der Anzeige: Das allein ist kein Grund, sie neu zu setzen. */
         bool dirty = s->doc->dirty;
+        uint32_t version = s->doc->version;
         bool set = c->value || c->checked >= 0 || c->selected >= -1;
         if (c->value)
             dom_set_field_value(n, c->value, strlen(c->value));
@@ -2135,6 +2395,7 @@ static void entry(void *arg)
         if (c->selected >= -1)
             n->selected = c->selected;
         s->doc->dirty = dirty;
+        s->doc->version = version;
         if (set)
             fire(s, n, "input", NULL, NULL);
         if (c->finished)
@@ -2149,6 +2410,11 @@ static void entry(void *arg)
     case OP_EVAL:
         if (c->value)
             js_run(J, c->value, strlen(c->value), "javascript:", s->host.budget_ms ? s->host.budget_ms : EVENT_MS);
+        run_scripts(s);
+        break;
+    case OP_VIEW:
+        /* der Ausschnitt hat sich verschoben, oder die Seite sieht anders aus als bei der letzten Prüfung */
+        fire(s, NULL, "view", NULL, c->type ? c->type : c->finished ? "scroll" : NULL);
         run_scripts(s);
         break;
     case OP_TICK:
@@ -2212,8 +2478,58 @@ void script_eval(script_t *s, const char *code)
 
 void script_set_styles(script_t *s, const struct css_sheet *css)
 {
-    if (s)
-        s->css = css;
+    if (!s)
+        return;
+    s->css = css;
+    s->geo_stale = true;                /* andere Gestaltung: Die Lage der Elemente gilt nicht mehr */
+    s->seen_any = false;
+}
+
+void script_set_geometry(script_t *s, script_geometry_t *geometry)
+{
+    if (!s) {
+        kfree(geometry->rects);
+        geometry->rects = NULL;
+        return;
+    }
+    kfree(s->geo.rects);
+    if (!geometry->rects) {
+        memset(&s->geo, 0, sizeof(s->geo));
+        s->geo_known = false;
+        return;
+    }
+    s->geo = *geometry;
+    s->geo_known = true;
+    s->geo_stale = false;
+    s->geo_version = s->doc->version;
+    s->seen_any = false;                /* neu gesetzt (auch: Bilder sind angekommen): Beobachter prüfen erneut */
+    geometry->rects = NULL;
+}
+
+void script_resize(script_t *s, int width, int height)
+{
+    if (!s || !s->J || js_dead(s->J) || (width == s->host.width && height == s->host.height))
+        return;
+    s->host.width = width;
+    s->host.height = height;
+    call_t c = { .op = OP_VIEW, .type = "resize" };
+    run(s, &c);
+}
+
+bool script_view(script_t *s, int scroll_y)
+{
+    if (!s || !s->J || js_dead(s->J))
+        return false;
+    bool moved = scroll_y != s->scroll_y;
+    bool look = s->watching && (!s->seen_any || s->seen_version != s->doc->version);
+    if (!moved && !look)
+        return false;
+    s->scroll_y = scroll_y;
+    s->seen_any = true;
+    s->seen_version = s->doc->version;
+    call_t c = { .op = OP_VIEW, .finished = moved };
+    run(s, &c);
+    return true;
 }
 
 bool script_stopped(const script_t *s)

@@ -186,7 +186,7 @@ check: | $(BUILD)
 	$(PYTHON) tools/embed.py kernel/domlib.js domlib_js $(BUILD)/domlib.inc
 	cc -O1 -g -fsanitize=address,undefined -fno-math-errno -Wall -Wextra -I$(BUILD) \
 	    -o $(BUILD)/script_test tests/script_test.c kernel/dom_js.c kernel/dom.c \
-	    kernel/html.c kernel/css.c kernel/url.c $(JS_ENGINE)
+	    kernel/html.c kernel/css.c kernel/url.c kernel/layout.c $(JS_ENGINE)
 	$(BUILD)/script_test
 
 clean:

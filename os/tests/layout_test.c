@@ -103,7 +103,8 @@ static bool lay(const char *html, int width, bool scripts)
                          .link_color = 0x1E5ABE, .page_color = 0xFCFCFA, .css = css, .scripts = scripts };
     html_pictures_t pictures = { .cell_width = 1, .line_height = 20, .max_rows = 34, .lookup = lookup };
     layout_options_t options = { .width = width, .height = 600, .base_url = "https://a.de/seite.html",
-                                 .css = css, .text = &text, .pictures = &pictures, .scripts = scripts };
+                                 .css = css, .text = &text, .pictures = &pictures, .scripts = scripts,
+                                 .geometry = true };
     page = doc ? layout_document(doc, &options) : NULL;
     return page != NULL;
 }
@@ -609,6 +610,157 @@ static void test_fuzz(void)
     done();
 }
 
+static const widget_t *widget_of(const char *id)
+{
+    const dom_node *n = doc ? dom_find_id(doc->root, id) : NULL;
+    for (int i = 0; n && page && i < page->widget_count; i++) {
+        if (page->widgets[i].node == n->id)
+            return &page->widgets[i];
+    }
+    return NULL;
+}
+
+static bool rect_of_button_ok(void)
+{
+    const dom_node *n = dom_find_id(doc->root, "s");
+    return n && page->rects && page->rects[n->id - 1].w == 22 && page->rects[n->id - 1].h == 22;
+}
+
+/* <button> ist ein Kasten mit eigenem Inhalt und dem Aussehen, das die Seite ihm gibt */
+static void test_buttons(void)
+{
+    lay("<style>.sym{width:22px;height:22px;padding:0;border:0;background:transparent} .sym .weg{display:none}"
+        " #g{background:#008000;color:#ffffff;padding:10px 30px;border:0;font-size:20px}</style>"
+        "<body style='margin:0'><button id=k>Mehr <b>jetzt</b></button><button id=s class=sym><span></span>"
+        "<span class=weg>Lange Beschriftung</span></button><p style='margin:0'><button id=g>Los</button></p>"
+        "<form action=/x><button id=f>Senden</button></form>", 400, true);
+    const widget_t *k = widget_of("k"), *sym = widget_of("s"), *g = widget_of("g"), *f = widget_of("f");
+    /* (der leere Knopf daneben steht mit seiner Unterkante auf der Grundlinie: Das schiebt die Zeile etwas tiefer) */
+    CHECK(k && k->kind == W_BUTTON && k->boxed && k->x == 0 && k->y == 4 && k->w == 102 && k->h > 20);
+    CHECK(text_at("Mehr", 11, 8) && find_span("jetzt", NULL, NULL) && (find_span("jetzt", NULL, NULL)->style & STYLE_BOLD));
+    CHECK(sym && sym->w == 22 && sym->h == 22 && sym->x == 102 && !has_text("Lange"));
+    CHECK(g && g->w == 3 * 8 + 60 && g->x == 0 && colored(0x008000) && colored(0x008000)->w == g->w);
+    CHECK(find_span("Los", NULL, NULL) && find_span("Los", NULL, NULL)->size == 20 &&
+          find_span("Los", NULL, NULL)->color == (HTML_COLOR_SET | 0xFFFFFF));
+    CHECK(f && f->kind == W_SUBMIT && f->boxed && f->form == 0 && f->label && strcmp(f->label, "Senden") == 0);
+    /* über dem Inhalt in der Zeichenfolge: So trifft der Klick den Knopf */
+    int seen = 0;
+    for (int i = 0; i < page->paint_count; i++)
+        seen += page->paint[i].kind == PAINT_WIDGET;
+    CHECK(seen == 4 && rect_of_button_ok());
+    /* ohne Skripte und ohne Formular tut ein Knopf nichts: Er erscheint nicht */
+    lay("<body><button id=k>Mehr</button><form action=/x><button id=f>Senden</button></form>", 400, false);
+    CHECK(!widget_of("k") && widget_of("f") && !has_text("Mehr") && has_text("Senden"));
+    done();
+}
+
+/* Die Lage eines Elements, wie Skripte sie erfahren */
+static const node_rect_t *rect(const char *id)
+{
+    const dom_node *n = doc ? dom_find_id(doc->root, id) : NULL;
+    return n && page && page->rects && n->id <= page->rect_count ? &page->rects[n->id - 1] : NULL;
+}
+
+static bool rect_is(const char *id, int x, int y, int w, int h)
+{
+    const node_rect_t *r = rect(id);
+    bool ok = r && r->x == x && r->y == y && r->w == w && r->h == h;
+    if (!ok) {
+        if (r)
+            printf("  #%s liegt bei %d,%d mit %dx%d (erwartet %d,%d mit %dx%d)\n", id, r->x, r->y, r->w, r->h,
+                   x, y, w, h);
+        else
+            printf("  #%s hat keinen Eintrag\n", id);
+    }
+    return ok;
+}
+
+/* "inherit": Was schwächere Regeln für Schrift und Farbe festgelegt haben, gilt nicht mehr */
+static void test_inherit(void)
+{
+    lay("<style>.w,h2{font-size:150%;font-weight:normal;font-style:italic} .w h2{font:inherit;margin:0}"
+        " a{color:#0000ff} .knopf{color:#ffffff;background:#333333} .knopf a{color:inherit}"
+        " .x h3{font-size:inherit;font-weight:inherit} b.n{font-weight:inherit}</style>"
+        "<div class=w><h2>Titel</h2></div><div class=knopf><a href=x>Knopf</a> <a href=y style='color:#ffff00'>rot</a></div>"
+        "<div class=x><h3>Klein</h3></div><p><a href=z>Verweis</a> <b class=n>normal</b> <b>fett</b></p>", 400, false);
+    const span_t *t = find_span("Titel", NULL, NULL), *k = find_span("Knopf", NULL, NULL);
+    const span_t *r = find_span("rot", NULL, NULL), *h = find_span("Klein", NULL, NULL);
+    const span_t *v = find_span("Verweis", NULL, NULL), *n = find_span("normal", NULL, NULL);
+    const span_t *f = find_span("fett", NULL, NULL);
+    CHECK(t && t->size == 24 && (t->style & STYLE_ITALIC) && !(t->style & STYLE_BOLD));
+    CHECK(k && k->color == (HTML_COLOR_SET | 0xFFFFFF) && k->link >= 0);
+    CHECK(r && r->color == (HTML_COLOR_SET | 0xFFFF00));
+    CHECK(h && h->size == 16 && !(h->style & STYLE_BOLD));
+    CHECK(v && v->color == (HTML_COLOR_SET | 0x0000FF));
+    CHECK(n && !(n->style & STYLE_BOLD) && f && (f->style & STYLE_BOLD));
+    done();
+}
+
+static void test_geometry(void)
+{
+    /* Kästen: Außenkante des Rahmens; Abstände außen zählen nicht mit */
+    lay("<body style='margin:0'><div id=a style='margin:10px 20px;padding:5px;border:2px solid #000;height:30px'>"
+        "<p id=b style='margin:0'>Text</p></div><div id=c style='width:100px;height:40px'></div>", 400, false);
+    CHECK(rect_is("a", 20, 10, 360, 44));
+    CHECK(rect_is("b", 27, 17, 346, 20));
+    CHECK(rect_is("c", 0, 64, 100, 40));
+    CHECK(page->rect_count == doc->count && page->width == 400);
+    /* (der Abstand über dem ersten Kasten reicht durch <body> hindurch: Es beginnt erst darunter) */
+    const dom_node *root = doc->root->first, *body = root->last;
+    CHECK(page->rects[body->id - 1].y == 10 && page->rects[body->id - 1].w == 400 && page->rects[body->id - 1].h == 94);
+    CHECK(page->rects[root->id - 1].y == 0 && page->rects[root->id - 1].w == 400 &&
+          page->rects[root->id - 1].h == page->height);
+
+    /* Elemente im Text: die Fläche um ihre Zeichen - auch über einen Umbruch hinweg */
+    lay("<body style='margin:0'><p style='margin:0'>Ein <b id=w>Wort</b> und <a id=l href=x>ein langer "
+        "Verweis</a> <i id=leer></i>.</p>", 160, false);
+    CHECK(rect_is("w", 32, 0, 32, 20));
+    const node_rect_t *l = rect("l");
+    CHECK(l && l->y == 0 && l->h == 40 && l->x == 0 && l->w >= 64);
+    const node_rect_t *e = rect("leer");
+    CHECK(e && e->w == 0 && e->h == 0 && e->y >= 20);
+
+    /* Was nicht zu sehen ist, hat keinen Platz; ein Zusatz (::before) verstellt die Lage nicht */
+    lay("<style>#z::before{content:'x';display:block;height:50px}</style><body style='margin:0'>"
+        "<div id=n style='display:none'><b id=n2>nie</b></div><div id=z style='height:80px'>da</div>"
+        "<img id=bild width=30 height=20 src=b.png>", 300, false);
+    CHECK(rect("n") && rect("n")->w < 0 && rect("n2")->w < 0);
+    CHECK(rect_is("z", 0, 0, 300, 80));
+    CHECK(rect("bild") && rect("bild")->w == 30 && rect("bild")->h == 20 && rect("bild")->y == 80);
+
+    /* Frei platziert, nebeneinander, in Tabellen und Feldern */
+    lay("<body style='margin:0'><div style='position:relative;height:100px'>"
+        "<div id=p style='position:absolute;right:10px;top:20px;width:50px;height:30px'></div></div>"
+        "<div style='display:flex'><div id=f1 style='width:100px;height:10px'></div>"
+        "<div id=f2 style='flex:1;height:10px'></div></div>"
+        "<table cellspacing=0 cellpadding=0 style='border-collapse:collapse'><tr><td id=t1 style='width:60px'>a</td>"
+        "<td id=t2 style='width:90px'>b</td></tr></table><input id=in type=text>", 400, false);
+    CHECK(rect_is("p", 340, 20, 50, 30));
+    CHECK(rect_is("f1", 0, 100, 100, 10));
+    CHECK(rect_is("f2", 100, 100, 300, 10));
+    CHECK(rect("t1") && rect("t2") && rect("t1")->y == 110 && rect("t2")->x == rect("t1")->x + rect("t1")->w);
+    CHECK(rect("in") && rect("in")->w > 50 && rect("in")->h > 10 && rect("in")->y >= 110);
+
+    /* Raster: Eine Spalte mit Spanne (minmax) gibt nach, wenn es eng wird - und nur dann */
+    static const char raster[] =
+        "<body style='margin:0'><div style='display:grid;grid-template-columns:minmax(0,300px) 100px'>"
+        "<div id=a style='height:10px'></div><div id=b style='height:10px'></div></div>"
+        "<div style='display:grid;grid-template-columns:minmax(120px,300px) 100px'>"
+        "<div id=c style='height:10px'></div><div id=d style='height:10px'></div></div>";
+    lay(raster, 250, false);
+    CHECK(rect_is("a", 0, 0, 150, 10));
+    CHECK(rect_is("b", 150, 0, 100, 10));
+    CHECK(rect_is("c", 0, 10, 150, 10));
+    lay(raster, 180, false);
+    CHECK(rect_is("a", 0, 0, 80, 10));
+    CHECK(rect_is("c", 0, 10, 120, 10));
+    CHECK(rect_is("d", 120, 10, 100, 10));
+    lay(raster, 600, false);
+    CHECK(rect_is("a", 0, 0, 300, 10));
+    CHECK(rect_is("b", 300, 0, 100, 10));
+    done();
+}
+
 int main(void)
 {
     test_blocks();
@@ -617,6 +769,9 @@ int main(void)
     test_tables_and_positions();
     test_content();
     test_decoration();
+    test_inherit();
+    test_buttons();
+    test_geometry();
     test_fuzz();
     done();
     printf("%d Prüfungen am Seitenaufbau mit Kastenmodell, %d Fehler\n", checks, failures);

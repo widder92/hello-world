@@ -1514,6 +1514,9 @@ static bool regexp_property(js_state *J, int argc)
     case 2: return js_push(J, js_bool(re->u.re.flags & RF_ICASE));
     case 3: return js_push(J, js_bool(re->u.re.flags & RF_MULTILINE));
     case 4: return js_push(J, js_bool(re->u.re.flags & RF_STICKY));
+    case 6: return js_push(J, js_bool(re->u.re.flags & RF_DOTALL));
+    case 7: return js_push(J, js_bool(re->u.re.flags & RF_UNICODE));
+    case 8: case 9: return js_push(J, js_bool(false));         /* hasIndices, unicodeSets: gibt es hier nicht */
     default: {
         char text[8];
         int n = 0;
@@ -1924,8 +1927,8 @@ void js_regex_init(js_state *J)
     js_def_native(J, J->regexp_proto, "test", regexp_exec, 1, 1);
     js_def_native(J, J->regexp_proto, "toString", regexp_to_string, 0, 0);
     static const char *const props[] = { "source", "global", "ignoreCase", "multiline", "sticky",
-                                         "flags" };
-    for (int i = 0; i < 6; i++)
+                                         "flags", "dotAll", "unicode", "hasIndices", "unicodeSets" };
+    for (int i = 0; i < 10; i++)
         js_def_accessor(J, J->regexp_proto, props[i], regexp_property, NULL, i);
 
     js_def_native(J, J->string_proto, "replace", string_replace, 2, 0);

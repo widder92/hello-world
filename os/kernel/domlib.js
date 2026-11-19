@@ -343,32 +343,89 @@
     E.insertAdjacentElement = function (where, el) { adjacent(this, where, el); return el; };
     E.insertAdjacentText = function (where, t) { adjacent(this, where, dom.textNode(text(t))); };
     /*
-     * Maße: Wo ein Element steht, weiß nur die Anzeige. Skripte erfahren aber, ob es
-     * überhaupt zu sehen ist - daran hängen Ein- und Ausblenden in vielen Bibliotheken.
-     * Sichtbares bekommt eine angenommene Größe am Anfang der Seite.
+     * Maße: Wo ein Element steht und wie groß es ist, ergibt sich erst, wenn die Seite
+     * gesetzt wird - dom.rect() fragt den Seitenaufbau (und lässt die Seite dafür setzen,
+     * wenn sie sich seit dem letzten Mal geändert hat). Wo niemand die Seite setzen kann,
+     * gilt eine Annahme: Sichtbares hat eine feste Größe am Seitenanfang.
      */
-    /* Die ganze Seite (html, body) ist so groß wie das Fenster; alles andere hat eine angenommene Größe. */
     function wholePage(el) { var n = dom.name(el); return n === 'html' || n === 'body'; }
+    function DOMRect(x, y, width, height) {
+        this.x = this.left = +x || 0; this.y = this.top = +y || 0;
+        this.width = +width || 0; this.height = +height || 0;
+        this.right = this.x + this.width; this.bottom = this.y + this.height;
+    }
+    DOMRect.prototype.toJSON = function () {
+        return { x: this.x, y: this.y, width: this.width, height: this.height,
+                 top: this.top, right: this.right, bottom: this.bottom, left: this.left };
+    };
+    window.DOMRect = window.DOMRectReadOnly = DOMRect;
+    /*
+     * Lage auf der ganzen Seite: [x, y, Breite, Höhe, Rahmen oben, rechts, unten, links,
+     * im Text, Innenabstand oben, rechts, unten, links] - oder null: nicht zu sehen.
+     */
+    function place(el) {
+        var r = dom.rect(el);
+        if (r !== undefined) return r;
+        if (!dom.shown(el)) return null;
+        return wholePage(el) ? [0, 0, window.innerWidth, window.innerHeight, 0, 0, 0, 0, false, 0, 0, 0, 0]
+                             : [0, 0, 100, 20, 0, 0, 0, 0, false, 0, 0, 0, 0];
+    }
+    /* ... und im sichtbaren Ausschnitt */
     function box(el) {
-        var page = wholePage(el);
-        var w = !dom.shown(el) ? 0 : page ? window.innerWidth : 100, h = !w ? 0 : page ? window.innerHeight : 20;
-        return { x: 0, y: 0, top: 0, left: 0, right: w, bottom: h, width: w, height: h };
+        var r = place(el);
+        return r ? new DOMRect(r[0], r[1] - dom.scroll(), r[2], r[3]) : new DOMRect(0, 0, 0, 0);
     }
     E.getBoundingClientRect = function () { return box(this); };
-    E.getClientRects = function () { return dom.shown(this) ? [box(this)] : []; };
-    E.scrollIntoView = E.focus = E.blur = E.select = E.setSelectionRange = E.scrollTo = E.scroll = function () {};
+    E.getClientRects = function () { return place(this) ? [box(this)] : []; };
+    E.scrollIntoView = function (how) {
+        var r = place(this);
+        if (!r) return;
+        var block = how === false ? 'end' : how && typeof how === 'object' && how.block ? String(how.block) : 'start';
+        var top = dom.scroll(), view = window.innerHeight;
+        if (block === 'nearest') {
+            if (r[1] >= top && r[1] + r[3] <= top + view) return;
+            block = r[1] < top ? 'start' : 'end';
+        }
+        window.scrollTo(0, block === 'center' ? r[1] - (view - r[3]) / 2 : block === 'end' ? r[1] + r[3] - view : r[1]);
+    };
+    E.scrollTo = E.scroll = function (x, y) { if (dom.name(this) === 'html') window.scrollTo(x, y); };
+    E.scrollBy = function (x, y) { if (dom.name(this) === 'html') window.scrollBy(x, y); };
+    E.focus = E.blur = E.select = E.setSelectionRange = function () {};
     E.attachEvent = function (name, fn) { this.addEventListener(String(name).replace(/^on/, ''), fn); };
     E.detachEvent = function (name, fn) { this.removeEventListener(String(name).replace(/^on/, ''), fn); };
-    ['offsetTop', 'offsetLeft', 'clientTop', 'clientLeft', 'scrollTop', 'scrollLeft'].forEach(function (name) {
-        accessor(E, name, function () { return 0; }, function () {});
-    });
-    ['offsetWidth', 'clientWidth', 'scrollWidth'].forEach(function (name) {
-        accessor(E, name, function () { return box(this).width; }, function () {});
-    });
-    ['offsetHeight', 'clientHeight', 'scrollHeight'].forEach(function (name) {
-        accessor(E, name, function () { return box(this).height; }, function () {});
-    });
-    accessor(E, 'offsetParent', function () { return dom.shown(this) && dom.name(this) !== 'body' ? document.body : null; });
+    /* offsetTop und offsetLeft zählen ab dem Element, nach dem sich die Lage richtet (offsetParent) */
+    function offset(el, i) {
+        var r = place(el);
+        if (!r) return 0;
+        var anchor = dom.anchor(el), p = anchor && place(anchor);
+        return p ? r[i] - p[i] - (i ? p[4] : p[7]) : r[i];
+    }
+    accessor(E, 'offsetParent', function () { return place(this) ? dom.anchor(this) : null; });
+    accessor(E, 'offsetLeft', function () { return offset(this, 0); }, function () {});
+    accessor(E, 'offsetTop', function () { return offset(this, 1); }, function () {});
+    accessor(E, 'offsetWidth', function () { var r = place(this); return r ? r[2] : 0; }, function () {});
+    accessor(E, 'offsetHeight', function () { var r = place(this); return r ? r[3] : 0; }, function () {});
+    accessor(E, 'clientLeft', function () { var r = place(this); return r ? r[7] : 0; }, function () {});
+    accessor(E, 'clientTop', function () { var r = place(this); return r ? r[4] : 0; }, function () {});
+    /* die Fläche innerhalb des Rahmens; für <html> der sichtbare Ausschnitt */
+    function inner(el, i) {
+        if (dom.name(el) === 'html') return i ? window.innerHeight : window.innerWidth;
+        var r = place(el);
+        if (!r || r[8]) return 0;
+        return Math.max(0, i ? r[3] - r[4] - r[6] : r[2] - r[5] - r[7]);
+    }
+    accessor(E, 'clientWidth', function () { return inner(this, 0); }, function () {});
+    accessor(E, 'clientHeight', function () { return inner(this, 1); }, function () {});
+    /* Rollen lässt sich hier nur die ganze Seite: Bei allem anderen ist der Inhalt so groß wie der Kasten. */
+    function whole(el, i) {
+        var page = dom.name(el) === 'html' ? dom.page() : undefined;
+        return page ? Math.max(page[i], inner(el, i)) : inner(el, i);
+    }
+    accessor(E, 'scrollWidth', function () { return whole(this, 0); }, function () {});
+    accessor(E, 'scrollHeight', function () { return whole(this, 1); }, function () {});
+    accessor(E, 'scrollLeft', function () { return 0; }, function () {});
+    accessor(E, 'scrollTop', function () { return dom.name(this) === 'html' ? dom.scroll() : 0; },
+             function (y) { if (dom.name(this) === 'html') window.scrollTo(0, y); });
 
     /* Eigenschaften, die ein Attribut spiegeln */
     [['title'], ['lang'], ['dir'], ['name'], ['rel'], ['target'], ['method'], ['placeholder'],
@@ -604,6 +661,17 @@
 
     var document = dom.doc(), D = documentProto, ready = 'loading', cookies = [];
     D.getElementById = function (id) { return dom.byId(this, String(id)); };
+    /* das Element an einer Stelle des sichtbaren Ausschnitts (soweit die Lage bekannt ist) */
+    D.elementFromPoint = function (x, y) {
+        x = +x; y = +y;
+        if (!(x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight)) return null;
+        return dom.at(x, y + dom.scroll()) || this.documentElement;
+    };
+    D.elementsFromPoint = function (x, y) {
+        var list = [];
+        for (var el = this.elementFromPoint(x, y); el && dom.type(el) === 1; el = dom.parent(el)) list.push(el);
+        return list;
+    };
     D.getElementsByName = function (name) { return many(dom.query(this, '[name="' + String(name).replace(/["\\]/g, '') + '"]', true)); };
     D.createElement = function (name) { return dom.el(String(name)); };
     D.createElementNS = function (ns, name) { return dom.el(String(name).replace(/^.*:/, '')); };
@@ -727,10 +795,26 @@
     window.innerHeight = window.outerHeight = size[1];
     window.screen = { width: size[0], height: size[1], availWidth: size[0], availHeight: size[1], colorDepth: 24, pixelDepth: 24 };
     window.devicePixelRatio = 1;
-    window.scrollX = window.scrollY = window.pageXOffset = window.pageYOffset = 0;
+    window.scrollX = window.pageXOffset = 0;
     window.screenX = window.screenY = window.screenLeft = window.screenTop = 0;
-    window.scrollTo = window.scroll = window.scrollBy = window.focus = window.blur = window.close =
-        window.stop = window.print = window.moveTo = window.resizeTo = function () {};
+    window.focus = window.blur = window.close = window.stop = window.print = window.moveTo =
+        window.resizeTo = function () {};
+    /* Rollen: Die Anzeige rollt nur hoch und runter. Wo sie steht, weiß der Browser (dom.scroll). */
+    accessor(window, 'scrollY', function () { return dom.scroll(); }, function () {});
+    accessor(window, 'pageYOffset', function () { return dom.scroll(); }, function () {});
+    var scrollNoted = false;
+    window.scrollTo = window.scroll = function (x, y) {
+        if (x && typeof x === 'object') y = x.top;
+        if (y === undefined || y === null) return;
+        var before = dom.scroll();
+        if (dom.scroll(+y || 0) === before || scrollNoted) return;
+        scrollNoted = true;             /* die Seite erfährt es wie beim Rollen von Hand: danach */
+        setTimeout(function () { scrollNoted = false; fire(document, 'scroll'); lookAround(); }, 0);
+    };
+    window.scrollBy = function (x, y) {
+        if (x && typeof x === 'object') y = x.top;
+        window.scrollTo(0, dom.scroll() + (+y || 0));
+    };
     window.alert = function (message) { dom.alert(text(message)); };
     window.confirm = function (message) { return dom.confirm(text(message)); };
     window.prompt = function () { return null; };
@@ -776,12 +860,37 @@
             return negate ? !ok : ok;
         });
     }
+    /*
+     * Die Antwort auf eine Bedingung an die Anzeige. Wer zuhört ("change"), erfährt, wenn
+     * sie nach einer Größenänderung des Fensters anders ausfällt.
+     */
+    var mediaLists = [];
+    function MediaQueryList(query) {
+        this.media = String(query);
+        this.onchange = null;
+        hide(this, '_was', mediaMatches(query));
+    }
+    MediaQueryList.prototype = Object.create(EventTarget.prototype);
+    MediaQueryList.prototype.constructor = MediaQueryList;
+    accessor(MediaQueryList.prototype, 'matches', function () { return mediaMatches(this.media); });
+    MediaQueryList.prototype.addListener = function (fn) { this.addEventListener('change', fn); };
+    MediaQueryList.prototype.removeListener = function (fn) { this.removeEventListener('change', fn); };
+    window.MediaQueryList = MediaQueryList;
     window.matchMedia = function (query) {
-        var matches = mediaMatches(query);
-        return { matches: matches, media: String(query), onchange: null, addListener: function () {},
-                 removeListener: function () {}, addEventListener: function () {},
-                 removeEventListener: function () {}, dispatchEvent: function () { return true; } };
+        var list = new MediaQueryList(query);
+        if (mediaLists.length < 500) mediaLists.push(list);
+        return list;
     };
+    function mediaChanged() {
+        mediaLists.forEach(function (list) {
+            var now = mediaMatches(list.media);
+            if (now === list._was) return;
+            list._was = now;
+            var e = new Event('change');
+            e.matches = now; e.media = list.media;
+            dispatch(list, e);
+        });
+    }
     window.requestIdleCallback = function (fn) {
         return setTimeout(function () { fn({ didTimeout: false, timeRemaining: function () { return 10; } }); }, 1);
     };
@@ -810,24 +919,129 @@
         C.prototype.takeRecords = function () { return []; };
         window[name] = C;
     }
-    observer('MutationObserver'); observer('ResizeObserver'); observer('PerformanceObserver');
+    observer('MutationObserver'); observer('PerformanceObserver');
     /*
-     * "Ist das Element im Bild?" - das weiß hier nur die Anzeige. Wer danach fragt, will
-     * meist Bilder erst laden, wenn sie zu sehen sind: Also gilt alles als sichtbar.
+     * "Ist das Element im Bild?" (IntersectionObserver) - gefragt wird meist, um Bilder und
+     * Inhalte erst zu laden, wenn sie zu sehen sind. Geprüft wird, wenn der Benutzer rollt
+     * und wenn die Seite anders aussieht als zuvor; der Browser gibt dafür Bescheid ("view").
      */
-    function IntersectionObserver(callback) { hide(this, '_cb', callback); }
-    IntersectionObserver.prototype.observe = function (el) {
-        var self = this;
-        setTimeout(function () {
-            try {
-                self._cb.call(self, [{ target: el, isIntersecting: true, intersectionRatio: 1, time: Date.now(),
-                                       boundingClientRect: box(el), intersectionRect: box(el), rootBounds: null }], self);
-            } catch (e) { report(e); }
-        }, 0);
-    };
-    IntersectionObserver.prototype.unobserve = IntersectionObserver.prototype.disconnect = function () {};
-    IntersectionObserver.prototype.takeRecords = function () { return []; };
+    var watchers = [];
+    function watching() {
+        dom.watch(watchers.some(function (o) { return o._t.length > 0; }));
+    }
+    function unwatch(o, el) {
+        hide(o, '_t', el === undefined ? [] : o._t.filter(function (t) { return t.el !== el; }));
+        if (!o._t.length) watchers = watchers.filter(function (w) { return w !== o; });
+        watching();
+    }
+    function watch(o, el) {
+        if (!(el instanceof Element)) throw new TypeError('observe: Argument 1 is not an Element');
+        if (o._t.some(function (t) { return t.el === el; })) return false;
+        o._t.push({ el: el, step: -1, inside: false, w: -1, h: -1 });
+        if (watchers.indexOf(o) < 0) watchers.push(o);
+        watching();
+        setTimeout(function () { lookAt(o); }, 0);
+        return true;
+    }
+    /* Ränder wie bei margin: ein bis vier Angaben in px oder % */
+    function margins(value) {
+        var parts = text(value).trim().split(/\s+/).filter(Boolean).map(function (p) {
+            if (!/^-?[\d.]+(px|%)?$/.test(p)) throw new SyntaxError('IntersectionObserver: rootMargin must be px or %');
+            return { n: parseFloat(p) || 0, percent: /%$/.test(p) };
+        });
+        if (!parts.length) parts = [{ n: 0, percent: false }];
+        if (parts.length > 4) throw new SyntaxError('IntersectionObserver: rootMargin has too many values');
+        return [parts[0], parts[1] || parts[0], parts[2] || parts[0], parts[3] || parts[1] || parts[0]];
+    }
+    function IntersectionObserver(callback, options) {
+        if (typeof callback !== 'function') throw new TypeError('IntersectionObserver: callback is not a function');
+        options = options || {};
+        var m = margins(options.rootMargin);
+        var steps = (options.threshold === undefined ? [0] : [].concat(options.threshold)).map(Number);
+        steps.forEach(function (t) { if (!(t >= 0 && t <= 1)) throw new RangeError('IntersectionObserver: threshold must be between 0 and 1'); });
+        hide(this, '_cb', callback); hide(this, '_t', []); hide(this, '_m', m); hide(this, '_q', []);
+        this.root = options.root || null;
+        this.rootMargin = m.map(function (p) { return p.n + (p.percent ? '%' : 'px'); }).join(' ');
+        this.thresholds = steps.sort(function (a, b) { return a - b; });
+    }
+    /* die Fläche, in der etwas als "im Bild" gilt - auf der ganzen Seite gemessen */
+    function rootArea(o) {
+        var x = 0, y = dom.scroll(), w = window.innerWidth, h = window.innerHeight;
+        if (o.root && o.root instanceof Element) {
+            var r = place(o.root);
+            if (!r) return null;
+            x = r[0]; y = r[1]; w = r[2]; h = r[3];
+        }
+        var m = o._m.map(function (p, i) { return p.percent ? p.n * (i % 2 ? w : h) / 100 : p.n; });
+        return [x - m[3], y - m[0], w + m[1] + m[3], h + m[0] + m[2]];
+    }
+    function intersections(o) {
+        var area = rootArea(o), top = dom.scroll();
+        o._t.forEach(function (t) {
+            var known = dom.rect(t.el) !== undefined, r = place(t.el), inside = false, ratio = 0, cut = null;
+            if (!known) {                /* niemand setzt die Seite: Was die Gestaltung zeigt, gilt als im Bild */
+                inside = !!r; ratio = inside ? 1 : 0; cut = r;
+            } else if (r && area) {
+                var x1 = Math.max(r[0], area[0]), y1 = Math.max(r[1], area[1]);
+                var x2 = Math.min(r[0] + r[2], area[0] + area[2]), y2 = Math.min(r[1] + r[3], area[1] + area[3]);
+                if (x2 >= x1 && y2 >= y1) {
+                    inside = true;
+                    cut = [x1, y1, x2 - x1, y2 - y1];
+                    ratio = r[2] * r[3] > 0 ? Math.min(1, cut[2] * cut[3] / (r[2] * r[3])) : 1;
+                }
+            }
+            var step = 0, steps = o.thresholds;
+            if (inside) while (step < steps.length && ratio >= steps[step]) step++;
+            if (inside && step === 0) inside = false;      /* berührt, aber die erste Schwelle nicht erreicht */
+            if (step === t.step && inside === t.inside) return;
+            t.step = step; t.inside = inside;
+            o._q.push({
+                target: t.el, isIntersecting: inside, intersectionRatio: ratio, time: window.performance.now(),
+                boundingClientRect: r ? new DOMRect(r[0], r[1] - top, r[2], r[3]) : new DOMRect(0, 0, 0, 0),
+                intersectionRect: cut ? new DOMRect(cut[0], cut[1] - top, cut[2], cut[3]) : new DOMRect(0, 0, 0, 0),
+                rootBounds: area ? new DOMRect(area[0], area[1] - top, area[2], area[3]) : null
+            });
+        });
+    }
+    IntersectionObserver.prototype.observe = function (el) { watch(this, el); };
+    IntersectionObserver.prototype.unobserve = function (el) { unwatch(this, el); };
+    IntersectionObserver.prototype.disconnect = function () { unwatch(this); this._q.length = 0; };
+    IntersectionObserver.prototype.takeRecords = function () { return this._q.splice(0); };
     window.IntersectionObserver = IntersectionObserver;
+    window.IntersectionObserverEntry = function IntersectionObserverEntry() {};
+
+    /* "Hat sich die Größe geändert?" (ResizeObserver): dieselbe Prüfung mit den Maßen der Elemente */
+    function ResizeObserver(callback) {
+        if (typeof callback !== 'function') throw new TypeError('ResizeObserver: callback is not a function');
+        hide(this, '_cb', callback); hide(this, '_t', []); hide(this, '_q', []); hide(this, '_sizes', true);
+    }
+    function sizes(o) {
+        o._t.forEach(function (t) {
+            var r = place(t.el), w = r ? r[2] : 0, h = r ? r[3] : 0;
+            if (w === t.w && h === t.h) return;
+            t.w = w; t.h = h;
+            var iw = r ? Math.max(0, w - r[5] - r[7] - r[10] - r[12]) : 0, ih = r ? Math.max(0, h - r[4] - r[6] - r[9] - r[11]) : 0;
+            o._q.push({ target: t.el, contentRect: new DOMRect(r ? r[12] : 0, r ? r[9] : 0, iw, ih),
+                        borderBoxSize: [{ inlineSize: w, blockSize: h }], contentBoxSize: [{ inlineSize: iw, blockSize: ih }],
+                        devicePixelContentBoxSize: [{ inlineSize: iw, blockSize: ih }] });
+        });
+    }
+    ResizeObserver.prototype.observe = function (el) { watch(this, el); };
+    ResizeObserver.prototype.unobserve = function (el) { unwatch(this, el); };
+    ResizeObserver.prototype.disconnect = function () { unwatch(this); this._q.length = 0; };
+    window.ResizeObserver = ResizeObserver;
+    window.ResizeObserverEntry = function ResizeObserverEntry() {};
+
+    function lookAt(o) {
+        if (o._sizes) sizes(o); else intersections(o);
+        var records = o._q.splice(0);
+        if (!records.length) return;
+        try { o._cb.call(o, records, o); } catch (e) { report(e); }
+    }
+    /* alle Beobachter prüfen: nach dem Rollen und wenn die Seite neu gesetzt wurde */
+    function lookAround() {
+        watchers.slice().forEach(lookAt);
+    }
 
     /* Fehler der Seitenschnittstellen */
     var domErrors = { IndexSizeError: 1, HierarchyRequestError: 3, WrongDocumentError: 4, InvalidCharacterError: 5,
@@ -1182,6 +1396,18 @@
             ready = 'complete';
             fire(document, 'readystatechange', false);
             return fire(window, 'load', false);
+        }
+        if (type === 'view') {            /* der Ausschnitt oder das Aussehen der Seite hat sich geändert */
+            if (info === 'resize') {
+                var size = dom.size();
+                window.innerWidth = window.outerWidth = size[0];
+                window.innerHeight = window.outerHeight = size[1];
+                mediaChanged();
+                fire(window, 'resize', false);
+            }
+            if (info === 'scroll') fire(document, 'scroll');
+            lookAround();
+            return true;
         }
         if (type === 'click') return userClick(node);
         if (type === 'submit') {

@@ -107,12 +107,15 @@ typedef struct {
     css_len_t size;                     /* feste Breite bzw. Mindestbreite (UNSET: keine) */
     int32_t fr;                         /* Anteil am freien Platz mal 1000, oder 0 */
     bool automatic;                     /* so breit wie der Inhalt */
+    bool shrinks;                       /* minmax(klein, groß) mit festen Grenzen: gibt bis low nach, wenn es eng wird */
+    css_len_t low;
 } css_track_t;
 
 /* Was die Regeln für ein Element festlegen; "has" sagt, welche Angaben gemacht wurden */
 typedef struct {
     uint32_t has;
     uint32_t color;                     /* 0x00RRGGBB */
+    bool color_inherited;               /* "color: inherit": ausdrücklich die Farbe der Umgebung (auch bei Links) */
     uint32_t background;                /* 0x00RRGGBB */
     bool background_clear;              /* ausdrücklich kein Hintergrund */
     bool bold, italic, underline, hidden, list_plain;

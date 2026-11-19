@@ -81,6 +81,7 @@ typedef struct {
     uint32_t background, color;
     uint8_t size, radius;
     bool bold;
+    bool boxed;                         /* <button>: ein Kasten mit eigenem Inhalt - die Seite zeichnet ihn selbst */
     uint32_t node;                      /* Nummer des Elements laut data-hx, oder 0 */
 } widget_t;
 
@@ -152,6 +153,18 @@ typedef struct {
     int32_t x, y, w, h;
 } clip_t;
 
+/*
+ * Wo ein Element auf der Seite steht: die Außenkante seines Rahmens in Pixeln.
+ * w < 0: Das Element hat keinen Platz auf der Seite (ausgeblendet, nicht Teil
+ * der Anzeige). Danach fragen Skripte (getBoundingClientRect, offsetTop ...).
+ */
+typedef struct node_rect {
+    int32_t x, y, w, h;
+    int16_t pad[4];                     /* Innenabstand: oben, rechts, unten, links */
+    uint8_t border[4];                  /* Breite des Rahmens, ebenso */
+    bool in_text;                       /* steht im Text und hat keinen eigenen Kasten */
+} node_rect_t;
+
 /* Die Teile der Seite in der Reihenfolge, in der sie gezeichnet werden */
 enum { PAINT_BOX, PAINT_LINE, PAINT_IMAGE, PAINT_WIDGET };
 
@@ -204,6 +217,9 @@ typedef struct {
     clip_t *clips;
     int clip_count, clip_cap;
     uint16_t paint_clip;                /* für den Seitenaufbau: gilt für alles, was jetzt angehängt wird */
+    node_rect_t *rects;                 /* auf Wunsch: Lage jedes Elements, rects[Nummer - 1] */
+    uint32_t rect_count;
+    int width;                          /* so breit ist die Seite gesetzt (Pixel) */
     int height;                         /* Höhe der ganzen Seite in Pixeln */
     int heading_y;                      /* Lage der ersten Hauptüberschrift oder -1 */
     bool rows;                          /* im Zeilenraster gesetzt (der einfache Seitenaufbau) */

@@ -47,6 +47,8 @@ typedef struct {
     len_t size;
     int32_t fr;
     bool automatic;
+    bool shrinks;                       /* gibt bis low nach, wenn es eng wird */
+    len_t low;
 } track_t;
 
 /* Angaben für flex und grid - nur für Elemente, die welche haben */
@@ -118,7 +120,8 @@ enum { F_ATOMIC = 1,                    /* steht als Ganzes in einer Textzeile (
        F_FIXED = 256,                   /* position: fixed */
        F_OWN_TEXT = 512,                /* der Text gehört dem Vorrat, nicht dem Abbild */
        F_RELATIVE = 1024,
-       F_LAYER = 2048 };                /* wird mit den frei platzierten Kästen gezeichnet (eigene Ebene) */
+       F_LAYER = 2048,                  /* wird mit den frei platzierten Kästen gezeichnet (eigene Ebene) */
+       F_PSEUDO = 4096 };               /* Zusatz vor oder nach einem Element (::before, ::after) */
 
 typedef struct piece {
     struct piece *next;
@@ -219,7 +222,13 @@ typedef struct {
     lbox_t *heading;                    /* die erste Hauptüberschrift */
     lbox_t *layers, *layers_tail;       /* frei platzierte Kästen: Sie werden zuletzt gezeichnet */
     int bottom;                         /* so weit reicht die Seite nach unten */
+    uint8_t *placed;                    /* je Element: Seine Lage steht schon fest (PLACED_...) */
 } lay_t;
+
+/* Wie die Lage eines Elements zustande kam */
+enum { PLACED_NOT, PLACED_BOX,          /* ein eigener Kasten: Das gilt */
+       PLACED_START,                    /* Element im Text, noch ohne Inhalt: nur die Stelle */
+       PLACED_TEXT };                   /* Element im Text: die Fläche um seine Stücke */
 
 /* --- Speicher ---------------------------------------------------------------------------------- */
 
@@ -718,6 +727,8 @@ static style_t *make_style(lay_t *L, const css_style_t *css, const style_t *ps, 
     if (cs.has & CSS_COLOR) {
         st->color = HTML_COLOR_SET | cs.color;
         st->text &= (uint8_t)~STYLE_LINK;
+    } else if (cs.color_inherited) {
+        /* die Farbe der Umgebung, wie sie dort gilt - auch für einen Link */
     } else if (link) {
         st->color = 0;
         st->text |= STYLE_LINK;
@@ -897,6 +908,8 @@ static style_t *make_style(lay_t *L, const css_style_t *css, const style_t *ps, 
             fg->grid[i].size = make_len(&cs.grid[i].size, st->size);
             fg->grid[i].fr = cs.grid[i].fr;
             fg->grid[i].automatic = cs.grid[i].automatic;
+            fg->grid[i].shrinks = cs.grid[i].shrinks;
+            fg->grid[i].low = make_len(&cs.grid[i].low, st->size);
         }
     }
     /* zugeklappt (Höhe 0, Überstehendes abgeschnitten): wie nicht vorhanden */
@@ -1243,22 +1256,6 @@ static void build_textarea(lay_t *L, lbox_t *parent, const dom_node *e, style_t 
         L->page->widgets[index].value = copy_text("", 0);
     int columns = clamp(attr_int(e, "cols", 40), 10, 60), rows = clamp(attr_int(e, "rows", 2), 1, 6);
     replaced_box(L, parent, e, st, (columns + 2) * 8, rows * 16 + 8)->widget = (int16_t)index;
-}
-
-static void build_button(lay_t *L, lbox_t *parent, const dom_node *e, style_t *st)
-{
-    const char *type = dom_attr_get(e, "type");
-    bool sends = L->form >= 0 && (!type || same(type, "submit"));
-    if (!sends && !L->opt->scripts)
-        return;                         /* ohne Formular tut er nur mit Skripten etwas */
-    int index = add_widget(L, sends ? W_SUBMIT : W_BUTTON, e);
-    if (index < 0)
-        return;
-    widget_t *w = &L->page->widgets[index];
-    char *label = flat_text(e, 120);
-    set_label(w, label && label[0] ? label : w->value && w->value[0] ? w->value : sends ? "Senden" : "Knopf");
-    kfree(label);
-    replaced_box(L, parent, e, st, button_width(L, st, w->label), 24)->widget = (int16_t)index;
 }
 
 /* --- Bilder und was sich hier nicht zeigen lässt --------------------------------------------- */
@@ -1737,6 +1734,7 @@ static void build_pseudo(lay_t *L, const dom_node *e, lbox_t *parent, style_t *p
     if (st->display == CSS_D_LIST_ITEM)
         st->display = CSS_D_BLOCK;
     lbox_t *b = element_box(L, e, st);
+    b->flags |= F_PSEUDO;
     append(parent, b);
     if (text[0])
         own_text(L, b, e, st, text);
@@ -1790,10 +1788,6 @@ static void build_element(lay_t *L, const dom_node *e, lbox_t *parent, style_t *
         build_textarea(L, parent, e, st);
         return;
     }
-    if (is_tag(e, "button")) {
-        build_button(L, parent, e, st);
-        return;
-    }
     if (one_of(e, media)) {
         build_media(L, parent, e, st, is_tag(e, "video") ? "Video" : is_tag(e, "audio") ? "Ton"
                                       : is_tag(e, "iframe") ? "Eingebettete Seite" : "Eingebettetes Objekt");
@@ -1815,6 +1809,33 @@ static void build_element(lay_t *L, const dom_node *e, lbox_t *parent, style_t *
         return;
     }
 
+    /*
+     * <button>: ein Kasten wie jeder andere - mit seinem Inhalt (Text, Symbole,
+     * Bilder) und dem Aussehen, das die Seite ihm gibt. Dazu ein Feld der
+     * Seite, über das er sich anklicken und mit der Tastatur erreichen lässt.
+     */
+    int button = -1;
+    if (is_tag(e, "button")) {
+        const char *type = dom_attr_get(e, "type");
+        bool sends = L->form >= 0 && (!type || same(type, "submit"));
+        if (!sends && !L->opt->scripts)
+            return;                     /* ohne Formular tut er nur mit Skripten etwas */
+        button = add_widget(L, sends ? W_SUBMIT : W_BUTTON, e);
+        if (button < 0)
+            return;
+        widget_t *w = &L->page->widgets[button];
+        char *label = flat_text(e, 120);
+        set_label(w, label && label[0] ? label : w->value && w->value[0] ? w->value : "");
+        kfree(label);
+        w->boxed = true;
+        if (st->display == CSS_D_INLINE) {      /* er braucht eine eigene Fläche */
+            style_t *own = arena(L, sizeof(*own));
+            *own = *st;
+            own->display = CSS_D_INLINE_BLOCK;
+            st = own;
+        }
+    }
+
     int form = L->form;
     if (is_tag(e, "form") && GROW(L, L->page->forms, L->page->form_count, L->page->form_cap)) {
         form_t *f = &L->page->forms[L->page->form_count];
@@ -1828,6 +1849,7 @@ static void build_element(lay_t *L, const dom_node *e, lbox_t *parent, style_t *
 
     uint8_t d = st->display;
     lbox_t *b = element_box(L, e, st);
+    b->widget = (int16_t)button;
     if (d == CSS_D_LIST_ITEM) {
         if (counter) {
             int value;
@@ -2721,6 +2743,10 @@ static void inline_span(inl_t *I, lbox_t *b)
     b->line_block = I->block;
     b->line_y = I->y;
     b->abs_list = NULL;
+    if (!I->measure) {                  /* wo es beginnt - für die Auskunft über seine Lage */
+        b->static_x = I->ox + I->x;
+        b->static_y = I->oy + I->y;
+    }
     int left = b->margin[3] + b->bor[3] + b->pad[3], right = b->margin[1] + b->bor[1] + b->pad[1];
     /* ein Element im Text mit "position": Frei Platziertes darin richtet sich nach seiner Fläche */
     bool anchor = !I->measure && st->position != CSS_POS_STATIC;
@@ -3594,6 +3620,17 @@ static int layout_grid(lay_t *L, lbox_t *b, int cw)
         }
     }
     int rest = cw - gap_c * (n - 1) - fixed;
+    /* zu breit: Spalten mit einer Spanne (minmax(klein, groß)) geben als Erste nach */
+    for (int i = 0; i < n && rest < 0; i++) {
+        if (!tracks[i].shrinks || tracks[i].fr || tracks[i].automatic)
+            continue;
+        int low = len_set(tracks[i].low, cw) ? max_int(len_px(tracks[i].low, cw), 0) : 0;
+        int give = min_int(width[i] - low, -rest);
+        if (give > 0) {
+            width[i] -= give;
+            rest += give;
+        }
+    }
     if (total_fr > 0) {
         for (int i = 0; i < n; i++) {
             if (tracks[i].fr)
@@ -4068,6 +4105,76 @@ static void reach(lay_t *L, int bottom)
 
 static void emit_box(lay_t *L, lbox_t *b, int depth);
 
+/*
+ * Die Lage der Elemente für Skripte (page->rects): Ein Element mit eigenem
+ * Kasten steht, wo sein Rahmen ist. Ein Element im Text hat keinen Kasten -
+ * seine Fläche umschließt alle Stücke, die zu ihm gehören.
+ */
+static node_rect_t *rect_of(lay_t *L, const dom_node *n)
+{
+    page_t *page = L->page;
+    if (!page->rects || !n || n->type != DOM_ELEMENT || n->id < 1 || n->id > page->rect_count)
+        return NULL;
+    return &page->rects[n->id - 1];
+}
+
+static void place_box(lay_t *L, const lbox_t *b)
+{
+    node_rect_t *r = (b->flags & (F_PSEUDO | F_ANON)) ? NULL : rect_of(L, b->node);
+    if (!r || L->placed[b->node->id - 1] == PLACED_BOX)
+        return;
+    r->x = b->ax;
+    r->y = b->ay;
+    r->w = max_int(b->w, 0);
+    r->h = max_int(b->h, 0);
+    for (int i = 0; i < 4; i++) {
+        r->pad[i] = (int16_t)clamp(b->pad[i], 0, 30000);
+        r->border[i] = b->bor[i];
+    }
+    r->in_text = false;
+    L->placed[b->node->id - 1] = PLACED_BOX;
+}
+
+/* Ein Stück (Text oder Kasten in der Zeile) gehört zu den Elementen im Text, in denen es steckt. */
+static void place_piece(lay_t *L, const dom_node *n, int x, int y, int w, int h)
+{
+    for (int depth = 0; n && depth < DEPTH_MAX * 4; n = n->parent, depth++) {
+        node_rect_t *r = rect_of(L, n);
+        if (!r)
+            break;
+        uint8_t *state = &L->placed[n->id - 1];
+        if (*state == PLACED_BOX)
+            break;                      /* ab hier haben die Elemente eigene Kästen */
+        if (*state != PLACED_TEXT) {
+            r->x = x;
+            r->y = y;
+            r->w = max_int(w, 0);
+            r->h = max_int(h, 0);
+            r->in_text = true;
+            *state = PLACED_TEXT;
+        } else {
+            int right = max_int(r->x + r->w, x + w), bottom = max_int(r->y + r->h, y + h);
+            r->x = min_int(r->x, x);
+            r->y = min_int(r->y, y);
+            r->w = right - r->x;
+            r->h = bottom - r->y;
+        }
+    }
+}
+
+/* Ein Element im Text, noch bevor seine Stücke kommen: Ohne Inhalt bleibt es bei dieser Stelle. */
+static void place_start(lay_t *L, const lbox_t *b)
+{
+    node_rect_t *r = (b->flags & F_PSEUDO) ? NULL : rect_of(L, b->node);
+    if (!r || L->placed[b->node->id - 1] != PLACED_NOT)
+        return;
+    r->x = b->ax + b->static_x;
+    r->y = b->ay + b->static_y;
+    r->w = r->h = 0;
+    r->in_text = true;
+    L->placed[b->node->id - 1] = PLACED_START;
+}
+
 /* Die Farbe, in der Text dieser Gestaltung erscheint - notfalls eine, die auf dem Grund zu lesen ist */
 static uint32_t text_color(const lay_t *L, const style_t *st)
 {
@@ -4299,6 +4406,15 @@ static void emit_lines(lay_t *L, lbox_t *b, int depth)
             if (p->atom && !(p->atom->flags & F_LAYER))
                 emit_box(L, p->atom, depth + 1);
         }
+        if (L->page->rects) {
+            for (piece_t *p = ll->first; p; p = p->next) {
+                if (!p->atom)
+                    place_piece(L, p->node, ox + p->x, oy + ll->y, p->w, ll->h);
+                else if (p->atom->node && !(p->atom->flags & F_ANON))
+                    place_piece(L, p->atom->flags & F_PSEUDO ? p->atom->node : p->atom->node->parent,
+                                p->atom->ax, p->atom->ay, p->atom->w, p->atom->h);
+            }
+        }
     }
 }
 
@@ -4308,10 +4424,13 @@ static void emit_children(lay_t *L, lbox_t *parent, int depth, bool floats_only)
     for (lbox_t *c = parent->first; c && !L->failed; c = c->next) {
         if (c->flags & (F_ABS | F_LAYER))
             continue;                   /* kommen am Schluss, über allem anderen */
-        if (c->kind == K_INLINE)
+        if (c->kind == K_INLINE) {
+            if (L->page->rects)
+                place_start(L, c);
             emit_children(L, c, depth + 1, floats_only);
-        else if (c->kind == K_BLOCK && (!floats_only || (c->flags & F_FLOAT)))
+        } else if (c->kind == K_BLOCK && (!floats_only || (c->flags & F_FLOAT))) {
             emit_box(L, c, depth + 1);
+        }
     }
 }
 
@@ -4334,12 +4453,19 @@ static void emit_inside(lay_t *L, lbox_t *b, int depth)
 {
     page_t *page = L->page;
     const style_t *st = b->st;
+    if (page->rects)
+        place_box(L, b);
+    bool boxed = b->widget >= 0 && page->widgets[b->widget].boxed;
     if (b->widget >= 0) {
         widget_t *w = &page->widgets[b->widget];
         w->x = b->ax;
         w->y = b->ay;
         w->w = b->w;
         w->h = st->invisible ? 0 : b->h;
+        w->radius = st->radius == 255 ? (uint8_t)min_int(b->h / 2, 250) : st->radius;
+    }
+    if (b->widget >= 0 && !boxed) {
+        widget_t *w = &page->widgets[b->widget];
         if ((w->kind == W_SUBMIT || w->kind == W_BUTTON) && st->background_set) {
             /* ein Knopf mit eigenem Aussehen: Farben, Schrift und Ecken der Seite */
             uint32_t color = text_color(L, st);
@@ -4378,6 +4504,11 @@ static void emit_inside(lay_t *L, lbox_t *b, int depth)
         emit_lines(L, b, depth);
     } else {
         emit_children(L, b, depth, false);
+    }
+    if (boxed && page->widgets[b->widget].h > 0) {
+        /* über seinem Inhalt: So trifft ein Klick den Knopf, wo immer er hingeht */
+        page->paint_clip = b->clip;
+        page_add_paint(page, PAINT_WIDGET, b->widget);
     }
 }
 
@@ -4531,6 +4662,20 @@ page_t *layout_document(const dom_doc *doc, const layout_options_t *options)
     page->heading_line = -1;
     page->heading_y = -1;
     page->pixels = true;
+    page->width = options->width;
+    if (options->geometry && doc->count > 0) {
+        page->rects = kmalloc((size_t)doc->count * sizeof(node_rect_t));
+        L->placed = kzalloc(doc->count);
+        if (page->rects && L->placed) {
+            page->rect_count = doc->count;
+            memset(page->rects, 0, (size_t)doc->count * sizeof(node_rect_t));
+            for (uint32_t i = 0; i < doc->count; i++)
+                page->rects[i].w = -1;
+        } else {
+            kfree(page->rects);
+            page->rects = NULL;
+        }
+    }
 
     call_on_stack(run, L, (char *)stack + STACK_BYTES);
 
@@ -4540,6 +4685,7 @@ page_t *layout_document(const dom_doc *doc, const layout_options_t *options)
         page->failed = true;
     arena_free(L);
     css_free(L->own_css);
+    kfree(L->placed);
     kfree(stack);
     kfree(L);
     return page;

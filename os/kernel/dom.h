@@ -54,6 +54,7 @@ struct dom_doc {
     uint32_t count, cap;
     size_t bytes;
     bool dirty;                         /* seit dem letzten dom_serialize() geändert */
+    uint32_t version;                   /* zählt jede Änderung: So lässt sich erkennen, ob etwas noch gilt */
     bool failed;                        /* eine Grenze wurde erreicht */
 };
 

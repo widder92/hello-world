@@ -378,6 +378,7 @@ void page_free(page_t *page)
     kfree(page->boxes);
     kfree(page->paint);
     kfree(page->clips);
+    kfree(page->rects);
     kfree(page->links);
     kfree(page->widgets);
     kfree(page->options);

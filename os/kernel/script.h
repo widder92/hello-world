@@ -29,6 +29,17 @@ typedef struct {
                                            "Name: Wert\n"; mit kmalloc angelegt oder NULL */
 } script_reply_t;
 
+struct node_rect;                       /* html.h */
+struct dom_doc;
+struct css_sheet;
+
+/* Wo die Elemente einer gesetzten Seite stehen */
+typedef struct {
+    struct node_rect *rects;            /* rects[Nummer des Elements - 1]; mit kmalloc angelegt */
+    uint32_t count;
+    int width, height;                  /* Maße der ganzen Seite in Pixeln */
+} script_geometry_t;
+
 typedef struct {
     /*
      * Holt eine Datei der Seite (ein Skript); url ist vollständig. Liefert
@@ -50,6 +61,16 @@ typedef struct {
      */
     bool (*request)(void *ctx, const char *method, const char *url, const char *headers,
                     const char *body, size_t body_len, unsigned flags, script_reply_t *reply);
+    /*
+     * Setzt die Seite, wie sie jetzt ist, und meldet, wo ihre Elemente stehen
+     * und wie groß sie sind: Danach fragen Skripte (getBoundingClientRect,
+     * offsetTop, "ist das Bild schon zu sehen?"). css sind die Stylesheets
+     * der Seite oder NULL, url ist ihre Adresse. Ohne diese Funktion (oder
+     * wenn sie false liefert) bekommt Sichtbares eine angenommene Größe am
+     * Seitenanfang.
+     */
+    bool (*measure)(void *ctx, const struct dom_doc *doc, const struct css_sheet *css,
+                    const char *url, script_geometry_t *out);
     /* console.log und Fehlermeldungen der Skripte */
     void (*log)(void *ctx, const char *text);
     /* Rückfragen; ohne sie zeigt alert nichts, und confirm antwortet mit Nein */
@@ -70,7 +91,8 @@ typedef struct {
 } script_host_t;
 
 /* Was ein Skript vom Browser will */
-typedef enum { SCRIPT_NOTHING, SCRIPT_NAVIGATE, SCRIPT_SUBMIT, SCRIPT_BACK, SCRIPT_RELOAD } script_wish_t;
+typedef enum { SCRIPT_NOTHING, SCRIPT_NAVIGATE, SCRIPT_SUBMIT, SCRIPT_BACK, SCRIPT_RELOAD,
+               SCRIPT_SCROLL } script_wish_t;
 
 /* Liest die Seite ein; NULL, wenn der Speicher nicht reicht. */
 script_t *script_create(const char *html, size_t len, const char *url, const script_host_t *host);
@@ -81,8 +103,26 @@ void script_destroy(script_t *s);
  * Gestaltung zu sehen ist (getComputedStyle, offsetWidth). Sie gehören dem
  * Aufrufer und müssen so lange bestehen wie hier eingetragen.
  */
-struct css_sheet;
 void script_set_styles(script_t *s, const struct css_sheet *css);
+
+/*
+ * Der Browser hat die Seite gerade selbst gesetzt (für die Anzeige): Die Lage
+ * der Elemente gilt damit auch für die Skripte, und sie müssen nicht eigens
+ * danach fragen. geometry->rects geht in den Besitz der Skripte über; ohne
+ * rects (NULL) ist die Lage ab jetzt unbekannt.
+ */
+void script_set_geometry(script_t *s, script_geometry_t *geometry);
+
+/*
+ * Der sichtbare Ausschnitt: scroll_y ist die Höhe der Seite, die am oberen
+ * Rand der Anzeige steht. Hat der Benutzer gerollt, erfahren es die Skripte
+ * ("scroll"); wer wissen wollte, wann ein Element ins Bild kommt
+ * (IntersectionObserver), bekommt Bescheid. Darf oft gerufen werden - gerechnet
+ * wird nur, wenn sich etwas geändert hat. Liefert true, wenn Skripte liefen.
+ */
+bool script_view(script_t *s, int scroll_y);
+/* Das Fenster hat eine andere Größe bekommen: Die Skripte erfahren es ("resize"). */
+void script_resize(script_t *s, int width, int height);
 
 /* Führt die Skripte der Seite aus und meldet ihr, dass sie geladen ist. */
 void script_boot(script_t *s);
@@ -91,7 +131,6 @@ void script_boot(script_t *s);
  * Das Abbild der Seite, wie es jetzt ist (dom.h): Daraus setzt der Browser die
  * Seite. Es gehört weiter den Skripten und darf nicht verändert werden.
  */
-struct dom_doc;
 const struct dom_doc *script_document(const script_t *s);
 
 /* Hat sich das Abbild seit dem letzten script_html() geändert? */
@@ -129,6 +168,7 @@ bool script_tick(script_t *s, int64_t *wait_ms);
  * Holt den nächsten Wunsch ab. SCRIPT_NAVIGATE: url ist die Adresse, wie das
  * Skript sie angab (noch nicht aufgelöst). SCRIPT_SUBMIT: node ist das
  * Formular, button der Knopf, der mitgesendet werden soll (oder 0).
+ * SCRIPT_SCROLL: node ist die Höhe der Seite, die oben stehen soll.
  */
 script_wish_t script_wish(script_t *s, char *url, size_t url_size, uint32_t *node, uint32_t *button);
 
