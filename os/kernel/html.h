@@ -30,6 +30,12 @@ typedef struct {
     int16_t widget;                     /* Nummer des Formularfelds oder -1 */
     int16_t image;                      /* Bild an dieser Stelle (in Tabellen), oder -1 */
     uint16_t image_row;                 /* ... und welche seiner Zeilen */
+    /*
+     * In Spalten (Tabellen, Kinder nebeneinander) stehen hohe und einfache
+     * Zeilen nebeneinander: Ein Stück aus einer hohen Zeile seiner Spalte
+     * trägt hier deren größte Schrift (sonst 0) und reicht in die nächste Zeile.
+     */
+    uint8_t tall;
     uint32_t node;                      /* Nummer des Elements laut data-hx (für Skripte), oder 0 */
 } span_t;
 

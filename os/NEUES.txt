@@ -1,3 +1,8 @@
+HelloOS 0.20
+- Browser: Spalten und Raster. Seiten, die ihre Teile nebeneinander anordnen (flex, grid), sehen jetzt so aus: Kopfzeile mit Menü rechts, Inhalt neben der Seitenleiste, Karten in Reihen. Große Überschriften behalten in Spalten und Tabellen ihre Größe.
+- Browser: bedienen wie gewohnt - Knopf "Vor" (Alt+Pfeil rechts), Lesezeichen mit dem Stern neben der Adresse (Strg+D; Liste mit Strg+B und auf der Startseite), Verlauf des Fensters, Suchen auf der Seite (Strg+F), Schriftgröße in vier Stufen (Strg und +, -, 0), Quelltext der Seite (Strg+U).
+- Noch nicht möglich: Abstände, Rahmen, frei platzierte Elemente und Hintergrundbilder; Tabs; Video und Ton.
+
 HelloOS 0.19
 - Browser: JavaScript. HelloOS hat jetzt eine eigene JavaScript-Maschine; der Knopf rechts oben im Browser schaltet sie ein und aus (ausgeliefert: aus). Damit funktionieren Seiten mit einfachen und älteren Skripten: Menüs zum Aufklappen, Formularprüfung, Zähler und Uhren, Knöpfe ohne Formular, jQuery-Seiten, Nachladen von Daten (XMLHttpRequest, fetch) - und in der WordPress-Verwaltung zum Beispiel "Quick Edit".
 - Noch nicht möglich: große Web-Anwendungen (Google Maps, YouTube, der Block-Editor von WordPress), die neuesten Sprachmittel (async/await, Module), Zeichenflächen, Video und Ton.

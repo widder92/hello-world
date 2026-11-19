@@ -55,6 +55,11 @@
 #define PAGE_MAX     (8u * 1024 * 1024)
 #define REDIRECTS    10
 #define START_PAGE   "about:start"
+#define MARKS_PAGE   "about:lesezeichen"
+#define HISTORY_PAGE "about:verlauf"
+#define SOURCE_PAGE  "about:quelltext"
+#define MARKS_MAX    200                /* Lesezeichen */
+#define MARKS_FILE   "lesezeichen.txt"
 
 /* Bilder */
 #define PICTURES_MAX     300
@@ -128,6 +133,17 @@ typedef struct {
     int focus;                          /* Formularfeld mit der Schreibmarke oder -1 */
     char *history[HISTORY_MAX];         /* besuchte Adressen; die oberste ist die aktuelle */
     int history_count;
+    char *forward[HISTORY_MAX];         /* wohin "Vor" führt: von wo "Zurück" kam (das letzte zuerst) */
+    int forward_count;
+    bool keep_forward;                  /* der nächste Seitenwechsel ist ein Schritt vorwärts */
+    int text_size;                      /* Schriftgröße des Fließtexts (Strg + und Strg -) */
+
+    /* Suchen auf der Seite (Strg+F) */
+    bool find_active;
+    char find_text[80];
+    size_t find_len;
+    int find_line, find_span, find_offset;  /* der Treffer, bei dem die Suche steht (Zeile -1: keiner) */
+    int find_hits, find_number;
 
     char address[URL_SIZE];             /* Text der Adresszeile */
     size_t address_len;
@@ -138,6 +154,7 @@ typedef struct {
     uint64_t busy_since;
     char job_url[URL_SIZE];
     char *job_body;                     /* Formulardaten für POST oder NULL */
+    char *job_text;                     /* Text, den eine eingebaute Seite zeigen soll (Quelltext) */
     bool job_remember;                  /* nach Erfolg in den Verlauf */
     page_t *incoming;
     char incoming_url[URL_SIZE];
@@ -425,6 +442,170 @@ static void cookies_header(browser_t *b, const char *url, strbuf_t *out)
         sb_append(out, "\r\n");
 }
 
+/* --- Lesezeichen --------------------------------------------------------------------------------- */
+
+/*
+ * Die Lesezeichen gelten für alle Browserfenster und stehen auf dem Stick
+ * (eine Zeile je Eintrag: Adresse, Tabulator, Titel). Wer sie liest oder
+ * ändert, hält so lange die Sperre.
+ */
+typedef struct {
+    char *url, *title;
+} bookmark_t;
+
+static bookmark_t marks[MARKS_MAX];
+static int mark_count;
+static bool marks_loaded, marks_busy;
+
+static void marks_lock(void)
+{
+    while (__atomic_exchange_n(&marks_busy, true, __ATOMIC_ACQUIRE))
+        task_sleep(1);
+}
+
+static void marks_unlock(void)
+{
+    __atomic_store_n(&marks_busy, false, __ATOMIC_RELEASE);
+}
+
+static char *copy_text(const char *text, size_t len)
+{
+    char *copy = kmalloc(len + 1);
+    if (copy) {
+        memcpy(copy, text, len);
+        copy[len] = '\0';
+    }
+    return copy;
+}
+
+/* Hängt ein Lesezeichen an (mit gehaltener Sperre). */
+static void mark_append(const char *url, size_t url_len, const char *title, size_t title_len)
+{
+    if (mark_count >= MARKS_MAX || url_len == 0 || url_len >= URL_SIZE)
+        return;
+    if (title_len > 120)
+        title_len = 120;
+    char *u = copy_text(url, url_len), *t = copy_text(title, title_len);
+    if (!u || !t) {
+        kfree(u);
+        kfree(t);
+        return;
+    }
+    for (char *c = t; *c; c++) {
+        if ((unsigned char)*c < 32)
+            *c = ' ';
+    }
+    marks[mark_count].url = u;
+    marks[mark_count].title = t;
+    mark_count++;
+}
+
+static void marks_load(void)
+{
+    char *text;
+    size_t size;
+    marks_lock();
+    if (!marks_loaded && storage_available()) {
+        marks_loaded = true;
+        if (storage_load(STORAGE_SETTINGS, MARKS_FILE, 256 * 1024, &text, &size)) {
+            for (size_t at = 0; at < size;) {
+                size_t end = at, tab = at;
+                while (end < size && text[end] != '\n')
+                    end++;
+                while (tab < end && text[tab] != '\t')
+                    tab++;
+                size_t stop = end > at && text[end - 1] == '\r' ? end - 1 : end;
+                if (tab < stop)
+                    mark_append(text + at, tab - at, text + tab + 1, stop - tab - 1);
+                else if (stop > at)
+                    mark_append(text + at, stop - at, "", 0);
+                at = end + 1;
+            }
+            kfree(text);
+        }
+    }
+    marks_unlock();
+}
+
+/* Schreibt die Lesezeichen auf den Stick (mit gehaltener Sperre). */
+static void marks_save(void)
+{
+    strbuf_t out = { 0 };
+    for (int i = 0; i < mark_count; i++) {
+        sb_append(&out, marks[i].url);
+        sb_append(&out, "\t");
+        sb_append(&out, marks[i].title);
+        sb_append(&out, "\n");
+    }
+    if (!out.failed)
+        storage_save(STORAGE_SETTINGS, MARKS_FILE, out.data ? out.data : "", out.data ? out.len : 0);
+    sb_free(&out);
+}
+
+/* Nummer des Lesezeichens für diese Adresse oder -1 (mit gehaltener Sperre). */
+static int mark_find(const char *url)
+{
+    for (int i = 0; i < mark_count; i++) {
+        if (strcmp(marks[i].url, url) == 0)
+            return i;
+    }
+    return -1;
+}
+
+static void mark_remove(int index)
+{
+    if (index < 0 || index >= mark_count)
+        return;
+    kfree(marks[index].url);
+    kfree(marks[index].title);
+    memmove(&marks[index], &marks[index + 1], (size_t)(mark_count - index - 1) * sizeof(bookmark_t));
+    mark_count--;
+}
+
+/* Hängt Text an, in dem Zeichen mit Bedeutung in HTML entschärft sind. */
+static void sb_append_html(strbuf_t *out, const char *text)
+{
+    for (const char *p = text; *p; p++) {
+        if (*p == '<')
+            sb_append(out, "&lt;");
+        else if (*p == '>')
+            sb_append(out, "&gt;");
+        else if (*p == '&')
+            sb_append(out, "&amp;");
+        else if (*p == '"')
+            sb_append(out, "&quot;");
+        else
+            sb_append_n(out, p, 1);
+    }
+}
+
+static void marks_list(strbuf_t *out, bool removable)
+{
+    marks_lock();
+    if (mark_count == 0)
+        sb_append(out, "<p>Noch keine. Der Stern oben rechts (oder Strg+D) merkt sich die gezeigte Seite.</p>");
+    else
+        sb_append(out, "<ul>");
+    for (int i = 0; i < mark_count; i++) {
+        char number[16];
+        ksnprintf(number, sizeof(number), "%d", i);
+        sb_append(out, "<li><a href=\"");
+        sb_append_html(out, marks[i].url);
+        sb_append(out, "\">");
+        sb_append_html(out, marks[i].title[0] ? marks[i].title : marks[i].url);
+        sb_append(out, "</a>");
+        if (removable) {
+            sb_append(out, " &ndash; <a href=\"" MARKS_PAGE "?weg=");
+            sb_append(out, number);
+            sb_append(out, "\">entfernen</a>");
+        }
+        sb_append(out, "</li>");
+    }
+    if (mark_count > 0)
+        sb_append(out, "</ul>");
+    marks_unlock();
+}
+
 /* --- Seiten holen (Helfer-Task) ---------------------------------------------------------------- */
 
 static const char start_page[] =
@@ -435,8 +616,8 @@ static const char start_page[] =
     "<input name=\"q\" size=\"44\"> <input type=\"submit\" value=\"Im Web suchen\"></form>"
     "<p>Die Suche geht an DuckDuckGo.</p>"
     "<h2>Was dieser Browser kann</h2>"
-    "<ul><li>Seiten mit Schriften, Farben, Bildern, Tabellen und Kästen neben dem Text "
-    "anzeigen</li>"
+    "<ul><li>Seiten mit Schriften, Farben, Bildern, Tabellen, Spalten und Kästen neben dem "
+    "Text anzeigen</li>"
     "<li>Formulare ausfüllen und absenden, auch Anmeldungen (Cookies bleiben, "
     "solange das Fenster offen ist)</li>"
     "<li>Verschlüsselte Verbindungen (https) mit Prüfung des Servers</li>"
@@ -445,12 +626,72 @@ static const char start_page[] =
     "einfache und ältere Seiten laufen damit, große Web-Anwendungen noch nicht</li></ul>"
     "<h2>Was er nicht kann</h2>"
     "<ul><li>Videos, Ton und gezeichnete Flächen (Canvas)</li>"
-    "<li>Skripte, die Daten nachladen oder die neuesten Sprachmittel brauchen</li>"
+    "<li>Skripte mit den neuesten Sprachmitteln (async/await, Module) und große "
+    "Web-Anwendungen</li><li>Abstände, Rahmen und frei platzierte Elemente einer Seite</li>"
     "<li>Dateien hochladen</li></ul>"
     "<h2>Bedienung</h2>"
     "<ul><li>Pfeiltasten, Bild auf/ab, Pos1/Ende: blättern</li>"
     "<li>Tab: zum nächsten Formularfeld; Enter im Feld: absenden</li>"
-    "<li>Rücktaste oder Alt+Pfeil links: zurück; Strg+R: neu laden</li></ul>";
+    "<li>Rücktaste oder Alt+Pfeil links: zurück; Alt+Pfeil rechts: vor; Strg+R: neu laden</li>"
+    "<li>Strg+F: auf der Seite suchen; Strg+D: Lesezeichen setzen oder entfernen; "
+    "Strg+B: Lesezeichen zeigen</li>"
+    "<li>Strg und +, - oder 0: Schrift größer, kleiner, wie üblich; Strg+U: Quelltext der Seite</li></ul>";
+
+/*
+ * Eingebaute Seiten: Start, Lesezeichen, Verlauf. Liefert ihren Quelltext
+ * (kmalloc) oder NULL, wenn es die Seite nicht gibt.
+ */
+static char *internal_page(browser_t *b, const char *url, size_t *len)
+{
+    strbuf_t out = { 0 };
+    if (strcmp(url, START_PAGE) == 0) {
+        sb_append(&out, start_page);
+        sb_append(&out, "<h2>Lesezeichen</h2>");
+        marks_list(&out, false);
+        sb_append(&out, "<p><a href=\"" MARKS_PAGE "\">Lesezeichen verwalten</a> &ndash; "
+                        "<a href=\"" HISTORY_PAGE "\">Verlauf dieses Fensters</a></p>");
+    } else if (starts_with(url, MARKS_PAGE)) {
+        const char *weg = url + sizeof(MARKS_PAGE) - 1;
+        uint32_t index;
+        if (starts_with(weg, "?weg=") && parse_uint(weg + 5, &index)) {
+            marks_lock();
+            mark_remove((int)index);
+            marks_save();
+            marks_unlock();
+        }
+        sb_append(&out, "<title>Lesezeichen</title><h1>Lesezeichen</h1>");
+        marks_list(&out, true);
+        sb_append(&out, "<p><a href=\"" START_PAGE "\">Startseite</a> &ndash; "
+                        "<a href=\"" HISTORY_PAGE "\">Verlauf dieses Fensters</a></p>");
+    } else if (strcmp(url, HISTORY_PAGE) == 0) {
+        sb_append(&out, "<title>Verlauf</title><h1>Verlauf dieses Fensters</h1>");
+        if (b->history_count == 0)
+            sb_append(&out, "<p>Noch nichts besucht.</p>");
+        else
+            sb_append(&out, "<p>Die zuletzt besuchte Seite steht oben. Der Verlauf gilt, "
+                            "solange das Fenster offen ist.</p><ul>");
+        for (int i = b->history_count - 1; i >= 0; i--) {
+            if (starts_with(b->history[i], "about:"))
+                continue;
+            sb_append(&out, "<li><a href=\"");
+            sb_append_html(&out, b->history[i]);
+            sb_append(&out, "\">");
+            sb_append_html(&out, b->history[i]);
+            sb_append(&out, "</a></li>");
+        }
+        if (b->history_count > 0)
+            sb_append(&out, "</ul>");
+        sb_append(&out, "<p><a href=\"" START_PAGE "\">Startseite</a></p>");
+    } else {
+        return NULL;
+    }
+    if (out.failed || !out.data) {
+        sb_free(&out);
+        return NULL;
+    }
+    *len = out.len;
+    return out.data;
+}
 
 /* Wandelt Latin-1 (ISO-8859-1, Windows-1252) in UTF-8 um; liefert einen neuen Puffer. */
 static char *latin1_to_utf8(const char *data, size_t len, size_t *out_len)
@@ -562,7 +803,9 @@ static page_t *layout_page(browser_t *b, const char *source, size_t len, const c
     html_pictures_t pictures = picture_source(b);
     html_text_t text = {
         .cell_width = FONT_W, .width = page_text_width,
-        .base_size = TEXT_SIZE, .heading_size = { 26, 21, 17 },
+        .base_size = (uint8_t)b->text_size,
+        .heading_size = { (uint8_t)(26 * b->text_size / TEXT_SIZE), (uint8_t)(21 * b->text_size / TEXT_SIZE),
+                          (uint8_t)(17 * b->text_size / TEXT_SIZE) },
         .text_color = C_TEXT, .link_color = C_LINK, .page_color = C_BACKGROUND,
         .css = css, .scripts = scripts,
     };
@@ -1092,18 +1335,27 @@ static void worker(void *arg)
     }
     strlcpy(url, b->job_url, URL_SIZE);
 
-    if (strcmp(url, START_PAGE) == 0) {
+    if (starts_with(url, "about:")) {
+        /* eingebaute Seiten - und der Quelltext der gezeigten Seite als reiner Text */
         int columns = LAYOUT_W;
-        size_t len = sizeof(start_page) - 1;
-        char *copy = kmalloc(len + 1);
-        page_t *page = copy ? layout_page(b, start_page, len, START_PAGE, true, NULL, false) : NULL;
-        if (page) {
-            memcpy(copy, start_page, len + 1);
-            deliver(b, page, url, copy, len, true, columns, NULL, NULL);
-        } else {
-            kfree(copy);
+        size_t len = 0;
+        bool source = strcmp(url, SOURCE_PAGE) == 0 && b->job_text;
+        char *text = source ? b->job_text : internal_page(b, url, &len);
+        if (source) {
+            b->job_text = NULL;
+            len = strlen(text);
         }
-        set_status(b, false, "");
+        /* "?weg=..." war ein Auftrag, keine Adresse: Die Seite heißt danach wieder wie üblich */
+        if (starts_with(url, MARKS_PAGE))
+            strlcpy(url, MARKS_PAGE, URL_SIZE);
+        page_t *page = text ? layout_page(b, text, len, url, !source, NULL, false) : NULL;
+        if (page) {
+            deliver(b, page, url, text, len, !source, columns, NULL, NULL);
+            set_status(b, false, "");
+        } else {
+            set_status(b, true, text ? "Nicht genug Speicher" : "Diese eingebaute Seite gibt es nicht");
+            kfree(text);
+        }
         goto done;
     }
 
@@ -1301,6 +1553,8 @@ done:
         memset(body, 0, strlen(body));  /* kann ein Passwort enthalten */
         kfree(body);
     }
+    kfree(b->job_text);
+    b->job_text = NULL;
     kfree(url);
     kfree(next);
     kfree(wish);
@@ -1315,6 +1569,13 @@ static void load(browser_t *b, const char *url, char *body, bool remember)
         kfree(body);
         return;
     }
+    /* Ein neuer Weg: Was vor uns lag, gilt nicht mehr - außer dies ist selbst der Schritt nach vorn */
+    if (remember && !b->keep_forward) {
+        while (b->forward_count > 0)
+            kfree(b->forward[--b->forward_count]);
+    }
+    b->keep_forward = false;
+    b->find_active = false;
     strlcpy(b->job_url, url, sizeof(b->job_url));
     b->job_body = body;
     b->job_remember = remember;
@@ -1645,8 +1906,160 @@ static void go_back(browser_t *b)
         set_status(b, false, "Das ist die erste Seite");
         return;
     }
-    kfree(b->history[--b->history_count]);
+    /* die Seite, die wir verlassen, ist das nächste Ziel von "Vor" */
+    char *left = b->history[--b->history_count];
+    if (b->forward_count < HISTORY_MAX)
+        b->forward[b->forward_count++] = left;
+    else
+        kfree(left);
     load(b, b->history[b->history_count - 1], NULL, false);
+}
+
+static void go_forward(browser_t *b)
+{
+    if (b->busy)
+        return;
+    if (b->forward_count == 0) {
+        set_status(b, false, "Weiter vorn gibt es nichts");
+        return;
+    }
+    char *url = b->forward[--b->forward_count];
+    b->keep_forward = true;
+    load(b, url, NULL, true);
+    kfree(url);
+}
+
+/* Setzt ein Lesezeichen für die gezeigte Seite - oder nimmt es wieder weg. */
+static void toggle_mark(browser_t *b)
+{
+    if (!b->page || !b->url[0] || starts_with(b->url, "about:")) {
+        set_status(b, false, "Für diese Seite gibt es kein Lesezeichen");
+        return;
+    }
+    marks_load();
+    marks_lock();
+    int index = mark_find(b->url);
+    if (index >= 0) {
+        mark_remove(index);
+        set_status(b, false, "Lesezeichen entfernt");
+    } else if (mark_count >= MARKS_MAX) {
+        set_status(b, true, "Mehr als %d Lesezeichen gehen nicht", MARKS_MAX);
+    } else {
+        const char *title = b->page->title ? b->page->title : "";
+        mark_append(b->url, strlen(b->url), title, strlen(title));
+        set_status(b, false, "Lesezeichen gesetzt - Strg+B zeigt alle");
+    }
+    marks_save();
+    marks_unlock();
+}
+
+/* Zeigt den Quelltext der Seite als reinen Text. */
+static void show_source(browser_t *b)
+{
+    if (b->busy || !b->source || strcmp(b->url, SOURCE_PAGE) == 0)
+        return;
+    kfree(b->job_text);
+    b->job_text = copy_text(b->source, b->source_len);
+    if (b->job_text)
+        load(b, SOURCE_PAGE, NULL, true);
+}
+
+/* --- Suchen auf der Seite ------------------------------------------------------------------------ */
+
+/* Kleinbuchstabe eines Bytes; die Umlaute und Akzentbuchstaben (zweites Byte nach 0xC3) mit */
+static char fold(char c, char before)
+{
+    if ((unsigned char)before == 0xC3 && (unsigned char)c >= 0x80 && (unsigned char)c <= 0x9E &&
+        (unsigned char)c != 0x97)
+        return (char)(c + 0x20);
+    return lower(c);
+}
+
+/*
+ * Die nächste Stelle ab from, an der needle (schon klein geschrieben) in text
+ * steht, oder -1. Groß- und Kleinschreibung ist gleich.
+ */
+static int text_find(const char *text, size_t len, size_t from, const char *needle, size_t n)
+{
+    for (size_t i = from; n > 0 && i + n <= len; i++) {
+        size_t k = 0;
+        while (k < n && fold(text[i + k], i + k > 0 ? text[i + k - 1] : 0) == needle[k])
+            k++;
+        if (k == n)
+            return (int)i;
+    }
+    return -1;
+}
+
+/* Wird in diesem Stück gesucht? (Formularfelder und Bilder tragen keinen Seitentext.) */
+static bool span_searched(const browser_t *b, const span_t *span)
+{
+    return b->find_active && b->find_len > 0 && span->widget < 0 && span->image < 0;
+}
+
+/*
+ * Geht zum nächsten (step 1) oder vorigen (-1) Treffer; 0 sucht ab der
+ * gezeigten Stelle neu. Ein Treffer ist eine Fundstelle innerhalb eines
+ * Stücks: Begriffe über einen Zeilenumbruch oder Schriftwechsel hinweg findet
+ * die Suche nicht.
+ */
+static void find_step(browser_t *b, int step)
+{
+    const page_t *page = b->page;
+    int from[3] = { step == 0 ? b->scroll : b->find_line, step == 0 ? -1 : b->find_span,
+                    step == 0 ? -1 : b->find_offset };
+    int first[3] = { -1, 0, 0 }, prev[3] = { -1, 0, 0 }, last[3] = { -1, 0, 0 }, next[3] = { -1, 0, 0 };
+    int hits = 0, prev_number = 0, next_number = 0;
+    b->find_hits = 0;
+    b->find_number = 0;
+    b->find_line = -1;
+    if (!page || b->find_len == 0)
+        return;
+    for (int l = 0; l < page->line_count; l++) {
+        const line_t *line = &page->lines[l];
+        for (uint32_t i = 0; i < line->count; i++) {
+            const span_t *span = &page->spans[line->first + i];
+            if (!span_searched(b, span))
+                continue;
+            const char *text = page->pool + span->text;
+            for (int at = text_find(text, span->bytes, 0, b->find_text, b->find_len); at >= 0;
+                 at = text_find(text, span->bytes, (size_t)at + b->find_len, b->find_text, b->find_len)) {
+                int here[3] = { l, (int)i, at };
+                int order = 0;          /* liegt dieser Treffer vor (-1) oder hinter (1) der Suchstelle? */
+                for (int k = 0; k < 3 && order == 0; k++)
+                    order = here[k] < from[k] ? -1 : here[k] > from[k] ? 1 : 0;
+                hits++;
+                if (first[0] < 0)
+                    memcpy(first, here, sizeof(first));
+                memcpy(last, here, sizeof(last));
+                if (order < 0) {
+                    memcpy(prev, here, sizeof(prev));
+                    prev_number = hits;
+                }
+                if (order > 0 && next[0] < 0) {
+                    memcpy(next, here, sizeof(next));
+                    next_number = hits;
+                }
+            }
+        }
+    }
+    b->find_hits = hits;
+    if (hits == 0)
+        return;
+    const int *chosen;
+    if (step < 0) {                     /* rückwärts: der letzte davor - oder ganz hinten weiter */
+        chosen = prev[0] >= 0 ? prev : last;
+        b->find_number = prev[0] >= 0 ? prev_number : hits;
+    } else {                            /* vorwärts: der nächste - oder am Ende vorn weiter */
+        chosen = next[0] >= 0 ? next : first;
+        b->find_number = next[0] >= 0 ? next_number : 1;
+    }
+    b->find_line = chosen[0];
+    b->find_span = chosen[1];
+    b->find_offset = chosen[2];
+    if (b->find_line < b->scroll || b->find_line >= b->scroll + ROWS - 1)
+        b->scroll = b->find_line > 3 ? b->find_line - 3 : 0;
+    clamp_scroll(b);
 }
 
 /* Die Adresszeile abschicken: fehlt "https://", wird es ergänzt. */
@@ -1807,9 +2220,14 @@ static rect_t back_rect(void)
     return rect_make(8, 8, 70, 26);
 }
 
+static rect_t forward_rect(void)
+{
+    return rect_make(82, 8, 46, 26);
+}
+
 static rect_t reload_rect(void)
 {
-    return rect_make(84, 8, 86, 26);
+    return rect_make(132, 8, 86, 26);
 }
 
 static rect_t toggle_rect(const browser_t *b)
@@ -1817,9 +2235,22 @@ static rect_t toggle_rect(const browser_t *b)
     return rect_make(WIDTH - 8 - TOGGLE_W, 8, TOGGLE_W, 26);
 }
 
+/* "Lesezeichen": die Liste; in schmalen Fenstern fehlt der Knopf (Strg+B geht immer) */
+static rect_t marks_rect(const browser_t *b)
+{
+    int width = WIDTH >= 760 ? 104 : 0;
+    return rect_make(toggle_rect(b).x - (width ? width + 6 : 0), 8, width, 26);
+}
+
+/* der Stern: Lesezeichen für die gezeigte Seite setzen oder entfernen */
+static rect_t star_rect(const browser_t *b)
+{
+    return rect_make(marks_rect(b).x - 34, 8, 28, 26);
+}
+
 static rect_t address_rect(const browser_t *b)
 {
-    return rect_make(178, 8, WIDTH - 178 - 8 - TOGGLE_W - 8, 26);
+    return rect_make(226, 8, star_rect(b).x - 226 - 6, 26);
 }
 
 /* Meldung oder Frage eines Skripts: ein Kasten über der Seite */
@@ -2006,12 +2437,54 @@ static void draw_page(browser_t *b, surface_t *s)
     const page_t *page = b->page;
     gfx_set_clip(s, rect_make(0, CONTENT_Y, SCROLL_X - 2, CONTENT_H));
     /*
-     * Zeilen mit großer Schrift sind zwei Zeilen hoch. Beginnt die Anzeige in
-     * der unteren Hälfte einer solchen, wird die Zeile darüber mitgezeichnet
-     * (ihr oberer Teil fällt dem Ausschnitt zum Opfer).
+     * Zeilen mit großer Schrift sind zwei Zeilen hoch - in Spalten auch
+     * einzelne Stücke. Damit deren untere Hälfte nicht fehlt, wird die Zeile
+     * über dem Ausschnitt immer mitgezeichnet (ihr oberer Teil fällt ihm zum
+     * Opfer).
      */
-    int first_row = b->scroll > 0 && b->scroll < page->line_count &&
-                    page->lines[b->scroll].filler ? -1 : 0;
+    int first_row = b->scroll > 0 && b->scroll < page->line_count ? -1 : 0;
+    int unit = page->pixels ? 1 : FONT_W;
+
+    /*
+     * Erst alle Hintergründe, dann der Inhalt: Hohe Stücke reichen in die
+     * nächste Zeile, und deren Hintergrund darf sie nicht übermalen.
+     */
+    for (int row = first_row; row < ROWS && b->scroll + row < page->line_count; row++) {
+        const line_t *line = &page->lines[b->scroll + row];
+        int y = CONTENT_Y + row * ROW_H;
+        if (line->background && !line->filler && line->image < 0)   /* hinterlegter Abschnitt */
+            gfx_fill(s, 0, y, SCROLL_X - 2, line->tall ? 2 * ROW_H : ROW_H,
+                     line->background & 0xFFFFFF);
+    }
+    for (int row = first_row; row < ROWS && b->scroll + row < page->line_count; row++) {
+        const line_t *line = &page->lines[b->scroll + row];
+        int y = CONTENT_Y + row * ROW_H;
+        for (uint32_t i = 0; i < line->count; i++) {
+            const span_t *span = &page->spans[line->first + i];
+            int x = CONTENT_X + span->column * unit;
+            bool aside = span->style & STYLE_ASIDE;
+            int height = (line->tall || span->tall) && !aside ? 2 * ROW_H : ROW_H;
+            if (span->widget >= 0 || span->image >= 0)
+                continue;
+            if (span->background)
+                gfx_fill(s, x, y, span->width * unit, height, span->background & 0xFFFFFF);
+            /* Suchen auf der Seite: jede Fundstelle gelb, die aktuelle kräftiger */
+            if (span_searched(b, span)) {
+                const char *text = page->pool + span->text;
+                for (int at = text_find(text, span->bytes, 0, b->find_text, b->find_len); at >= 0;
+                     at = text_find(text, span->bytes, (size_t)at + b->find_len, b->find_text,
+                                    b->find_len)) {
+                    bool current = b->scroll + row == b->find_line && (int)i == b->find_span &&
+                                   at == b->find_offset;
+                    int left = page_text_width(NULL, text, (size_t)at, span->style, span->size);
+                    int wide = page_text_width(NULL, text + at, b->find_len, span->style, span->size);
+                    gfx_fill(s, x + left - 1, y, wide + 2, height,
+                             current ? RGB(255, 170, 60) : RGB(255, 240, 130));
+                }
+            }
+        }
+    }
+
     for (int row = first_row; row < ROWS && b->scroll + row < page->line_count; row++) {
         const line_t *line = &page->lines[b->scroll + row];
         int y = CONTENT_Y + row * ROW_H;
@@ -2019,19 +2492,15 @@ static void draw_page(browser_t *b, surface_t *s)
          * Die untere Hälfte einer hohen Zeile und Zeilen eines Bildes tragen
          * selbst keinen Text - wohl aber Stücke von Kästen neben dem Text.
          */
-        int unit = page->pixels ? 1 : FONT_W;
         if (line->image >= 0 && line->image < page->image_count)
             draw_picture_row(b, s, &page->images[line->image], line->image_row,
                              CONTENT_X + page->images[line->image].column * unit, y);
-        if (line->background && !line->filler && line->image < 0)   /* hinterlegter Abschnitt */
-            gfx_fill(s, 0, y, SCROLL_X - 2, line->tall ? 2 * ROW_H : ROW_H,
-                     line->background & 0xFFFFFF);
 
         /* Alle Stücke einer Zeile stehen auf derselben Grundlinie: der der größten Schrift */
         int largest = TEXT_SIZE;
         for (uint32_t i = 0; i < line->count; i++) {
             const span_t *span = &page->spans[line->first + i];
-            if (span->widget < 0 && !(span->style & (STYLE_MONO | STYLE_ASIDE)) &&
+            if (span->widget < 0 && !(span->style & (STYLE_MONO | STYLE_ASIDE)) && !span->tall &&
                 span->size > largest)
                 largest = span->size;
         }
@@ -2053,9 +2522,9 @@ static void draw_page(browser_t *b, surface_t *s)
             /* Stücke eines Kastens neben dem Text stehen immer in einfacher Zeilenhöhe */
             bool aside = span->style & STYLE_ASIDE;
             int baseline = aside ? y + (span->size >= 17 ? 16 : 15) : line_baseline;
-            if (span->background)
-                gfx_fill(s, x, y, span->width * unit, line->tall && !aside ? 2 * ROW_H : ROW_H,
-                         span->background & 0xFFFFFF);
+            /* ... und Stücke aus einer Spalte so hoch wie ihre Zeile dort */
+            if (span->tall && !aside)
+                baseline = y + 4 + (span->tall * 9 + 5) / 10;
             color_t color = span->color ? (span->color & 0xFFFFFF)
                           : span->style & STYLE_LINK ? C_LINK
                           : span->style & STYLE_HEADING ? C_HEADING
@@ -2189,8 +2658,15 @@ static void draw(browser_t *b)
     gfx_fill(s, 0, 0, WIDTH, HEIGHT, C_BACKGROUND);
     gfx_fill(s, 0, 0, WIDTH, TOOLBAR_H, C_TOOLBAR);
     ui_button(s, back_rect(), "Zurück", false);
+    ui_button(s, forward_rect(), "Vor", false);
     ui_button(s, reload_rect(), "Neu laden", false);
     ui_button(s, toggle_rect(b), b->javascript ? "JavaScript an" : "JavaScript aus", b->javascript);
+    if (marks_rect(b).w > 0)
+        ui_button(s, marks_rect(b), "Lesezeichen", false);
+    marks_lock();
+    bool marked = b->url[0] && mark_find(b->url) >= 0;
+    marks_unlock();
+    ui_button(s, star_rect(b), marked ? "\xE2\x98\x85" : "\xE2\x98\x86", marked);
 
     rect_t a = address_rect(b);
     gfx_fill(s, a.x, a.y, a.w, a.h, C_FIELD);
@@ -2226,6 +2702,19 @@ static void draw(browser_t *b)
     if (b->ask_insecure) {
         ui_text(s, 10, y, "ACHTUNG: Das Passwort würde unverschlüsselt gesendet (kein https). "
                           "Trotzdem senden?  J / N", C_ERROR, true);
+    } else if (b->find_active) {
+        int end = ui_text(s, 10, y, "Suchen: ", C_TEXT, true);
+        end = ui_text(s, end, y, b->find_text, C_TEXT, false);
+        gfx_fill(s, end + 1, y + 1, 2, FONT_H - 2, C_TEXT);
+        if (b->find_len == 0)
+            ksnprintf(text, sizeof(text), "Enter: weiter   Umschalt+Enter: zurück   Esc: schließen");
+        else if (b->find_hits == 0)
+            ksnprintf(text, sizeof(text), "nicht gefunden");
+        else
+            ksnprintf(text, sizeof(text), "Treffer %d von %d   (Enter: weiter, Esc: schließen)",
+                      b->find_number, b->find_hits);
+        ui_text(s, WIDTH - 10 - ui_text_width(text, false), y, text,
+                b->find_len > 0 && b->find_hits == 0 ? C_ERROR : C_MUTED, false);
     } else if (b->busy) {
         ksnprintf(text, sizeof(text), "%s  (%llu s)", b->status[0] ? b->status : "Lade ...",
                   (time_ms() - b->busy_since) / 1000);
@@ -2638,7 +3127,68 @@ static void key_pressed(browser_t *b, int key, int mods)
         return;
     }
 
+    /* Suchen auf der Seite: Die Eingabe geht in das Suchfeld der Statuszeile */
+    if (b->find_active) {
+        if (key == 27) {
+            b->find_active = false;
+        } else if (key == '\n') {
+            find_step(b, mods & MOD_SHIFT ? -1 : 1);
+        } else if (key == KEY_UP || key == KEY_DOWN || key == KEY_PAGE_UP || key == KEY_PAGE_DOWN) {
+            b->scroll += key == KEY_UP ? -3 : key == KEY_DOWN ? 3
+                       : key == KEY_PAGE_UP ? -(ROWS - 2) : ROWS - 2;
+            clamp_scroll(b);
+        } else if (!(mods & MOD_CTRL) && type_into(b->find_text, &b->find_len, sizeof(b->find_text), key)) {
+            /* gesucht wird ohne Rücksicht auf Groß- und Kleinschreibung: klein merken */
+            for (size_t i = 0; i < b->find_len; i++)
+                b->find_text[i] = fold(b->find_text[i], i > 0 ? b->find_text[i - 1] : 0);
+            find_step(b, 0);
+        }
+        return;
+    }
+
     /* Kürzel, die überall gelten */
+    if ((mods & MOD_CTRL) && key == 6) {                /* Strg+F */
+        if (page) {
+            b->find_active = true;
+            b->address_focus = false;
+            set_focus(b, -1);
+            find_step(b, 0);
+        }
+        return;
+    }
+    if ((mods & MOD_CTRL) && key == 4) {                /* Strg+D */
+        toggle_mark(b);
+        return;
+    }
+    if ((mods & MOD_CTRL) && key == 2) {                /* Strg+B */
+        load(b, MARKS_PAGE, NULL, true);
+        return;
+    }
+    if ((mods & MOD_CTRL) && key == 21) {               /* Strg+U */
+        show_source(b);
+        return;
+    }
+    if ((mods & MOD_CTRL) && (key == '+' || key == '=' || key == '-' || key == '0')) {
+        /* Schriftgröße: vier Stufen - mehr geht bei fester Zeilenhöhe nicht */
+        static const int sizes[] = { 13, 15, 17, 18 };
+        int at = 1;
+        for (int i = 0; i < 4; i++) {
+            if (sizes[i] == b->text_size)
+                at = i;
+        }
+        at = key == '0' ? 1 : key == '-' ? at - 1 : at + 1;
+        at = at < 0 ? 0 : at > 3 ? 3 : at;
+        if (sizes[at] != b->text_size) {
+            b->text_size = sizes[at];
+            relayout(b, true);
+        }
+        set_status(b, false, "Schriftgröße: %d Punkt", b->text_size);
+        return;
+    }
+    if ((mods & MOD_ALT) && key == KEY_RIGHT) {
+        go_forward(b);
+        return;
+    }
     if ((mods & MOD_CTRL) && key == 12) {               /* Strg+L */
         b->address_focus = true;
         set_focus(b, -1);
@@ -2767,6 +3317,12 @@ static void mouse_pressed(browser_t *b, int x, int y)
 
     if (rect_contains(back_rect(), x, y)) {
         go_back(b);
+    } else if (rect_contains(forward_rect(), x, y)) {
+        go_forward(b);
+    } else if (rect_contains(star_rect(b), x, y)) {
+        toggle_mark(b);
+    } else if (marks_rect(b).w > 0 && rect_contains(marks_rect(b), x, y)) {
+        load(b, MARKS_PAGE, NULL, true);
     } else if (rect_contains(reload_rect(), x, y)) {
         if (b->url[0])
             load(b, b->url, NULL, false);
@@ -2842,7 +3398,10 @@ void browser_app(void *arg)
         return;
     }
     b->focus = -1;
+    b->text_size = TEXT_SIZE;
+    b->find_line = -1;
     load_settings();
+    marks_load();
     b->javascript = javascript_wanted;
     if (start && *start) {
         set_address(b, start);
@@ -2981,6 +3540,9 @@ void browser_app(void *arg)
     css_free(b->incoming_css);
     for (int i = 0; i < b->history_count; i++)
         kfree(b->history[i]);
+    for (int i = 0; i < b->forward_count; i++)
+        kfree(b->forward[i]);
+    kfree(b->job_text);
     while (b->cookies) {
         cookie_t *next = b->cookies->next;
         cookie_free(b->cookies);

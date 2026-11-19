@@ -14,7 +14,8 @@
 /* Eigenschaften, die wir auswerten */
 enum { P_COLOR, P_BACKGROUND, P_BACKGROUND_COLOR, P_WEIGHT, P_STYLE, P_SIZE, P_ALIGN,
        P_DECORATION, P_DISPLAY, P_VISIBILITY, P_LIST, P_FLOAT, P_CLEAR, P_WIDTH, P_CLIP,
-       P_CLIP_PATH, P_TOP, P_COUNT };
+       P_CLIP_PATH, P_TOP, P_FLEX_DIRECTION, P_FLEX_WRAP, P_FLEX_FLOW, P_GRID_COLUMNS,
+       P_GRID_TEMPLATE, P_FLEX, P_FLEX_BASIS, P_FLEX_GROW, P_JUSTIFY, P_GRID_AREAS, P_COUNT };
 
 static const struct {
     const char *name;
@@ -27,7 +28,11 @@ static const struct {
     { "display", P_DISPLAY }, { "visibility", P_VISIBILITY }, { "list-style", P_LIST },
     { "list-style-type", P_LIST }, { "float", P_FLOAT }, { "clear", P_CLEAR },
     { "width", P_WIDTH }, { "clip", P_CLIP }, { "clip-path", P_CLIP_PATH },
-    { "top", P_TOP },
+    { "top", P_TOP }, { "flex-direction", P_FLEX_DIRECTION }, { "flex-wrap", P_FLEX_WRAP },
+    { "flex-flow", P_FLEX_FLOW }, { "grid-template-columns", P_GRID_COLUMNS },
+    { "grid-template", P_GRID_TEMPLATE }, { "flex", P_FLEX }, { "flex-basis", P_FLEX_BASIS },
+    { "flex-grow", P_FLEX_GROW }, { "justify-content", P_JUSTIFY },
+    { "grid-template-areas", P_GRID_AREAS },
 };
 
 enum { S_TAG, S_CLASS, S_ID, S_ROOT, S_ATTR };
@@ -443,6 +448,110 @@ static int sheet_viewport(const css_sheet_t *sheet)
     return sheet ? sheet->viewport : 1000;
 }
 
+/* Beginnt text (bis stop) mit word? Groß- und Kleinschreibung ist gleich. */
+static bool starts_word(const char *text, const char *stop, const char *word)
+{
+    for (; *word; word++, text++) {
+        if (text >= stop || lower(*text) != *word)
+            return false;
+    }
+    return true;
+}
+
+/* Enthält die Liste ein Wort, das mit prefix beginnt ("column" trifft auch "column-reverse")? */
+static bool has_word_starting(const char *text, size_t length, const char *prefix)
+{
+    const char *stop = text + length;
+    for (const char *p = text; p < stop; p++) {
+        if ((p == text || space(p[-1])) && starts_word(p, stop, prefix))
+            return true;
+    }
+    return false;
+}
+
+/* Zählt die Stücke einer Liste von Spalten, die nicht in Klammern stehen. */
+static int count_tracks(const char *p, const char *stop)
+{
+    int count = 0, level = 0;
+    bool inside = false;
+    for (; p < stop; p++) {
+        if (*p == '(') {
+            level++;
+        } else if (*p == ')' && level > 0) {
+            level--;
+        }
+        if (level == 0 && space(*p)) {
+            inside = false;
+        } else if (!inside) {
+            inside = true;
+            count += *p != '[';         /* [name]: nur ein Name für eine Linie */
+        }
+    }
+    return count;
+}
+
+/*
+ * grid-template-columns: wie viele Spalten? "1fr 200px repeat(3, 1fr)" sind
+ * fünf. Bei repeat(auto-fill, minmax(180px, 1fr)) will die Seite so viele,
+ * wie passen - dann zählt die Mindestbreite.
+ */
+static void grid_tracks(const css_sheet_t *sheet, const char *p, const char *stop, css_style_t *s)
+{
+    int count = 0, level = 0;
+    s->tracks = 0;
+    s->track_min_px = 0;
+    while (p < stop) {
+        while (p < stop && space(*p))
+            p++;
+        const char *word = p;
+        for (level = 0; p < stop && (level > 0 || !space(*p)); p++)
+            level += *p == '(' ? 1 : *p == ')' && level > 0 ? -1 : 0;
+        if (p == word || *word == '[')
+            continue;
+        if (starts_word(word, p, "none") || starts_word(word, p, "subgrid") ||
+            starts_word(word, p, "masonry")) {
+            return;
+        } else if (starts_word(word, p, "repeat(")) {
+            const char *q = word + 7, *comma = q, *unit;
+            size_t unit_length;
+            int64_t value = 0;
+            while (q < p && space(*q))
+                q++;
+            while (comma < p && *comma != ',')
+                comma++;
+            if (comma >= p)
+                return;
+            if (starts_word(q, p, "auto-f")) {
+                /* so viele, wie passen: die kleinste Breite steht vorn in minmax() */
+                int px = 200;
+                q = comma + 1;
+                while (q < p && space(*q))
+                    q++;
+                if (starts_word(q, p, "minmax("))
+                    q += 7;
+                while (q < p && space(*q))
+                    q++;
+                if (number(&q, p, &value, &unit, &unit_length) && value > 0) {
+                    if (word_is(unit, unit_length, "px"))
+                        px = (int)(value / 1000);
+                    else if (word_is(unit, unit_length, "em") || word_is(unit, unit_length, "rem"))
+                        px = (int)(value * 16 / 1000);
+                    else if (word_is(unit, unit_length, "vw"))
+                        px = (int)(value * sheet_viewport(sheet) / 100000);
+                }
+                s->track_min_px = px < 40 ? 40 : px > 4000 ? 4000 : px;
+                return;
+            }
+            if (!number(&q, p, &value, &unit, &unit_length) || value < 1000 || value > 40000)
+                return;
+            count += (int)(value / 1000) * count_tracks(comma + 1, p - 1);
+        } else {
+            count++;
+        }
+    }
+    s->tracks = (uint8_t)(count > 40 ? 40 : count);
+}
+
 static void apply(const css_sheet_t *sheet, cascade_t *c, uint8_t property, const char *raw,
                   size_t raw_length, uint64_t priority)
 {
@@ -598,8 +707,113 @@ static void apply(const css_sheet_t *sheet, cascade_t *c, uint8_t property, cons
             s->display = CSS_INLINE;
         else
             s->display = CSS_BLOCK;
+        s->layout = word_is(text, length, "flex") || word_is(text, length, "inline-flex") ? CSS_FLEX
+                  : word_is(text, length, "grid") || word_is(text, length, "inline-grid") ? CSS_GRID
+                  : CSS_FLOW;
         s->has |= CSS_DISPLAY;
         break;
+    case P_FLEX_DIRECTION: case P_FLEX_WRAP: case P_FLEX_FLOW:
+        /* flex-flow nennt Richtung und Umbruch in einem */
+        if (property != P_FLEX_WRAP && (has_word_starting(text, length, "row") ||
+                                        has_word_starting(text, length, "column"))) {
+            s->stacked = has_word_starting(text, length, "column");
+            s->has |= CSS_DIRECTION;
+        }
+        if (property != P_FLEX_DIRECTION && (has_word_starting(text, length, "wrap") ||
+                                             has_word_starting(text, length, "nowrap"))) {
+            s->wraps = has_word_starting(text, length, "wrap");
+            s->has |= CSS_WRAP;
+        }
+        break;
+    case P_GRID_AREAS:
+        /* benannte Flächen: Wo ein Kind steht, sagt dann sein Name - nicht die Reihenfolge */
+        s->areas = !word_is(text, length, "none");
+        s->has |= CSS_AREAS;
+        break;
+    case P_GRID_COLUMNS: case P_GRID_TEMPLATE: {
+        /* grid-template: "Zeilen / Spalten" - hier zählen nur die Spalten */
+        const char *p = text, *stop = text + length;
+        if (property == P_GRID_TEMPLATE) {
+            const char *slash = NULL;
+            int level = 0;
+            bool named = false;         /* Flächen mit Namen stehen gleich mit darin */
+            for (const char *q = text; q < stop; q++) {
+                level += *q == '(' ? 1 : *q == ')' && level > 0 ? -1 : 0;
+                if (*q == '/' && level == 0)
+                    slash = q;
+                named |= *q == '"' || *q == '\'';
+            }
+            if (named || slash) {
+                s->areas = named;
+                s->has |= CSS_AREAS;
+            }
+            if (named || !slash)
+                break;
+            p = slash + 1;
+        }
+        grid_tracks(sheet, p, stop, s);
+        s->has |= CSS_TRACKS;
+        break;
+    }
+    case P_FLEX_GROW: {
+        const char *p = text, *unit;
+        size_t unit_length;
+        int64_t value;
+        if (!number(&p, text + length, &value, &unit, &unit_length))
+            return;
+        s->grows = value > 0;
+        s->has |= CSS_GROW;
+        break;
+    }
+    case P_JUSTIFY:
+        s->justify = has_word_starting(text, length, "center") ? CSS_PACK_CENTER
+                   : has_word_starting(text, length, "flex-end") ||
+                     has_word_starting(text, length, "end") || has_word_starting(text, length, "right")
+                         ? CSS_PACK_END
+                   : has_word_starting(text, length, "space-") ? CSS_PACK_BETWEEN : CSS_PACK_START;
+        s->has |= CSS_JUSTIFY;
+        break;
+    case P_FLEX: case P_FLEX_BASIS: {
+        /* die Wunschbreite: bei "flex" die letzte Angabe mit Einheit ("0 0 33.3%") */
+        const char *p = text, *stop = text + length, *unit;
+        int px = 0, percent = 0;
+        bool first = true;
+        if (property == P_FLEX) {
+            /* die erste Zahl sagt, ob das Kind freien Platz nimmt ("1", "1 1 0", "auto") */
+            s->grows = word_is(text, length, "auto");
+            s->has |= CSS_GROW;
+        }
+        while (p < stop) {
+            size_t unit_length;
+            int64_t value;
+            while (p < stop && space(*p))
+                p++;
+            const char *word = p;
+            if (!number(&p, stop, &value, &unit, &unit_length) || value < 0) {
+                p = word;
+                while (p < stop && !space(*p))
+                    p++;                /* auto, none, content ... */
+                first = false;
+                continue;
+            }
+            if (property == P_FLEX && first && unit_length == 0)
+                s->grows = value > 0;
+            first = false;
+            if (word_is(unit, unit_length, "px"))
+                px = (int)((value + 500) / 1000), percent = 0;
+            else if (word_is(unit, unit_length, "em") || word_is(unit, unit_length, "rem"))
+                px = (int)(value * 16 / 1000), percent = 0;
+            else if (word_is(unit, unit_length, "%"))
+                percent = (int)((value + 500) / 1000), px = 0;
+        }
+        s->basis_px = px > 20000 ? 20000 : px;
+        s->basis_percent = percent > 100 ? 100 : percent;
+        if (px > 0 || percent > 0)
+            s->has |= CSS_BASIS;
+        else
+            s->has &= ~(uint32_t)CSS_BASIS;
+        break;
+    }
     case P_VISIBILITY:
         s->hidden = word_is(text, length, "hidden") || word_is(text, length, "collapse");
         s->has |= CSS_VISIBILITY;

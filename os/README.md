@@ -358,7 +358,18 @@ wenn du das einschaltest – siehe [JavaScript](#javascript).
 
 Was er kann:
 
-- Links folgen, zurückgehen, neu laden; Adressen eingeben (Strg+L)
+- Links folgen, zurück und vor (Knöpfe, Alt+Pfeil links/rechts), neu laden;
+  Adressen eingeben (Strg+L)
+- **Lesezeichen**: Der Stern neben der Adresszeile (oder Strg+D) merkt sich
+  die gezeigte Seite, „Lesezeichen" (Strg+B) zeigt alle; sie stehen auch auf
+  der Startseite und bleiben auf dem Stick gespeichert. Von dort geht es auch
+  zum **Verlauf** des Fensters.
+- **Auf der Seite suchen** (Strg+F): Jede Fundstelle wird gelb hinterlegt,
+  Enter springt zur nächsten, Umschalt+Enter zurück, Esc schließt die Suche.
+  (Gesucht wird innerhalb einer Zeile: Mehrere Wörter, zwischen denen die
+  Zeile umbricht oder die Schrift wechselt, findet die Suche nicht.)
+- **Schriftgröße** in vier Stufen (Strg und +, − oder 0) und der **Quelltext**
+  der Seite (Strg+U)
 - Formulare ausfüllen und absenden: Textfelder, Passwörter, Häkchen,
   Auswahllisten, mehrzeilige Textfelder (öffnen einen kleinen Editor)
 - sich anmelden: Cookies bleiben erhalten, solange das Fenster offen ist –
@@ -414,6 +425,19 @@ Was er kann:
   voller Breite ohne Nachbarn ist ein gewöhnlicher Block. Schrift in Kästen
   ist höchstens 18 Pixel groß; in Fenstern unter 280 Pixeln Breite steht
   alles untereinander.
+- **Spalten und Raster** (`display: flex` und `grid`): Kinder eines solchen
+  Elements stehen nebeneinander – die Kopfzeile mit dem Namen links und dem
+  Menü rechts, der Inhalt neben der Seitenleiste, Karten in Dreierreihen.
+  Der Browser misst jedes Kind aus und verteilt die Breite: nach den
+  Wünschen der Seite (`width`, `flex-basis`, `flex: 1`), sonst nach dem
+  Inhalt; freier Platz geht dorthin, wo die Seite ihn haben will
+  (`justify-content`). Passt nicht alles in eine Reihe, entstehen mehrere
+  Reihen mit gleichen Spalten (`flex-wrap`, `grid-template-columns` mit
+  fester Zahl oder „so viele, wie passen"). `flex-direction: column` und
+  schmale Fenster (laut `@media`) bleiben untereinander. Große Überschriften
+  in Spalten behalten ihre Größe.
+
+  ![Spalten: Kopfzeile mit Menü, Inhalt neben der Seitenleiste, Kartenraster; dazu die Suche auf der Seite](docs/screenshot-spalten.png)
 - Was eine Seite nur für Vorleseprogramme bereithält (auf nichts beschnitten
   oder weit nach oben aus dem Bild geschoben, etwa „Zum Inhalt springen"
   oder zugeklappte Untermenüs), zeigt der Browser nicht. Nach links
@@ -435,16 +459,18 @@ Was er **nicht** kann – und das ist bei heutigen Webseiten viel:
 
 - **JavaScript nur zum Teil** und nur, wenn eingeschaltet – was geht und was
   nicht, steht [unten](#javascript). Große Web-Anwendungen laufen nicht.
-- nur einen Teil der Anordnung: Kästen neben dem Text ja, aber keine
-  Spalten und Raster moderner Seiten (flex, grid), keine frei platzierten
-  Elemente, Abstände, Rahmen oder Hintergrundbilder. Was so angeordnet wäre,
-  steht untereinander. Gesetzt wird in der eingebauten Schrift (die
+- nur einen Teil der Anordnung: Kästen neben dem Text und Spalten ja (siehe
+  oben), aber keine frei platzierten Elemente, Abstände, Rahmen oder
+  Hintergrundbilder, keine Raster mit benannten Flächen und keine Spalten,
+  die über mehrere Reihen reichen. Was so angeordnet wäre, steht
+  untereinander. Gesetzt wird in der eingebauten Schrift (die
   Schriftarten der Seite werden nicht geladen). Sie kennt lateinische, griechische und kyrillische Zeichen;
   andere (etwa chinesische) erscheinen als leeres Kästchen. Schrift von
   rechts nach links wird nicht gesetzt.
 - keine Bilder in den Formaten WebP, AVIF und SVG, keine Hintergrundbilder
   (die legt die Gestaltung fest), keine bewegten GIFs, keine Videos
-- kein Hochladen von Dateien, keine Lesezeichen, keine Tabs, kein Passwortspeicher
+- kein Hochladen von Dateien, keine Tabs (mehrere Browserfenster gehen), kein
+  Passwortspeicher; Cookies gelten nur, solange das Fenster offen ist
 - Lange Menüs einer Seite stehen als Liste am Seitenanfang. Der Browser
   springt deshalb beim Laden zur Hauptüberschrift; mit Pos1 geht es nach oben.
 
@@ -933,7 +959,7 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `tools/embed.py` | bettet `domlib.js` als Zeichenfeld in den Kernel ein |
 | `tools/smoke-test.sh` | automatischer Boot-Test in QEMU |
 | `tests/crypto_test.py` | Kryptografie gegen `hashlib` und `cryptography` prüfen |
-| `tests/web_test.c` | Web-Adressen und Seitenaufbau prüfen (Text, Tabellen, Kästen neben dem Text), auch mit beschädigten Seiten |
+| `tests/web_test.c` | Web-Adressen und Seitenaufbau prüfen (Text, Tabellen, Kästen neben dem Text, Spalten und Raster, HTML5), auch mit beschädigten Seiten |
 | `tests/block_test.c` | Schreibsperre für interne Platten prüfen |
 | `tests/heap_test.c` | Kernel-Heap prüfen: zufälliges Anfordern und Freigeben, Verkettungen, voller Speicher |
 | `tests/js_test.c`, `tests/js/*.js`, `tests/js_oracle.js` | JavaScript-Maschine prüfen (auch mit ständiger Speicherbereinigung und mit verstümmelten Skripten); die Erwartungen prüft Node.js gegen, wenn es installiert ist |
@@ -959,7 +985,7 @@ gehalten. Naheliegende nächste Schritte:
 - User-Modus (Ring 3) mit Systemaufrufen und getrennten Adressräumen
 - Programme aus Dateien laden (ELF), mehrere Prozessorkerne
 - Symbole auf dem Desktop, ein Dateimanager, Fenster an den Kanten ziehen und minimieren
-- im Browser: Spalten und Raster (flex, grid), Abstände und Rahmen (auch Tabellenlinien), WebP-Bilder, Lesezeichen
+- im Browser: Abstände und Rahmen (auch Tabellenlinien), frei platzierte Elemente, Raster mit benannten Flächen, WebP- und SVG-Bilder, Hintergrundbilder, Tabs
 - JavaScript: `async`/`await`, Generatoren und Module; Zeichenflächen (Canvas); Maße und Positionen der Elemente; eine Schutzwand zwischen Skripten und System (dafür braucht es den User-Modus)
 - echte Schrift auch in Terminal, Editor und Eingabefeldern; Hinting für schärfere kleine Schrift
 

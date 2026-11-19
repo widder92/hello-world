@@ -47,11 +47,17 @@ typedef struct css_node {
 
 enum { CSS_COLOR = 1, CSS_BACKGROUND = 2, CSS_WEIGHT = 4, CSS_SLANT = 8, CSS_SIZE = 16,
        CSS_ALIGN = 32, CSS_UNDERLINE = 64, CSS_DISPLAY = 128, CSS_VISIBILITY = 256,
-       CSS_LIST = 512, CSS_FLOAT = 1024, CSS_CLEAR = 2048, CSS_WIDTH = 4096, CSS_CLIP = 8192 };
+       CSS_LIST = 512, CSS_FLOAT = 1024, CSS_CLEAR = 2048, CSS_WIDTH = 4096, CSS_CLIP = 8192,
+       CSS_DIRECTION = 16384, CSS_WRAP = 32768, CSS_TRACKS = 65536, CSS_BASIS = 131072,
+       CSS_GROW = 262144, CSS_JUSTIFY = 524288, CSS_AREAS = 1048576 };
 
 enum { CSS_BLOCK = 1, CSS_INLINE, CSS_NONE };
 enum { CSS_LEFT = 1, CSS_CENTER, CSS_RIGHT };
 enum { CSS_SIDE_NONE = 0, CSS_SIDE_LEFT = 1, CSS_SIDE_RIGHT = 2, CSS_SIDE_BOTH = 3 };
+/* Wie ein Element seine Kinder anordnet (aus display: flex / grid) */
+enum { CSS_FLOW = 0, CSS_FLEX, CSS_GRID };
+/* Wohin freier Platz in einer Reihe geht (justify-content) */
+enum { CSS_PACK_START = 0, CSS_PACK_CENTER, CSS_PACK_END, CSS_PACK_BETWEEN };
 
 /* Was die Regeln für ein Element festlegen; "has" sagt, welche Angaben gemacht wurden */
 typedef struct {
@@ -67,6 +73,22 @@ typedef struct {
     int size_percent;                   /* ... dann relativ zur Umgebung in Prozent */
     int width_px;                       /* Breite in Pixeln, oder 0 ... */
     int width_percent;                  /* ... dann in Prozent der Umgebung */
+    /*
+     * Kinder nebeneinander: display: flex oder grid (layout), bei flex die
+     * Richtung und ob umbrochen wird; bei grid die Zahl der Spalten laut
+     * grid-template-columns - oder die Mindestbreite einer Spalte, wenn die
+     * Seite so viele Spalten will, wie passen (repeat(auto-fill, ...)).
+     */
+    uint8_t layout;
+    bool stacked;                       /* flex-direction: column - untereinander */
+    bool wraps;
+    uint8_t tracks;
+    int track_min_px;
+    bool areas;                         /* Raster mit benannten Flächen: Die Kinder stehen nicht der Reihe nach */
+    uint8_t justify;                    /* CSS_PACK_...: freier Platz in der Reihe */
+    /* Wunschbreite eines Kinds in so einer Reihe (flex-basis, flex), wie width */
+    int basis_px, basis_percent;
+    bool grows;                         /* das Kind nimmt freien Platz der Reihe (flex-grow) */
     bool clipped;                       /* auf nichts beschnitten: nur für Vorleseprogramme da */
     bool off_top;                       /* weit nach oben aus dem Bild geschoben (top: -1000em) */
 } css_style_t;

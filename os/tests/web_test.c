@@ -105,6 +105,27 @@ static void check(int ok, const char *what)
     }
 }
 
+/* Sucht das Stück, dessen Text needle enthält: liefert seine Zeile (oder -1), Spalte und das Stück */
+static int find_piece(const page_t *p, const char *needle, int *column, const span_t **piece)
+{
+    size_t n = strlen(needle);
+    for (int l = 0; p && l < p->line_count; l++) {
+        for (unsigned i = 0; i < p->lines[l].count; i++) {
+            const span_t *s = &p->spans[p->lines[l].first + i];
+            for (unsigned k = 0; s->widget < 0 && k + n <= s->bytes; k++) {
+                if (memcmp(p->pool + s->text + k, needle, n) == 0) {
+                    if (column)
+                        *column = s->column;
+                    if (piece)
+                        *piece = s;
+                    return l;
+                }
+            }
+        }
+    }
+    return -1;
+}
+
 /* Text einer Zeile der fertigen Seite (Felder erscheinen als "[]") */
 static const char *line_text(const page_t *p, int index)
 {
@@ -824,25 +845,109 @@ int main(void)
     }
     text.scripts = false;
 
+    /* Kinder nebeneinander: flex und grid als Spalten */
+    static const char flex_sheet[] =
+        ".kopf { display: flex; justify-content: space-between; } .menue { display: flex; list-style: none; }"
+        ".inhalt { display: flex; } .haupt { flex: 1; } .seite { width: 260px; background: #eef; }"
+        ".karten { display: grid; grid-template-columns: repeat(3, 1fr); } .karte { background: #f4f4e8; }"
+        ".auto { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }"
+        ".reihe { display: flex; flex-wrap: wrap; } .drittel { flex: 0 0 33.333%; }"
+        ".stapel { display: flex; flex-direction: column; } .fuss { display: flex; } .fuss > div { flex: 1; }"
+        ".rechts { display: flex; justify-content: flex-end; }"
+        ".flaechen { display: grid; grid-template-columns: 200px 1fr; grid-template-areas: 'a a' 'b c'; }"
+        ".zwei { display: grid; grid-template: auto / 1fr 2fr; }"
+        "@media (max-width: 500px) { .inhalt { flex-direction: column; } .karten { grid-template-columns: 1fr; } }";
+    static const char flex_page[] =
+        "<header class=kopf><div><b>Blumenladen</b></div><ul class=menue><li><a href=/>Start</a></li>"
+        "<li><a href=/s>Sorten</a></li><li><a href=/k>Kontakt</a></li></ul></header>"
+        "<div class=inhalt><main class=haupt><h1>Willkommen</h1><p>Der Haupttext steht links und ist breit. Er "
+        "umbricht in seiner Spalte, während rechts daneben die Seitenleiste steht, und füllt mehrere Zeilen.</p>"
+        "<div class=karten><div class=karte>Rosen</div><div class=karte>Tulpen</div><div class=karte>Lilien</div>"
+        "<div class=karte>Nelken</div><!-- nichts --><div class=karte hidden>Unsichtbar</div><div class=karte>Astern</div></div>"
+        "<div class=auto><div>Eins</div><div>Zwei</div><div>Drei</div><div>Vier</div></div>"
+        "<div class=reihe><div class=drittel>Adam</div><div class=drittel>Berta</div><div class=drittel>Caesar</div>"
+        "<div class=drittel>Dora</div></div><div class=stapel><div>oben</div><div>unten</div></div>"
+        "<div class=flaechen><div>Kopfteil</div><div>Linksteil</div><div>Rechtsteil</div></div>"
+        "<div class=zwei><div>Schmal</div><div>Doppelt</div></div>"
+        "</main><aside class=seite><h3>Seitenleiste</h3><p><a href=/a>Anfahrt</a></p></aside></div>"
+        "<div class=rechts><span>Ganz</span><span>hinten</span></div>"
+        "<footer class=fuss><div>Impressum</div><div>Datenschutz</div><div>Ende2026</div></footer>";
+    for (int narrow = 0; narrow < 2; narrow++) {
+        int wide = narrow ? 480 : 1000;
+        css_sheet_t *fs = css_create(wide);
+        css_add(fs, flex_sheet, sizeof(flex_sheet) - 1);
+        text.css = fs;
+        p = html_layout_rich(flex_page, sizeof(flex_page) - 1, "https://a.de/", wide, &pictures, &text);
+        int x1, x2, x3, l1, l2, l3;
+        const span_t *piece = NULL;
+        #define FX(cond, what) snprintf(note, sizeof(note), "Spalten (%d breit): %s", wide, what); check(p && (cond), note)
+        l1 = find_piece(p, "Blumenladen", &x1, NULL);
+        l2 = find_piece(p, "Start", &x2, NULL);
+        l3 = find_piece(p, "Kontakt", &x3, NULL);
+        FX(l1 >= 0 && l1 == l2 && l2 == l3 && x1 < x2 && x2 < x3, "Kopf: Name und Menü in einer Zeile");
+        FX(x3 > wide * 3 / 4, "justify-content: space-between schiebt das Menü nach rechts");
+        l1 = find_piece(p, "Willkommen", &x1, &piece);
+        l2 = find_piece(p, "Seitenleiste", &x2, NULL);
+        if (!narrow) {
+            FX(l1 >= 0 && l1 == l2 && x2 > 600, "Inhalt und Seitenleiste nebeneinander");
+            FX(piece && piece->size >= 19 && piece->tall == piece->size, "große Überschrift in der Spalte: zwei Zeilen hoch");
+            l1 = find_piece(p, "Rosen", &x1, NULL);
+            l2 = find_piece(p, "Tulpen", &x2, NULL);
+            l3 = find_piece(p, "Lilien", &x3, NULL);
+            FX(l1 >= 0 && l1 == l2 && l2 == l3 && x2 - x1 > 150 && x3 - x2 > 150, "Raster: drei gleich breite Spalten");
+            FX(find_piece(p, "Nelken", &x2, NULL) > l1 && x2 == x1 && find_piece(p, "Astern", &x3, NULL) > l1 &&
+               find_piece(p, "Unsichtbar", NULL, NULL) < 0, "Raster: vierte Karte in der nächsten Reihe, Verborgenes zählt nicht");
+            FX(find_piece(p, "Eins", &x1, NULL) == find_piece(p, "Drei", &x3, NULL) && x3 > x1 &&
+               find_piece(p, "Vier", NULL, NULL) > find_piece(p, "Eins", NULL, NULL), "Raster mit so vielen Spalten, wie passen");
+        } else {
+            FX(l1 >= 0 && l2 > l1, "schmal: laut @media untereinander");
+            FX(find_piece(p, "Tulpen", NULL, NULL) > find_piece(p, "Rosen", NULL, NULL), "schmal: Karten untereinander");
+        }
+        l1 = find_piece(p, "Adam", &x1, NULL);
+        l3 = find_piece(p, "Caesar", &x3, NULL);
+        FX(l1 >= 0 && l1 == l3 && find_piece(p, "Dora", &x2, NULL) > l1 && x2 == x1, "Drittel: drei je Reihe, das vierte darunter");
+        FX(find_piece(p, "unten", NULL, NULL) > find_piece(p, "oben", NULL, NULL), "flex-direction: column bleibt untereinander");
+        FX(find_piece(p, "Linksteil", NULL, NULL) > find_piece(p, "Kopfteil", NULL, NULL) &&
+           find_piece(p, "Rechtsteil", NULL, NULL) > find_piece(p, "Linksteil", NULL, NULL),
+           "Raster mit benannten Flächen: nicht als Spalten gedeutet");
+        FX(find_piece(p, "Schmal", &x1, NULL) == find_piece(p, "Doppelt", &x2, NULL) && x2 > x1, "grid-template mit Spalten hinter dem Schrägstrich");
+        l1 = find_piece(p, "Ganz", &x1, NULL);
+        FX(l1 >= 0 && l1 == find_piece(p, "hinten", &x2, NULL) && x1 > wide / 2, "justify-content: flex-end stellt die Reihe nach rechts");
+        l1 = find_piece(p, "Impressum", &x1, NULL);
+        l2 = find_piece(p, "Datenschutz", &x2, NULL);
+        l3 = find_piece(p, "Ende2026", &x3, NULL);
+        FX(l1 >= 0 && l1 == l2 && l2 == l3 && x2 - x1 > wide / 4 && x3 - x2 > wide / 4,
+           "flex: 1 an den Kindern (über '>' gefunden): gleich breite Spalten");
+        page_free(p);
+        css_free(fs);
+    }
+    text.css = NULL;
+
     /* Beschädigte Seiten: abschneiden, Bytes kippen, Stücke verdoppeln */
     static const char fuzz_sheet[] = ".r, div, table { float: right } .l, span, img { float: left } p { clear: left } "
                                      "figure[typeof~='mw:File/Thumb'], td[x] { float: right; clear: right } "
                                      "#menue { float: left; width: 120px } #inhalt { float: left; width: 100% } "
-                                     ".suche { float: right; width: 30% } li { float: left } ul { width: 7em }";
+                                     ".suche { float: right; width: 30% } li { float: left } ul { width: 7em } "
+                                     "header, form, .karten, main { display: flex } nav, article, ol { display: grid; "
+                                     "grid-template-columns: repeat(2, 1fr) } dl { display: grid; grid-template-columns: "
+                                     "repeat(auto-fill, minmax(90px, 1fr)) } section { display: flex; flex-wrap: wrap; "
+                                     "justify-content: space-between } section > * { flex: 1 0 40% } aside { flex: 1 }";
     css_add(sheet, fuzz_sheet, sizeof(fuzz_sheet) - 1);
     text.css = sheet;
     unsigned seed = 12345;
     char *broken = malloc(3 * (sizeof(sample) + sizeof(table_page) + sizeof(float_page) +
-                               sizeof(side_page) + sizeof(layout_page) + sizeof(html5_page)));
-    for (int round = 0; round < 10800; round++) {
-        int which = round % 6;
+                               sizeof(side_page) + sizeof(layout_page) + sizeof(html5_page) +
+                               sizeof(flex_page)));
+    for (int round = 0; round < 12600; round++) {
+        int which = round % 7;
         const char *source = which == 3 ? table_page : which == 4 ? float_page
                            : which == 2 ? side_page : which == 1 ? layout_page
-                           : which == 5 ? html5_page : sample;
+                           : which == 5 ? html5_page : which == 6 ? flex_page : sample;
         size_t len = which == 3 ? sizeof(table_page) - 1 : which == 4 ? sizeof(float_page) - 1
                    : which == 2 ? sizeof(side_page) - 1 : which == 1 ? sizeof(layout_page) - 1
-                   : which == 5 ? sizeof(html5_page) - 1 : sizeof(sample) - 1;
-        text.scripts = (round / 6) % 2;
+                   : which == 5 ? sizeof(html5_page) - 1 : which == 6 ? sizeof(flex_page) - 1
+                   : sizeof(sample) - 1;
+        text.scripts = (round / 7) % 2;
         memcpy(broken, source, len);
         seed = seed * 1103515245u + 12345u;
         unsigned r = seed >> 8;
@@ -875,7 +980,7 @@ int main(void)
     }
     free(broken);
     css_free(sheet);
-    check(1, "10800 beschädigte Seiten verarbeitet");
+    check(1, "12600 beschädigte Seiten verarbeitet");
 
     printf("%d Prüfungen am Browser-Unterbau, %d Fehler\n", checks, failures);
     return failures != 0;

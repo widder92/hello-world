@@ -318,6 +318,51 @@ static void test_boxes(void)
     s = match(sheet, &menu, "width: 75%");
     CHECK(s.width_px == 0 && s.width_percent == 75);            /* style-Attribut geht vor */
 
+    /* Kinder nebeneinander: flex und grid */
+    s = match(sheet, &half, "display: flex");
+    CHECK((s.has & CSS_DISPLAY) && s.display == CSS_BLOCK && s.layout == CSS_FLEX && !(s.has & CSS_DIRECTION));
+    s = match(sheet, &half, "display: inline-flex; flex-direction: column-reverse");
+    CHECK(s.display == CSS_INLINE && s.layout == CSS_FLEX && (s.has & CSS_DIRECTION) && s.stacked);
+    s = match(sheet, &half, "display: flex; flex-direction: row-reverse; flex-wrap: wrap");
+    CHECK(!s.stacked && (s.has & CSS_WRAP) && s.wraps);
+    s = match(sheet, &half, "display: flex; flex-flow: column nowrap");
+    CHECK(s.stacked && (s.has & CSS_WRAP) && !s.wraps);
+    s = match(sheet, &half, "display: flex; flex-flow: wrap");
+    CHECK(!(s.has & CSS_DIRECTION) && s.wraps);
+    CHECK(match(sheet, &half, "display: block").layout == CSS_FLOW);
+    CHECK(match(sheet, &half, "justify-content: space-between").justify == CSS_PACK_BETWEEN &&
+          match(sheet, &half, "justify-content: space-around").justify == CSS_PACK_BETWEEN &&
+          match(sheet, &half, "justify-content: flex-end").justify == CSS_PACK_END &&
+          match(sheet, &half, "justify-content: center").justify == CSS_PACK_CENTER &&
+          match(sheet, &half, "justify-content: flex-start").justify == CSS_PACK_START);
+    s = match(sheet, &half, "display: grid; grid-template-columns: 1fr 200px repeat(3, 1fr)");
+    CHECK(s.layout == CSS_GRID && (s.has & CSS_TRACKS) && s.tracks == 5 && s.track_min_px == 0);
+    s = match(sheet, &half, "grid-template-columns: repeat(2, minmax(0, 1fr) 40px) [ende]");
+    CHECK(s.tracks == 4);
+    s = match(sheet, &half, "grid-template-columns: repeat(auto-fill, minmax(12.5rem, 1fr))");
+    CHECK(s.tracks == 0 && s.track_min_px == 200);
+    s = match(sheet, &half, "grid-template-columns: repeat( auto-fit , 180px )");
+    CHECK(s.tracks == 0 && s.track_min_px == 180);
+    CHECK(match(sheet, &half, "grid-template-columns: none").tracks == 0 &&
+          match(sheet, &half, "grid-template-columns: subgrid").tracks == 0);
+    s = match(sheet, &half, "grid-template: auto 1fr / 15rem minmax(0, 1fr)");
+    CHECK(s.tracks == 2 && (s.has & CSS_AREAS) && !s.areas);
+    s = match(sheet, &half, "grid-template: 'kopf kopf' auto 'seite inhalt' 1fr / 200px 1fr");
+    CHECK((s.has & CSS_AREAS) && s.areas);
+    CHECK(match(sheet, &half, "grid-template-columns: 1fr 1fr; grid-template-areas: 'a b'").areas &&
+          !match(sheet, &half, "grid-template-areas: none").areas);
+    s = match(sheet, &half, "flex: 1");
+    CHECK((s.has & CSS_GROW) && s.grows && !(s.has & CSS_BASIS));
+    s = match(sheet, &half, "flex: 0 0 33.333%");
+    CHECK(!s.grows && (s.has & CSS_BASIS) && s.basis_percent == 33 && s.basis_px == 0);
+    s = match(sheet, &half, "flex: 1 1 300px");
+    CHECK(s.grows && s.basis_px == 300 && s.basis_percent == 0);
+    CHECK(match(sheet, &half, "flex: auto").grows && !match(sheet, &half, "flex: none").grows &&
+          match(sheet, &half, "flex-grow: 2").grows && !match(sheet, &half, "flex-grow: 0").grows);
+    s = match(sheet, &half, "flex-basis: 20em");
+    CHECK((s.has & CSS_BASIS) && s.basis_px == 320);
+    CHECK(!(match(sheet, &half, "flex-basis: auto").has & CSS_BASIS));
+
     css_node_t reader = node("span", NULL, "vorleser", &body), old = node("span", NULL, "alt", &body);
     css_node_t seen = node("span", NULL, "sichtbar", &body), back = node("p", NULL, "doch", &body);
     css_node_t path = node("span", NULL, "pfad", &body), circle = node("span", NULL, "kreis", &body);

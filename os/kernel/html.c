@@ -15,6 +15,10 @@
 #define FLOATS_MAX   12
 #define FLOAT_GAP    14              /* Abstand zwischen Text und Kasten daneben */
 #define FLOAT_DEPTH  2               /* Kästen in Kästen: so tief wird das mitgemacht */
+/* Kinder nebeneinander: Arten (positive Werte sind die Spaltenzahl eines Rasters) */
+#define GRID_FLEX       (-1)         /* flex in einer Reihe */
+#define GRID_FLEX_WRAP  (-2)         /* flex mit Umbruch */
+#define GRID_AUTO       (-3)         /* Raster mit so vielen Spalten, wie passen */
 
 typedef enum {
     T_UNKNOWN, T_A, T_BOLD, T_BLOCK, T_BLOCKQUOTE, T_BR, T_BUTTON, T_DD, T_DL, T_DT,
@@ -65,6 +69,9 @@ typedef struct {
     const char *name, *value;
     size_t name_len, value_len;
 } attr_t;
+
+/* So heißen die Zeilen und Zellen, die für Kinder nebeneinander (flex, grid) gedacht werden */
+static const char neutral_name[] = "x-reihe";
 
 /* Was ein offenes Element verändert hat und bei seinem Ende zurückzunehmen ist */
 enum { U_HIDDEN = 1, U_BOLD = 2, U_LINK = 4, U_PRE = 8, U_HEADING = 16, U_LIST = 32,
@@ -127,6 +134,15 @@ typedef struct {
     int pending_float;                  /* das eben begonnene Element gehört neben den Text */
     int pending_clear;                  /* ... und erst unter die Kästen dieser Seiten */
     int pending_width, pending_percent; /* ... mit dieser Breite laut Gestaltung (0: nach Inhalt) */
+    /*
+     * Das eben begonnene Element ordnet seine Kinder nebeneinander an (flex,
+     * grid): GRID_FLEX, GRID_FLEX_WRAP, GRID_AUTO oder die Zahl der Spalten.
+     */
+    int pending_grid, pending_track_min, pending_justify;
+    bool neutral_cells;                 /* Zellen ohne eigenes Element heißen nicht "tr"/"td" */
+    bool probing;                       /* das nächste Element meldet seine Wunschbreite ... */
+    int probe_px, probe_percent;        /* ... hierhin (Kinder von flex: wie viele passen nebeneinander?) */
+    bool probe_grows;
     bool no_float;                      /* ... passt aber nicht: wie gewöhnlich setzen */
     int widest_image;                   /* beim Ausmessen: breitestes Bild */
 
@@ -819,8 +835,8 @@ static uint8_t current_size(const parser_t *ps)
         size = ps->cur.size;
     else if (ps->heading > 0 && ps->heading_level >= 1 && ps->heading_level <= 3)
         size = ps->text->heading_size[ps->heading_level - 1];
-    /* In Tabellenzellen und Kästen neben dem Text stehen Zeilen nebeneinander: einfache Höhe */
-    if ((ps->table_depth > 0 || ps->in_float > 0) && size > 18)
+    /* In Kästen neben dem Text stehen Zeilen in einfacher Höhe nebeneinander */
+    if (ps->in_float > 0 && size > 18)
         size = 18;
     return (uint8_t)size;
 }
@@ -932,6 +948,7 @@ static void place(parser_t *ps, const char *bytes, size_t n, int width, int widg
         span->widget = (int16_t)widget;
         span->image = -1;
         span->image_row = 0;
+        span->tall = 0;
         span->node = ps->node_id;
         memcpy(page->pool + page->pool_len, bytes, n);
         page->pool_len += n;
@@ -1731,6 +1748,7 @@ static void element_start(parser_t *ps, tag_t tag, const attr_t *attrs, int coun
 static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
 {
     close_implied(ps, tag);
+    ps->pending_grid = 0;
 
     /* Seiten mit Skripten: Jedes Element trägt seine Nummer; Text und Felder darin erben sie. */
     uint32_t outer_id = ps->node_id;
@@ -1775,7 +1793,11 @@ static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
             node.attrs = attrs[0].name;
             node.attrs_len = (size_t)(stop - attrs[0].name);
         }
-        node.parent = ps->depth > 0 ? &ps->stack[ps->depth - 1].node : NULL;
+        /* Zellen ohne eigenes Element (Kinder nebeneinander) gibt es für die Regeln der Seite nicht */
+        int up = ps->depth - 1;
+        while (up >= 0 && ps->stack[up].node.tag == neutral_name)
+            up--;
+        node.parent = up >= 0 ? &ps->stack[up].node : NULL;
 
         css_style_t cs;
         css_match(ps->text->css, &node, style ? style->value : NULL,
@@ -1826,6 +1848,36 @@ static void start_tag(parser_t *ps, tag_t tag, const attr_t *attrs, int count)
         if ((cs.has & CSS_CLEAR) && cs.clear && ps->hidden == 0 && !css_hidden)
             clear_floats(ps, cs.clear);
         apply_style(ps, tag, &cs);
+
+        /*
+         * Ordnet das Element seine Kinder nebeneinander an (display: flex
+         * oder grid)? Dann setzt sie der Aufrufer als Spalten.
+         */
+        bool container = tag == T_BLOCK || tag == T_UNKNOWN || tag == T_UL || tag == T_OL ||
+                         tag == T_LI || tag == T_FORM || tag == T_DL || tag == T_DD || tag == T_P;
+        if (container && !css_hidden && ps->hidden == 0 && (cs.has & CSS_DISPLAY)) {
+            if (cs.layout == CSS_FLEX && !((cs.has & CSS_DIRECTION) && cs.stacked)) {
+                ps->pending_grid = (cs.has & CSS_WRAP) && cs.wraps ? GRID_FLEX_WRAP : GRID_FLEX;
+                ps->pending_justify = (cs.has & CSS_JUSTIFY) ? cs.justify : CSS_PACK_START;
+            } else if (cs.layout == CSS_GRID && (cs.has & CSS_TRACKS) &&
+                       !((cs.has & CSS_AREAS) && cs.areas) &&
+                       (cs.tracks >= 2 || cs.track_min_px > 0)) {
+                ps->pending_grid = cs.tracks >= 2 ? cs.tracks : GRID_AUTO;
+                ps->pending_track_min = cs.track_min_px;
+            }
+        }
+        /* das erste Element einer solchen Spalte: Seine Breite bestimmt, wie viele nebeneinander passen */
+        if (ps->probing) {
+            ps->probing = false;
+            ps->probe_grows = (cs.has & CSS_GROW) && cs.grows;
+            if (cs.has & CSS_BASIS) {
+                ps->probe_px = cs.basis_px;
+                ps->probe_percent = cs.basis_percent;
+            } else if (cs.has & CSS_WIDTH) {
+                ps->probe_px = cs.width_px;
+                ps->probe_percent = cs.width_percent;
+            }
+        }
     }
 
     int depth = ps->depth;
@@ -2082,6 +2134,9 @@ static void element_start(parser_t *ps, tag_t tag, const attr_t *attrs, int coun
             char *target = NULL;
             if ((href[0] == '#' && href[1]) || same_word(href, 11, "javascript:")) {
                 target = duplicate(href, strlen(href));     /* gilt nur in dieser Seite */
+            } else if (same_word(href, 6, "about:") && ps->base && same_word(ps->base, 6, "about:")) {
+                /* eingebaute Seiten des Browsers verweisen aufeinander - Webseiten dürfen das nicht */
+                target = duplicate(href, strlen(href));
             } else {
                 char *full = kmalloc(URL_SIZE);
                 if (full && url_resolve(ps->base, href, full, URL_SIZE))
@@ -2306,7 +2361,8 @@ void html_find_styles(const char *html, size_t len, const char *base_url,
     kfree(full);
 }
 
-static const char *layout_table(parser_t *ps, const char *p, const char *end);
+static const char *layout_table(parser_t *ps, const char *p, const char *end, int kind,
+                                const char *name, size_t name_len);
 static const char *layout_float(parser_t *ps, int side, tag_t tag, const char *tag_start,
                                 const char *name, size_t name_len, const char *p,
                                 const char *end);
@@ -2432,7 +2488,7 @@ static void parse_range(parser_t *ps, const char *html, size_t len)
         /* In echter Schrift werden Tabellen als Ganzes gesetzt: Zellen in Spalten. */
         if (tag == T_TABLE && ps->text && ps->hidden == 0 && ps->table_depth < 3 &&
             ps->depth > 0 && ps->stack[ps->depth - 1].tag == T_TABLE) {
-            const char *after = layout_table(ps, p, end);
+            const char *after = layout_table(ps, p, end, 0, NULL, 0);
             if (after) {
                 p = after;
                 end_tag(ps, T_TABLE);
@@ -2442,6 +2498,20 @@ static void parse_range(parser_t *ps, const char *html, size_t len)
         } else if (tag == T_TABLE && ps->text && ps->float_count > 0) {
             clear_floats(ps, CSS_SIDE_BOTH);
         }
+
+        /*
+         * Kinder nebeneinander (flex, grid): als Spalten setzen. Danach steht
+         * p vor der Ende-Marke des Elements - die schließt es wie üblich.
+         */
+        if (ps->pending_grid && ps->text && ps->hidden == 0 && ps->table_depth < 3 &&
+            !ps->capturing && ps->depth > 0) {
+            int kind = ps->pending_grid;
+            ps->pending_grid = 0;
+            const char *after = layout_table(ps, p, end, kind, name, name_len);
+            if (after)
+                p = after;
+        }
+        ps->pending_grid = 0;
     }
 }
 
@@ -2453,7 +2523,7 @@ static void parse_range(parser_t *ps, const char *html, size_t len)
 #define TABLE_MEASURE_W   4000          /* "unendlich breit" beim Ausmessen */
 
 typedef struct {
-    const char *tag;                    /* das "<" des Zellen-Elements */
+    const char *tag;                    /* das "<" des Zellen-Elements, oder NULL (Kind einer Reihe) */
     const char *content, *content_end;
     int row;
     bool caption, hidden;
@@ -2461,6 +2531,8 @@ typedef struct {
     int min, max;                       /* schmalste und breiteste sinnvolle Breite */
     int first_line, lines;              /* vorläufige Zeilen der Zelle */
     uint32_t background;
+    int want_px, want_percent;          /* Wunschbreite laut Gestaltung (Kinder von flex) */
+    bool grows;                         /* nimmt freien Platz der Reihe */
 } cell_t;
 
 typedef struct {
@@ -2477,6 +2549,13 @@ typedef struct {
     int natural;                        /* Breite, bei der keine Zelle umbrechen müsste */
     int least;                          /* Breite, unter der Wörter nicht mehr passen */
     const char *end;                    /* Ende des Tabellen-Quelltexts */
+    /* Kinder eines Elements nebeneinander (flex, grid) statt einer Tabelle */
+    bool flex;
+    bool equal;                         /* alle Spalten gleich breit, wenn es geht */
+    bool wished;                        /* einzelne Reihe: Spalten mit Wunschbreite (wish, in Pixeln; 0: keine) */
+    int wish[TABLE_COLUMNS_MAX];
+    int justify;                        /* CSS_PACK_...: wohin freier Platz einer Reihe geht */
+    int offset;                         /* die Reihe beginnt so weit rechts (zentriert, rechtsbündig) */
 } table_t;
 
 /* Liest ein Element ab seinem "<" und öffnet es wie beim normalen Durchgang. */
@@ -2496,11 +2575,271 @@ static void open_element(parser_t *ps, const char *tag_start, const char *end, t
         fallback = lookup_tag(name, name_len);
         if (fallback == T_UNKNOWN)
             fallback = T_BLOCK;         /* <caption> und Ähnliches */
+    } else if (ps->neutral_cells) {
+        ps->name = neutral_name;        /* Kinder nebeneinander: Regeln für Tabellen gelten ihnen nicht */
+        ps->name_len = sizeof(neutral_name) - 1;
     } else {
         ps->name = "tr";
         ps->name_len = 2;
     }
     start_tag(ps, fallback, attrs, count);
+}
+
+/*
+ * Kinder nebeneinander (flex, grid): Zerlegt den Inhalt eines Elements in
+ * seine Kinder - jedes wird eine Zelle, vorerst alle in einer Zeile. Leerraum
+ * zwischen den Kindern zählt nicht; Skripte und Stylesheets auch nicht.
+ */
+static const char *element_end(const char *name, size_t name_len, const char *p, const char *end);
+
+static bool flex_scan(table_t *t, const char *name, size_t name_len, const char *p, const char *end)
+{
+    const char *stop = element_end(name, name_len, p, end);
+    int capacity = 0;
+    if (!stop)
+        return false;                   /* ohne Ende-Marke: lieber wie gewöhnlich */
+    while (stop > p && *stop != '<')
+        stop--;                         /* zurück an den Anfang der Ende-Marke */
+    t->end = stop;
+    t->flex = true;
+    t->rows = kzalloc(sizeof(table_row_t));
+    if (!t->rows)
+        return false;
+    t->row_count = 1;
+
+    while (p < stop) {
+        const char *start = p, *finish;
+        if (is_space(*p)) {
+            p++;
+            continue;
+        }
+        if (*p != '<' || p + 1 >= stop || (!is_alpha(p[1]) && p[1] != '/' && p[1] != '!')) {
+            /* Text unmittelbar im Element: ein Kind für sich */
+            while (p < stop && *p != '<')
+                p++;
+            finish = p;
+        } else if (stop - p >= 4 && memcmp(p, "<!--", 4) == 0) {
+            p += 4;
+            while (p + 3 <= stop && memcmp(p, "-->", 3) != 0)
+                p++;
+            p = p + 3 <= stop ? p + 3 : stop;
+            continue;
+        } else if (p[1] == '/' || p[1] == '!') {
+            while (p < stop && *p != '>')
+                p++;                    /* verirrte Ende-Marke */
+            p += p < stop;
+            continue;
+        } else {
+            const char *word = p + 1;
+            size_t word_len = 0;
+            attr_t attrs[ATTRS_MAX];
+            while (word + word_len < stop && !is_space(word[word_len]) && word[word_len] != '>' &&
+                   word[word_len] != '/')
+                word_len++;
+            tag_t tag = lookup_tag(word, word_len);
+            p = word + word_len;
+            read_attributes(&p, stop, attrs, false);
+            if (tag == T_SCRIPT || tag == T_STYLE) {
+                p = find_close(p, stop, tag == T_SCRIPT ? "script" : "style");
+                while (p < stop && *p != '>')
+                    p++;
+                p += p < stop;
+                continue;
+            }
+            if (tag != T_VOID && tag != T_BR && tag != T_HR && tag != T_IMG && tag != T_INPUT) {
+                const char *after = element_end(word, word_len, p, stop);
+                p = after ? after : stop;       /* ohne Ende-Marke: der Rest gehört dazu */
+            }
+            finish = p;
+        }
+        if (t->cell_count >= 400)
+            return false;
+        if (t->cell_count == capacity) {
+            int bigger = capacity ? capacity * 2 : 16;
+            cell_t *grown = kmalloc((size_t)bigger * sizeof(cell_t));
+            if (!grown)
+                return false;
+            if (t->cells)
+                memcpy(grown, t->cells, (size_t)t->cell_count * sizeof(cell_t));
+            kfree(t->cells);
+            t->cells = grown;
+            capacity = bigger;
+        }
+        cell_t *cell = &t->cells[t->cell_count++];
+        memset(cell, 0, sizeof(*cell));
+        cell->content = start;
+        cell->content_end = finish;
+        cell->colspan = cell->rowspan = 1;
+    }
+    t->rows[0].cell_count = t->cell_count;
+    return t->cell_count >= 2;
+}
+
+/*
+ * Nach dem Ausmessen: Wie viele Kinder kommen in eine Reihe? Leere fallen
+ * weg; passt nicht alles nebeneinander, entstehen mehrere Reihen mit
+ * gleichen Spalten. false: nebeneinander lohnt nicht (dann wie gewöhnlich).
+ */
+static bool flex_arrange(table_t *t, int kind, int track_min, int available)
+{
+    int n = 0, columns, widest_min = 0, wished = 0;
+    int64_t sum_fit = -TABLE_GAP, sum_least = -TABLE_GAP, sum_wish = -TABLE_GAP;
+    for (int i = 0; i < t->cell_count; i++) {
+        if (t->cells[i].max > 0)
+            t->cells[n++] = t->cells[i];
+    }
+    t->cell_count = n;
+    if (n < 2 || available < 60)
+        return false;
+    for (int i = 0; i < n; i++) {
+        cell_t *cell = &t->cells[i];
+        /* die Wunschbreite in Pixeln (0: keine) - bei mehreren Reihen zählt nur die des ersten Kinds */
+        int wish = cell->want_px > 0 ? cell->want_px
+                 : cell->want_percent > 0 ? (int)((int64_t)available * cell->want_percent / 100) : 0;
+        cell->want_px = wish;
+        sum_fit += (wish > 0 ? wish : cell->max) + TABLE_GAP;
+        sum_least += (wish > 0 && wish < cell->min ? wish : cell->min) + TABLE_GAP;
+        if (cell->min > widest_min)
+            widest_min = cell->min;
+        if (wish > 0) {
+            wished++;
+            sum_wish += wish + TABLE_GAP;
+        }
+    }
+    int first_wish = t->cells[0].want_px;
+    bool one_row = false;
+
+    if (kind >= 2) {
+        columns = kind;                 /* Raster mit fester Spaltenzahl */
+        t->equal = true;
+    } else if (kind == GRID_AUTO) {
+        columns = (available + TABLE_GAP) / (track_min + TABLE_GAP);
+        t->equal = true;
+    } else if (wished == n && sum_wish <= (int64_t)available + available / 20 + n * TABLE_GAP) {
+        columns = n;                    /* jedes Kind nennt seine Breite, und zusammen passen sie */
+        one_row = true;
+    } else if (first_wish > 0 && (kind == GRID_FLEX_WRAP || sum_fit > available)) {
+        /* Karten fester Breite: so viele je Reihe, wie die Seite vorsieht */
+        columns = (available + TABLE_GAP + first_wish / 10) / (first_wish + TABLE_GAP);
+        if (t->cells[0].want_percent > 0)
+            columns = (100 + t->cells[0].want_percent / 2) / t->cells[0].want_percent;
+        t->equal = true;
+    } else if (sum_fit <= available || (kind == GRID_FLEX && sum_least <= available)) {
+        columns = n;                    /* alles passt nebeneinander - notfalls schmaler */
+        one_row = true;
+    } else {
+        /* so viele, wie mit ihrer vollen Breite in die erste Reihe passen - mindestens aber zwei */
+        int fit = 0;
+        int64_t used = -TABLE_GAP;
+        while (fit < n && used + t->cells[fit].max + TABLE_GAP <= available) {
+            used += t->cells[fit].max + TABLE_GAP;
+            fit++;
+        }
+        int by_min = widest_min > 0 ? (available + TABLE_GAP) / (widest_min + TABLE_GAP) : n;
+        columns = fit >= 2 ? fit : by_min > 4 ? 4 : by_min;
+    }
+    if (columns > n)
+        columns = n;
+    if (columns > TABLE_COLUMNS_MAX) {
+        columns = TABLE_COLUMNS_MAX;
+        one_row = false;
+    }
+    if (columns < 2)
+        return false;
+    /* in einer einzelnen Reihe gilt für jedes Kind seine eigene Wunschbreite */
+    for (int i = 0; one_row && i < n; i++) {
+        t->wish[i] = t->cells[i].want_px;
+        t->wished |= t->wish[i] > 0;
+    }
+
+    int rows = (n + columns - 1) / columns;
+    table_row_t *grown = kzalloc((size_t)rows * sizeof(table_row_t));
+    if (!grown)
+        return false;
+    kfree(t->rows);
+    t->rows = grown;
+    t->row_count = rows;
+    for (int r = 0; r < rows; r++) {
+        t->rows[r].first_cell = r * columns;
+        t->rows[r].cell_count = n - r * columns < columns ? n - r * columns : columns;
+    }
+    for (int i = 0; i < n; i++)
+        t->cells[i].row = i / columns;
+    return true;
+}
+
+/* Verteilt die Breite auf die Spalten - bei Kindern nebeneinander nach deren eigenen Regeln. */
+static bool table_columns(table_t *t, int available);
+
+static bool grid_columns(table_t *t, int available)
+{
+    if (!table_columns(t, available))
+        return false;
+    if (!t->flex)
+        return true;
+    int room = available - (t->column_count - 1) * TABLE_GAP;
+    if (t->wished && t->row_count == 1) {
+        /*
+         * Kinder mit Wunschbreite bekommen sie (zusammen höchstens den
+         * Platz, der den übrigen ihr Nötigstes lässt); die übrigen teilen
+         * sich den Rest.
+         */
+        int64_t fixed = 0, loose = 0;
+        int others = 0;
+        for (int k = 0; k < t->column_count; k++) {
+            if (t->wish[k] > 0) {
+                fixed += t->wish[k];
+            } else {
+                loose += t->widths[k];
+                others++;
+            }
+        }
+        int64_t limit = room - others * 24;
+        if (limit < 24)
+            limit = 24;
+        int64_t rest = room - (fixed > limit ? limit : fixed);
+        for (int k = 0; k < t->column_count; k++) {
+            int width = t->widths[k];
+            if (t->wish[k] > 0)
+                width = fixed > limit ? (int)((int64_t)t->wish[k] * limit / fixed) : t->wish[k];
+            else if (loose > rest && loose > 0)
+                width = (int)((int64_t)width * rest / loose);
+            t->widths[k] = width < 24 ? 24 : width;
+        }
+    } else if (t->equal) {
+        /* gleich breite Spalten, über die ganze Breite */
+        int share = room / t->column_count;
+        if (share >= 24) {
+            for (int k = 0; k < t->column_count; k++)
+                t->widths[k] = share;
+        }
+    }
+
+    /* Bleibt in einer einzelnen Reihe Platz? Den bekommen die Kinder, die wachsen sollen - */
+    int used = 0, growers = 0;
+    t->offset = 0;
+    for (int k = 0; k < t->column_count; k++)
+        used += t->widths[k];
+    if (t->row_count != 1 || used >= room)
+        return true;
+    for (int i = 0; i < t->cell_count; i++)
+        growers += t->cells[i].grows;
+    int spare = room - used;
+    if (growers > 0) {
+        for (int i = 0; i < t->cell_count; i++) {
+            if (t->cells[i].grows && t->cells[i].column < t->column_count)
+                t->widths[t->cells[i].column] += spare / growers;
+        }
+    } else if (t->justify == CSS_PACK_BETWEEN && t->column_count > 1) {
+        /* ... sonst geht er, je nach Seite, zwischen die Kinder, davor oder zur Hälfte davor */
+        for (int k = 0; k + 1 < t->column_count; k++)
+            t->widths[k] += spare / (t->column_count - 1);
+    } else if (t->justify == CSS_PACK_END) {
+        t->offset = spare;
+    } else if (t->justify == CSS_PACK_CENTER) {
+        t->offset = spare / 2;
+    }
+    return true;
 }
 
 /* Zerlegt den Quelltext einer Tabelle in Zeilen und Zellen (ohne sie zu setzen). */
@@ -2648,10 +2987,12 @@ static void table_pass(parser_t *ps, table_t *t, bool measure)
     const char *end = t->end;
     int table_floor = ps->floor, outer_columns = ps->columns;
     int outer_lists = ps->list_depth, outer_quote = ps->quote;
+    bool outer_neutral = ps->neutral_cells;
 
     for (int r = 0; r < t->row_count && !ps->page->failed; r++) {
         table_row_t *row = &t->rows[r];
         int row_depth = ps->depth;
+        ps->neutral_cells = t->flex;
         open_element(ps, row->tag, end, T_TR);
         row->background = ps->cur.background;
         bool row_hidden = ps->hidden > 0;
@@ -2659,9 +3000,14 @@ static void table_pass(parser_t *ps, table_t *t, bool measure)
         for (int c = 0; c < row->cell_count; c++) {
             cell_t *cell = &t->cells[row->first_cell + c];
             int cell_depth = ps->depth;
+            ps->neutral_cells = t->flex;
             open_element(ps, cell->tag, end, T_TD);
+            ps->neutral_cells = outer_neutral;
             if (measure)
                 cell->hidden = row_hidden || ps->hidden > 0;
+            ps->probing = measure && t->flex;
+            ps->probe_px = ps->probe_percent = 0;
+            ps->probe_grows = false;
 
             int width = TABLE_MEASURE_W;
             if (!measure) {
@@ -2685,6 +3031,12 @@ static void table_pass(parser_t *ps, table_t *t, bool measure)
             ps->floor = ps->depth;
             if (!cell->hidden)
                 parse_range(ps, cell->content, (size_t)(cell->content_end - cell->content));
+            if (measure && t->flex) {
+                cell->want_px = ps->probe_px;
+                cell->want_percent = ps->probe_percent;
+                cell->grows = ps->probe_grows;
+            }
+            ps->probing = false;
             while (ps->depth > ps->floor)
                 pop(ps);
             flush_word(ps);
@@ -2713,6 +3065,7 @@ static void table_pass(parser_t *ps, table_t *t, bool measure)
     ps->columns = outer_columns;
     ps->list_depth = outer_lists;
     ps->quote = outer_quote;
+    ps->neutral_cells = outer_neutral;
 }
 
 /* Ordnet die Zellen Spalten zu (mit colspan und rowspan) und verteilt die Breite. */
@@ -2852,7 +3205,13 @@ static bool table_columns(table_t *t, int available)
  * hinter der Tabelle - oder NULL, wenn sie zeilenweise gesetzt werden soll
  * (zu groß, zu viele Spalten, Speichermangel).
  */
-static const char *layout_table(parser_t *ps, const char *p, const char *end)
+/*
+ * Setzt eine Tabelle - oder, mit kind != 0, die Kinder eines Elements
+ * nebeneinander (flex, grid; name ist dann der Name des Elements). Liefert
+ * die Stelle, an der es weitergeht, oder NULL: dann wurde nichts gesetzt.
+ */
+static const char *layout_table(parser_t *ps, const char *p, const char *end, int kind,
+                                const char *name, size_t name_len)
 {
     page_t *page = ps->page;
     table_t table;
@@ -2864,7 +3223,10 @@ static const char *layout_table(parser_t *ps, const char *p, const char *end)
     int *line_map = NULL;
 
     memset(&table, 0, sizeof(table));
-    if (!table_scan(&table, p, end) || table.cell_count == 0)
+    int track_min = ps->pending_track_min;
+    table.justify = kind ? ps->pending_justify : CSS_PACK_START;
+    if (kind ? !flex_scan(&table, name, name_len, p, end)
+             : !table_scan(&table, p, end) || table.cell_count == 0)
         goto done;
 
     /* 1. Ausmessen - auf einer Wegwerf-Seite, danach ist alles wie vorher */
@@ -2890,7 +3252,9 @@ static const char *layout_table(parser_t *ps, const char *p, const char *end)
         goto done;
 
     int left = indent(ps);
-    if (!table_columns(&table, ps->columns - left))
+    if (kind && !flex_arrange(&table, kind, track_min, ps->columns - left))
+        goto done;
+    if (!grid_columns(&table, ps->columns - left))
         goto done;
 
     /* 2. Setzen: jede Zelle für sich, vorläufig hinter die bisherigen Zeilen */
@@ -2917,7 +3281,7 @@ static const char *layout_table(parser_t *ps, const char *p, const char *end)
         /* ... oder mit Umbruch, wenn daneben reichlich Platz bleibt */
         bool fits = table.natural <= room ||
                     (table.least <= room && room >= (ps->columns - left) * 3 / 5);
-        if (fits && table_columns(&table, room)) {
+        if (fits && !kind && grid_columns(&table, room)) {
             left = from;
             beside = true;
         } else {
@@ -2925,7 +3289,7 @@ static const char *layout_table(parser_t *ps, const char *p, const char *end)
             line0 = page->line_count - 1;
             if (line0 > 0 && line_has_content(page, line0 - 1))
                 line0++;
-            if (!table_columns(&table, ps->columns - left))
+            if (!grid_columns(&table, ps->columns - left))
                 goto done;
         }
     }
@@ -2963,6 +3327,7 @@ static const char *layout_table(parser_t *ps, const char *p, const char *end)
     }
 
     int starts[TABLE_COLUMNS_MAX], total_width = 0;
+    left += table.offset;
     for (int k = 0; k < table.column_count; k++) {
         starts[k] = left + total_width;
         total_width += table.widths[k] + TABLE_GAP;
@@ -2999,15 +3364,31 @@ static const char *layout_table(parser_t *ps, const char *p, const char *end)
                                 cell->column + k < table.column_count; k++)
                     width += table.widths[cell->column + k] + TABLE_GAP;
 
-                /* farbige Zellen: ein Kasten über die ganze Zellbreite, davor der Inhalt */
-                if (cell->background) {
+                /*
+                 * farbige Zellen: ein Kasten über die ganze Zellbreite, davor
+                 * der Inhalt. Bei Kindern nebeneinander trägt die Farbe der
+                 * Block in der Zelle (eine Karte, ein Menü) - Zeile für Zeile.
+                 */
+                uint32_t paint = cell->background;
+                const line_t *own_line = j < cell->lines ? &old_lines[cell->first_line - line0 + j] : NULL;
+                if (!paint && table.flex && own_line) {
+                    uint32_t own = own_line->background;
+                    if (own && own != row->background)
+                        paint = own;
+                }
+                /*
+                 * Unter einer hohen Zeile der Zelle liegt deren untere Hälfte:
+                 * Der Kasten der hohen Zeile reicht über beide, hier folgt keiner.
+                 */
+                if (paint && !(own_line && own_line->filler)) {
                     if (!ENSURE(page, page->spans, page->span_count, page->span_cap))
                         break;
                     span_t *box = &page->spans[page->span_count++];
                     memset(box, 0, sizeof(*box));
                     box->column = (uint16_t)(x > TABLE_GAP / 2 ? x - TABLE_GAP / 2 : 0);
                     box->width = (uint16_t)(width + TABLE_GAP);
-                    box->background = cell->background;
+                    box->background = paint;
+                    box->tall = own_line && own_line->tall ? 1 : 0;
                     box->link = box->widget = box->image = -1;
                     line->count++;
                 }
@@ -3036,11 +3417,20 @@ static const char *layout_table(parser_t *ps, const char *p, const char *end)
                     line->count++;
                     continue;
                 }
+                /* hohe Zeile der Zelle: Ihre Stücke stehen auf der Grundlinie der größten Schrift */
+                uint8_t tall = 0;
+                for (uint32_t k = 0; source->tall && k < source->count; k++) {
+                    const span_t *sp = &old_spans[source->first - (uint32_t)span0 + k];
+                    if (sp->widget < 0 && sp->image < 0 && sp->size > tall)
+                        tall = sp->size;
+                }
                 for (uint32_t k = 0; k < source->count; k++) {
                     if (!ENSURE(page, page->spans, page->span_count, page->span_cap))
                         break;
                     span_t *piece = &page->spans[page->span_count++];
                     *piece = old_spans[source->first - (uint32_t)span0 + k];
+                    if (!piece->tall)
+                        piece->tall = tall;     /* (aus einer inneren Spalte bringt es das schon mit) */
                     piece->column = (uint16_t)(piece->column + x);
                     if (piece->widget >= 0 && piece->widget < page->widget_count) {
                         page->widgets[piece->widget].line = target;
