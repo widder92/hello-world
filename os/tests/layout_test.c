@@ -426,6 +426,106 @@ static void test_content(void)
     CHECK(has_text("[Video: film.mp4]") && has_text("[Eingebettete Seite: karte]") && has_text("\xE2\x96\x88") && has_text("[Datei"));
 }
 
+/* Der Zeichenschritt, mit dem die Zeile gezeichnet wird, in der text beginnt (oder NULL) */
+static const paint_t *paint_of(const char *text)
+{
+    size_t n = strlen(text);
+    for (int i = 0; page && i < page->paint_count; i++) {
+        if (page->paint[i].kind != PAINT_LINE)
+            continue;
+        const line_t *line = &page->lines[page->paint[i].index];
+        for (uint32_t k = 0; k < line->count; k++) {
+            const span_t *s = &page->spans[line->first + k];
+            if (s->bytes >= n && memcmp(page->pool + s->text, text, n) == 0)
+                return &page->paint[i];
+        }
+    }
+    return NULL;
+}
+
+static void test_decoration(void)
+{
+    /* Inhalte vor und nach einem Element (::before, ::after) */
+    CHECK(lay("<style>body{margin:0} p{margin:0} .q::before{content:'\\201E';color:#ff0000} .q:after{content:' (' attr(data-x) ')'}"
+              ".i::before{content:'\\f101'} .b::before{content:'';display:block;height:10px;background:#111111}"
+              ".n::before{content:none;display:block;height:10px;background:#222222}"
+              ".z::after{content:'\\2192  weiter';display:block;text-align:right}</style>"
+              "<p class='q' data-x='Quelle'>Zitat</p><p class='i'>Symbol</p><div class='b'>Kasten</div>"
+              "<p class='n'>nichts</p><p class='z'>Zeile</p>", 800, false));
+    const span_t *quote = find_span("\xE2\x80\x9E", NULL, NULL);
+    CHECK(quote && quote->color == (HTML_COLOR_SET | 0xFF0000) && text_at("Zitat", 8, 0) && has_text(" (Quelle)"));
+    CHECK(text_at("Symbol", 0, 20) && box_is(0x111111, 0, 40, 800, 10) && text_at("Kasten", 0, 50) &&
+          !colored(0x222222) && text_at("nichts", 0, 70));
+    int x, y;
+    CHECK(find_span("\xE2\x86\x92 weiter", &x, &y) && x == 800 - 8 * 8 && y == 110);
+
+    /* was übersteht, wird abgeschnitten: Der Kasten behält seine Höhe, der Inhalt bekommt einen Ausschnitt */
+    CHECK(lay("<body style='margin:0'><div style='height:40px;overflow:hidden;background:#111111;border:2px solid #000'>"
+              "<p style='margin:0'>a1<br>b2<br>c3<br>d4</p></div><p style='margin:0'>danach</p>"
+              "<div style='max-height:30px;overflow:hidden;background:#222222'>e5<br>f6<br>g7</div>"
+              "<div style='height:30px;background:#333333'>h8<br>i9<br>j0</div><p style='margin:0'>ende</p></body>", 800, false));
+    CHECK(box_is(0x111111, 0, 0, 800, 44) && text_at("danach", 0, 44) && box_is(0x222222, 0, 64, 800, 30));
+    CHECK(box_is(0x333333, 0, 94, 800, 60) && text_at("ende", 0, 154));     /* ohne overflow wächst der Kasten */
+    CHECK(page->clip_count == 2 && page->clips[0].x == 2 && page->clips[0].y == 2 && page->clips[0].w == 796 &&
+          page->clips[0].h == 40 && page->clips[1].y == 64 && page->clips[1].h == 30);
+    CHECK(paint_of("d4") && paint_of("d4")->clip == 1 && paint_of("g7")->clip == 2 && paint_of("danach")->clip == 0 &&
+          paint_of("j0")->clip == 0);
+    CHECK(page->height == 174);
+
+    /* Ausschnitte in Ausschnitten werden kleiner; frei Platziertes richtet sich nach seinem Bezugskasten */
+    CHECK(lay("<body style='margin:0'><div style='width:200px;height:100px;overflow:hidden'>"
+              "<div style='margin-left:150px;width:100px;height:300px;overflow:hidden'><p style='margin:0'>innen</p></div></div>"
+              "<div style='position:relative;width:100px;height:50px;overflow:hidden'>"
+              "<p style='position:absolute;top:40px;margin:0'>frei</p></div></body>", 800, false));
+    CHECK(page->clip_count == 3 && page->clips[1].x == 150 && page->clips[1].w == 50 && page->clips[1].h == 100);
+    CHECK(paint_of("innen")->clip == 2 && paint_of("frei")->clip == 3 && page->height == 150);
+
+    /* frei Platziertes richtet sich auch nach einem Element mitten im Text, wenn es "position" hat */
+    CHECK(lay("<body style='margin:0'><p style='margin:0'>davor <a href='/x' style='position:relative'>Link"
+              "<span style='position:absolute;top:-4px;right:-20px;background:#111111'>neu</span></a> danach</p></body>", 800, false));
+    CHECK(text_at("Link", 48, 0) && box_is(0x111111, 48 + 32 + 20 - 24, -4, 24, 20));
+
+    /* Farbverläufe: erste und letzte Farbe, Richtung */
+    CHECK(lay("<body style='margin:0'><div style='height:10px;background:linear-gradient(to right, #ff0000, #00ff00 50%, #0000ff)'></div>"
+              "<div style='height:10px;background:linear-gradient(#101010, #f0f0f0)'></div>"
+              "<div style='height:10px;background-image:linear-gradient(to top, #202020 0%, #e0e0e0 100%)'></div>"
+              "<div style='height:10px;background:linear-gradient(90deg, rgb(48, 48, 48), rgba(200, 200, 200, 1))'></div>"
+              "<div style='height:10px;background:radial-gradient(#404040, #ffffff)'></div></body>", 800, false));
+    const box_t *b = colored(0xFF0000);
+    CHECK(b && b->gradient == (HTML_COLOR_SET | 0x0000FF) && b->gradient_side == 1);
+    b = colored(0x101010);
+    CHECK(b && b->gradient == (HTML_COLOR_SET | 0xF0F0F0) && b->gradient_side == 0);
+    b = colored(0xE0E0E0);
+    CHECK(b && b->gradient == (HTML_COLOR_SET | 0x202020) && b->gradient_side == 0 && b->y == 20);
+    b = colored(0x303030);
+    CHECK(b && b->gradient == (HTML_COLOR_SET | 0xC8C8C8) && b->gradient_side == 1);
+    b = colored(0x404040);
+    CHECK(b && b->gradient == 0);
+
+    /* Hintergrundbilder: Adresse, Wiederholung, Lage, Größe */
+    CHECK(lay("<style>.a{background:#222222 url(bild.png) no-repeat right 10px / cover;width:300px;height:100px}"
+              ".b{background-image:url('/kachel.gif');background-size:50px auto;background-position:center;"
+              "background-repeat:repeat-x;height:20px}.c{background:url(bild.png) -20px -40px;width:16px;height:16px}"
+              ".d{background:url(spaeter.png)}.e{background:url(fehlt.png) #333333}</style>"
+              "<body style='margin:0'><div class='a'><p style='margin:0;color:#ffffff'>hell</p></div><div class='b'></div>"
+              "<div class='c'></div><div class='d'><p style='margin:0;color:#ffffff'>wartet</p></div>"
+              "<div class='e'>x</div></body>", 800, false));
+    b = colored(0x222222);
+    CHECK(b && b->picture > 0 && strcmp(page->images[b->picture - 1].url, "https://a.de/bild.png") == 0 &&
+          page->images[b->picture - 1].y < 0 && b->picture_repeat == 0 && b->picture_size == PICTURE_COVER &&
+          b->picture_px == 100 && b->picture_y == 10 && b->picture_py == 0);
+    CHECK(page->image_count == 4 && page->box_count == 5);
+    const box_t *tile = &page->boxes[1], *sprite = &page->boxes[2];
+    CHECK(tile->picture > 0 && strcmp(page->images[tile->picture - 1].url, "https://a.de/kachel.gif") == 0 &&
+          tile->picture_repeat == 1 && tile->picture_size == PICTURE_GIVEN && tile->picture_w == 50 && tile->picture_h == 0 &&
+          tile->picture_px == 50 && tile->picture_py == 50 && tile->background == 0);
+    CHECK(sprite->picture == b->picture && sprite->picture_x == -20 && sprite->picture_y == -40 && sprite->picture_repeat == 3 &&
+          sprite->w == 16 && sprite->h == 16);
+    /* Text auf einem Bild, das da ist: Die Farbe der Seite gilt. Fehlt es noch, wird sie lesbar gemacht. */
+    CHECK(find_span("hell", NULL, NULL)->color == (HTML_COLOR_SET | 0xFFFFFF) &&
+          find_span("wartet", NULL, NULL)->color == (HTML_COLOR_SET | 0x222630));
+}
+
 /* Absichtlich beschädigte Seiten: Es darf nichts abstürzen, hängen oder außerhalb des Speichers lesen. */
 static void test_fuzz(void)
 {
@@ -434,6 +534,9 @@ static void test_fuzz(void)
         ".r{display:flex;gap:1em;flex-wrap:wrap}.r>div{flex:1 1 100px;padding:4px;border:1px solid #ccc}"
         ".g{display:grid;grid-template-columns:repeat(3,1fr);grid-template-areas:'a a b' 'c d d'}.x{grid-area:d;position:relative;z-index:2}"
         ".f{float:right;width:30%;margin:0 0 1em 1em}.abs{position:absolute;right:0;bottom:0}table{border-collapse:collapse}"
+        "p::before{content:'\\201C' attr(class) ' ';color:red}.r::after{content:'';display:table;clear:both}"
+        ".g{overflow:hidden;max-height:90px;background:linear-gradient(to right,#eee,#ccc)}"
+        ".r{background:url(k.png) center / cover no-repeat #fff;overflow:hidden;height:5em}"
         "td{border:1px solid;padding:2px}.n{white-space:nowrap}.ib{display:inline-block;vertical-align:middle;width:50px;height:30px}"
         "</style></head><body><div class=r><div>eins <b>zwei</b></div><div>drei<br>vier</div><span>lose</span></div>"
         "<div class=g><p>a</p><p class=x>b<span class=abs>c</span></p><ul><li>d<ol><li>e</ol></ul></div>"
@@ -478,9 +581,11 @@ static void test_fuzz(void)
         if (lay(text, 40 + rand() % 1400, rand() % 2)) {
             /* was herauskommt, muss in sich stimmen */
             bool sound = page->height >= 0 && page->height < 50000000;
+            for (int i = 0; sound && i < page->box_count; i++)
+                sound = page->boxes[i].picture <= page->image_count;
             for (int i = 0; sound && i < page->paint_count; i++) {
                 const paint_t *p = &page->paint[i];
-                sound = p->index >= 0 &&
+                sound = p->clip <= page->clip_count && p->index >= 0 &&
                         p->index < (p->kind == PAINT_BOX ? page->box_count : p->kind == PAINT_LINE ? page->line_count
                                     : p->kind == PAINT_IMAGE ? page->image_count : page->widget_count);
             }
@@ -511,6 +616,7 @@ int main(void)
     test_side_by_side();
     test_tables_and_positions();
     test_content();
+    test_decoration();
     test_fuzz();
     done();
     printf("%d Prüfungen am Seitenaufbau mit Kastenmodell, %d Fehler\n", checks, failures);

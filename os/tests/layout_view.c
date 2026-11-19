@@ -165,18 +165,23 @@ static void style_found(void *ctx, bool linked, const char *text, size_t len)
 
 static uint32_t *pixels;
 static int W, H;
+static int clip_x0, clip_y0, clip_x1 = 1 << 30, clip_y1 = 1 << 30;      /* der geltende Ausschnitt */
 
 static void fill(int x, int y, int w, int h, uint32_t color)
 {
     for (int yy = y < 0 ? 0 : y; yy < y + h && yy < H; yy++) {
-        for (int xx = x < 0 ? 0 : x; xx < x + w && xx < W; xx++)
-            pixels[(size_t)yy * W + xx] = color;
+        if (yy < clip_y0 || yy >= clip_y1)
+            continue;
+        for (int xx = x < 0 ? 0 : x; xx < x + w && xx < W; xx++) {
+            if (xx >= clip_x0 && xx < clip_x1)
+                pixels[(size_t)yy * W + xx] = color;
+        }
     }
 }
 
 static void blend(int x, int y, uint32_t color, uint32_t a)
 {
-    if (x < 0 || y < 0 || x >= W || y >= H || !a)
+    if (x < 0 || y < 0 || x >= W || y >= H || !a || x < clip_x0 || x >= clip_x1 || y < clip_y0 || y >= clip_y1)
         return;
     uint32_t d = pixels[(size_t)y * W + x], rest = 255 - a;
     uint32_t r = (((d >> 16) & 255) * rest + ((color >> 16) & 255) * a) / 255;
@@ -222,9 +227,31 @@ static void draw_page(const page_t *page)
 {
     for (int i = 0; i < page->paint_count; i++) {
         const paint_t *item = &page->paint[i];
+        clip_x0 = clip_y0 = 0;
+        clip_x1 = clip_y1 = 1 << 30;
+        if (item->clip > 0 && item->clip <= page->clip_count) {
+            const clip_t *c = &page->clips[item->clip - 1];
+            clip_x0 = c->x;
+            clip_y0 = c->y;
+            clip_x1 = c->x + c->w;
+            clip_y1 = c->y + c->h;
+        }
         if (item->kind == PAINT_BOX) {
             const box_t *b = &page->boxes[item->index];
-            if (b->background) {
+            if (b->background && b->gradient) {
+                uint32_t from = b->background & 0xFFFFFF, to = b->gradient & 0xFFFFFF;
+                int steps = b->gradient_side ? b->w : b->h;
+                for (int k = 0; k < steps; k++) {
+                    int a = steps > 1 ? k * 255 / (steps - 1) : 0;
+                    uint32_t color = ((((from >> 16) & 255) * (255 - a) + ((to >> 16) & 255) * a) / 255) << 16 |
+                                     ((((from >> 8) & 255) * (255 - a) + ((to >> 8) & 255) * a) / 255) << 8 |
+                                     (((from & 255) * (255 - a) + (to & 255) * a) / 255);
+                    if (b->gradient_side)
+                        fill(b->x + k, b->y, 1, b->h, color);
+                    else
+                        fill(b->x, b->y + k, b->w, 1, color);
+                }
+            } else if (b->background) {
                 int r = b->radius > b->w / 2 ? b->w / 2 : b->radius;
                 if (r > b->h / 2)
                     r = b->h / 2;
@@ -233,6 +260,13 @@ static void draw_page(const page_t *page)
                     while (dy && inset < r && (r - inset) * (r - inset) + dy * dy > r * r)
                         inset++;
                     fill(b->x + inset, b->y + row, b->w - 2 * inset, 1, b->background & 0xFFFFFF);
+                }
+            }
+            if (b->picture) {
+                /* ein Hintergrundbild: hier nur als getönte Fläche mit Streifen angedeutet */
+                for (int row = 0; row < b->h; row++) {
+                    for (int col = (row % 12) ; col < b->w; col += 12)
+                        blend(b->x + col, b->y + row, 0x3060A0, 90);
                 }
             }
             if (b->border[0])

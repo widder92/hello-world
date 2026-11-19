@@ -394,6 +394,18 @@ Was er kann:
     `padding`, `border` (durchgezogen, gestrichelt, gepunktet; je Seite
     eigene Breite und Farbe), `border-radius`, Hintergrundfarben – auch für
     Elemente mitten im Text.
+  - **Hintergrundbilder und Verläufe** (seit 0.25): `background-image` mit
+    Wiederholung, Lage und Größe (`cover`, `contain`, feste Maße) – also
+    auch große Bilder hinter einem Abschnitt und kleine Symbole aus einer
+    Sammelgrafik; `linear-gradient` von oben nach unten oder von links nach
+    rechts (erste bis letzte Farbe). Bilder behalten ihre durchsichtigen
+    Stellen, auch auf farbigem Grund.
+  - **Abschneiden** (seit 0.25): Ein Kasten mit `overflow: hidden` ist so
+    groß wie verlangt, und was übersteht, ist nicht zu sehen.
+  - **Zusätze vor und nach einem Element** (seit 0.25): `::before` und
+    `::after` mit `content` – Text, Zeichen nach ihrer Nummer, `attr(…)`,
+    Anführungszeichen; auch als eigene Kästen (Zierlinien, Markierungen,
+    der übliche Kniff zum Einschließen nebeneinanderstehender Kästen).
   - **Maße:** `width`, `height`, `min-`/`max-width`, `min-height`,
     `box-sizing`; Längen in `px`, `em`, `rem`, `%`, `vw`/`vh`, `pt` und
     Verwandten, mit `calc()`, `min()`, `max()`, `clamp()`.
@@ -418,7 +430,8 @@ Was er kann:
     `align`).
   - **Auswahl und Rangfolge:** Element, Klasse, Kennung, Verschachtelung,
     Attribute (`a[href^="http"]`), `!important`, Variablen (`var(--name)`),
-    `@media` nach Fensterbreite, `@supports`. Jede Seite beginnt mit den
+    `@media` nach Fensterbreite und -höhe (auch mit `calc()`), `@supports`.
+    Jede Seite beginnt mit den
     Grundregeln, die alle Browser mitbringen (Absätze haben Abstand,
     Überschriften sind groß, Listen eingerückt). Regeln, die sich hier nicht
     prüfen lassen (`:hover`, Nachbarn), bleiben aus.
@@ -431,6 +444,8 @@ Was er kann:
   ![Eine Tabelle mit Kopfzeile, rechtsbündigen Zahlen und Summenzeile](docs/screenshot-tabelle.png)
 
   ![Spalten: Kopfzeile mit Menü, Inhalt neben der Seitenleiste, Kartenraster](docs/screenshot-spalten.png)
+
+  ![Verlauf in der Kopfleiste, ein Foto als Hintergrund, Anführungszeichen und Haken als Zusätze, eine Markierung am Link](docs/screenshot-zierde.png)
 - **Einfache Darstellung** (Strg+E): Zeigt eine Seite wie die Fassungen bis
   0.23 – nur Text, Links, Bilder und Formulare im Zeilenraster, ohne
   Abstände und Rahmen. Gedacht für Seiten, die mit ihrer Gestaltung hier
@@ -455,13 +470,13 @@ Was er **nicht** kann – und das ist bei heutigen Webseiten viel:
 
 - **JavaScript nur zum Teil** und nur, wenn eingeschaltet – was geht und was
   nicht, steht [unten](#javascript). Große Web-Anwendungen laufen nicht.
-- von der Gestaltung fehlt noch einiges: Hintergrundbilder und
-  Farbverläufe (ein Verlauf erscheint in seiner ersten Farbe), Schatten,
-  Durchsichtigkeit, Drehen und Bewegen (`transform`, Animationen),
-  Abschneiden von Überstehendem (`overflow`: Kästen werden stattdessen so
-  groß wie ihr Inhalt; es gibt keine eigenen Rollbereiche in der Seite),
-  Scheinelemente (`::before`, `::after` – außer dem üblichen Kniff zum
-  Einschließen von Kästen), Zustände wie `:hover`, mehrspaltiger Text.
+- von der Gestaltung fehlt noch einiges: Schatten, Durchsichtigkeit,
+  Drehen und Bewegen (`transform`, Animationen), eigene Rollbereiche in der
+  Seite (`overflow: auto`/`scroll`: Solche Kästen werden so groß wie ihr
+  Inhalt), kreisförmige und schräge Verläufe (sie erscheinen einfarbig bzw.
+  gerade), mehrere Hintergrundbilder übereinander, Zähler in Zusätzen,
+  Symbole aus Symbolschriften (sie bleiben leer), Zustände wie `:hover`,
+  mehrspaltiger Text.
   Was am Fenster haften soll (`position: fixed`, `sticky`), steht fest in
   der Seite. Eingabefelder sehen immer gleich aus. Gesetzt wird in der
   eingebauten Schrift (die Schriftarten der Seite werden nicht geladen);
@@ -469,8 +484,8 @@ Was er **nicht** kann – und das ist bei heutigen Webseiten viel:
   lateinische, griechische und kyrillische Zeichen; andere (etwa
   chinesische) erscheinen als leeres Kästchen. Schrift von rechts nach links
   wird nicht gesetzt.
-- keine Bilder in den Formaten WebP, AVIF und SVG, keine Hintergrundbilder
-  (die legt die Gestaltung fest), keine bewegten GIFs, keine Videos
+- keine Bilder in den Formaten WebP, AVIF und SVG, keine bewegten GIFs,
+  keine Videos
 - kein Hochladen von Dateien, keine Tabs (mehrere Browserfenster gehen), kein
   Passwortspeicher; Cookies gelten nur, solange das Fenster offen ist
 - Menüs, die erst unter dem Mauszeiger aufklappen, bleiben zu – oder stehen,
@@ -578,8 +593,12 @@ Abbild steht; ändern Skripte es, setzt der Browser die Seite neu.
 - Alles, was zeichnet oder abspielt: Canvas, WebGL, Video, Ton. Kein
   `localStorage` über das Fenster hinaus, keine Web Worker, kein WebSocket.
 - Maße und Positionen: Wo ein Element steht und wie groß es ist, erfahren
-  Skripte nicht (sichtbare Elemente melden eine angenommene Größe). Menüs,
-  die unter dem Mauszeiger aufklappen, und alles mit Ziehen gehen nicht.
+  Skripte nicht (sichtbare Elemente melden eine angenommene Größe; nur die
+  Größe des Fensters stimmt, auch in `matchMedia`). Seiten, deren Skripte
+  danach umbauen, können deshalb anders angeordnet sein als ohne Skripte –
+  bei Wikipedia steht dann das Inhaltsverzeichnis über dem Artikel statt
+  daneben. Menüs, die unter dem Mauszeiger aufklappen, und alles mit Ziehen
+  gehen nicht.
 - Beim Nachladen: Antworten kommen als Ganzes, nicht als Strom
   (`response.body`), und als Text (`text()`, `json()`) – Binärdaten wie
   Bilder (`blob()`) gehen nicht. Skriptdateien, Module und Daten werden
@@ -1072,7 +1091,7 @@ gehalten. Naheliegende nächste Schritte:
 - User-Modus (Ring 3) mit Systemaufrufen und getrennten Adressräumen
 - Programme aus Dateien laden (ELF), mehrere Prozessorkerne
 - Symbole auf dem Desktop, ein Dateimanager, Fenster an den Kanten ziehen und minimieren
-- im Browser: Hintergrundbilder und Farbverläufe, Abschneiden und Rollbereiche (`overflow`), Scheinelemente (`::before`, `::after`), Zustände (`:hover`), Schatten; WebP- und SVG-Bilder; Tabs
+- im Browser: Rollbereiche in der Seite (`overflow: auto`), Zustände (`:hover`), Schatten, Durchsichtigkeit; WebP- und SVG-Bilder; Tabs
 - JavaScript: Zeichenflächen (Canvas); Maße und Positionen der Elemente; eine Schutzwand zwischen Skripten und System (dafür braucht es den User-Modus)
 - echte Schrift auch in Terminal, Editor und Eingabefeldern; Hinting für schärfere kleine Schrift
 

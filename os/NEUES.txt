@@ -1,3 +1,9 @@
+HelloOS 0.25
+- Browser: Hintergrundbilder und Farbverläufe. Fotos hinter einem Abschnitt, gekachelte Muster, kleine Symbole aus einer Sammelgrafik und Verläufe (von oben nach unten oder von links nach rechts) erscheinen jetzt. Bilder behalten ihre durchsichtigen Stellen - ein Logo auf farbigem Grund hat keinen hellen Kasten mehr um sich.
+- Browser: Zusätze vor und nach Elementen (::before, ::after) - Anführungszeichen, Haken statt Listenpunkten, Markierungen an Links, Zierlinien.
+- Browser: Was aus einem Kasten herausragen würde, wird abgeschnitten, wenn die Seite es so will (overflow: hidden) - Karten mit fester Höhe, zu lange Zeilen.
+- Noch nicht möglich: Schatten, Bewegung, Schriften der Seite (auch Symbolschriften), Bereiche zum Rollen innerhalb einer Seite; Zeichenflächen, Video und Ton; Tabs. JavaScript bleibt ausgeliefert ausgeschaltet.
+
 HelloOS 0.24
 - Browser: Seiten sehen jetzt aus, wie sie gestaltet sind. Ein neuer Seitenaufbau setzt jedes Element als Kasten mit Abstand, Rahmen (auch runde Ecken) und Hintergrund; Kästen stehen untereinander, nebeneinander, im Raster oder frei platziert, Tabellen haben Linien, Knöpfe ihre Farben. Wikipedia, die WordPress-Verwaltung und viele andere Seiten sehen damit aus wie in den großen Browsern.
 - Strg+E schaltet auf die bisherige einfache Darstellung (nur Text, Links, Bilder, Formulare) - falls eine Seite mit ihrer Gestaltung nicht zu lesen ist. Noch einmal Strg+E schaltet zurück.
@@ -12,9 +18,3 @@ HelloOS 0.22
 - Browser: Module. Skripte, die als Module geladen werden (script type="module", import/export, import() zur Laufzeit, Übersetzungstabellen), laufen jetzt - so liefern viele aktuelle Seiten ihre Skripte aus.
 - Browser: Nachfordern. Fügt eine Seite nach dem Laden weitere Skriptdateien ein, werden sie geholt und ausgeführt; fügt ein Skript Stylesheets ein oder ändert sie, wird die Gestaltung der Seite neu zusammengesetzt.
 - Noch nicht möglich: Daten von einem anderen Server als dem der Seite nachladen (fetch, XMLHttpRequest über Servergrenzen) - Seiten, die ihre Inhalte so holen, bleiben leer. JavaScript bleibt ausgeliefert ausgeschaltet; die Skripte laufen weiterhin ohne Schutzwand zum System.
-
-HelloOS 0.21
-- Browser: JavaScript auf heutigem Stand. Die eigene JavaScript-Maschine versteht jetzt auch die neueren Sprachmittel: async/await, Generatoren, Symbole und Iteratoren, Klassen mit privaten Feldern (#x) und static-Blöcken, Proxy und Reflect, echte Map/Set/WeakMap, f`...`-Vorlagen, Zahlen wie 1_000, reguläre Ausdrücke mit benannten Gruppen und Rückwärtsblick, Intl (Zahlen und Daten nach Landesart, deutsch und englisch), structuredClone, TextEncoder.
-- Damit laufen deutlich mehr Seiten: Skripte, die bisher als Ganzes ausgelassen wurden, weil sie eines dieser Sprachmittel enthielten, werden jetzt ausgeführt. Getestet unter anderem mit jQuery 3.7, React 18 und den über 60 Skripten der WordPress-Verwaltung.
-- Noch nicht möglich: Skripte, die als Module geladen werden (import/export), und Skripte, die eine Seite erst nach dem Laden nachfordert - das betrifft viele große, aktuelle Seiten. JavaScript bleibt ausgeliefert ausgeschaltet (Knopf rechts oben im Browser); die Skripte laufen weiterhin ohne Schutzwand zum System.
-- Kleinigkeiten: Die Suche auf der Seite (Strg+F) hinterlegt jetzt nur das gefundene Wort, nicht die ganze Zeile.

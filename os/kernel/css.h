@@ -96,6 +96,8 @@ enum { CSS_FF_SANS = 1, CSS_FF_MONO };
 enum { CSS_BOX_CONTENT = 1, CSS_BOX_BORDER };
 enum { CSS_NO = 1, CSS_YES };            /* für Ja/Nein-Angaben */
 enum { CSS_COLOR_VALUE = 1, CSS_COLOR_CURRENT, CSS_COLOR_TRANSPARENT };
+enum { CSS_REPEAT_BOTH = 1, CSS_REPEAT_X, CSS_REPEAT_Y, CSS_REPEAT_NONE };
+enum { CSS_BG_AUTO = 1, CSS_BG_COVER, CSS_BG_CONTAIN, CSS_BG_GIVEN };
 
 /* Eine Spalte eines Rasters (grid-template-columns) */
 #define CSS_GRID_TRACKS 12
@@ -177,12 +179,21 @@ typedef struct {
     uint16_t grid_area;
     uint8_t masked;                     /* CSS_NO/CSS_YES: Der Hintergrund scheint nur durch eine Maske (Symbole) */
     uint8_t caption_below;              /* CSS_NO/CSS_YES: Beschriftung einer Tabelle darunter (caption-side) */
+    /* Für das Element gibt es Regeln mit ::before bzw. ::after (siehe css_match_pseudo) */
+    bool has_before, has_after;
     /*
-     * "clear" an einem nachgestellten Scheinelement (::after) - der übliche
-     * Kniff, damit ein Kasten einschließt, was in ihm nebeneinander steht:
-     * CSS_SIDE_LEFT/RIGHT/BOTH, oder 0
+     * Hintergrundbild: Seine Adresse steht im Stylesheet oder im
+     * style-Attribut - der Zeiger gilt, solange es das gibt. Dazu
+     * Wiederholung, Größe und Lage (Länge oder Prozent des freien Platzes).
      */
-    uint8_t clear_after;
+    const char *background_url;
+    uint16_t background_url_length;
+    uint8_t background_repeat;          /* CSS_REPEAT_... */
+    uint8_t background_size;            /* CSS_BG_... */
+    css_len_t background_w, background_h, background_x, background_y;
+    /* Farbverlauf (gradient_set): von gradient_color nach gradient_end */
+    uint32_t gradient_end;
+    bool gradient_across;               /* von links nach rechts statt von oben nach unten */
 } css_style_t;
 
 /* viewport_width: Breite der Anzeige in Pixeln, für @media-Bedingungen */
@@ -210,6 +221,15 @@ void css_match(const css_sheet_t *sheet, const css_node_t *node, const char *sty
 void css_match_full(const css_sheet_t *sheet, const css_node_t *node, const char *hints,
                     size_t hints_length, const char *style, size_t style_length,
                     css_style_t *out);
+
+/*
+ * Die Regeln für das Scheinelement vor (which 1, ::before) oder nach
+ * (which 2, ::after) dem Element. *content ist der Wert seiner Angabe
+ * "content", wie er im Stylesheet steht (NULL: keine - dann gibt es das
+ * Scheinelement nicht).
+ */
+void css_match_pseudo(const css_sheet_t *sheet, const css_node_t *node, int which, css_style_t *out,
+                      const char **content, size_t *content_length);
 
 /* Höhe der Anzeige in Pixeln, für Angaben in vh (sonst wird 3/4 der Breite angenommen) */
 void css_set_viewport_height(css_sheet_t *sheet, int height);

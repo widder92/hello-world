@@ -62,17 +62,21 @@ static uint32_t over(uint32_t pixel, uint32_t alpha, uint32_t background)
     return result;
 }
 
-image_t *image_scale(const image_t *source, int width, int height, uint32_t background)
+/* Gemeinsam für image_scale und image_resize: keep - Durchsichtigkeit behalten statt unterlegen */
+static image_t *scaled(const image_t *source, int width, int height, uint32_t background, bool keep)
 {
     image_t *result = image_create(width, height);
     if (!result)
         return NULL;
+    keep = keep && source->alpha;
+    result->alpha = keep;
 
     /* Gleiche Größe: nur den Hintergrund einrechnen */
     if (width == source->width && height == source->height) {
         size_t count = (size_t)width * (size_t)height;
         for (size_t i = 0; i < count; i++)
-            result->pixels[i] = over(source->pixels[i],
+            result->pixels[i] = keep ? source->pixels[i]
+                              : over(source->pixels[i],
                                      source->alpha ? source->pixels[i] >> 24 : 255, background);
         return result;
     }
@@ -116,8 +120,18 @@ image_t *image_scale(const image_t *source, int width, int height, uint32_t back
                 pixel = ((uint32_t)(red / alpha) << 16) | ((uint32_t)(green / alpha) << 8) |
                         (uint32_t)(blue / alpha);
             }
-            result->pixels[(size_t)y * width + x] = over(pixel, a, background);
+            result->pixels[(size_t)y * width + x] = keep ? (a << 24) | pixel : over(pixel, a, background);
         }
     }
     return result;
+}
+
+image_t *image_scale(const image_t *source, int width, int height, uint32_t background)
+{
+    return scaled(source, width, height, background, false);
+}
+
+image_t *image_resize(const image_t *source, int width, int height)
+{
+    return scaled(source, width, height, 0, true);
 }

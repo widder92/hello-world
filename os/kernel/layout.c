@@ -64,6 +64,15 @@ typedef struct {
     uint8_t grid_column, grid_row, grid_row_span;
 } flexgrid_t;
 
+/* Hintergrundbild und Farbverlauf eines Elements - nur für Elemente, die so etwas haben */
+typedef struct {
+    uint16_t image;                     /* Nummer des Bildes der Seite plus 1, oder 0 */
+    uint8_t repeat, size;               /* CSS_REPEAT_..., CSS_BG_... (0: nicht festgelegt) */
+    len_t w, h, x, y;
+    uint32_t gradient_to;
+    uint8_t gradient;                   /* 0: keiner, 1: von oben nach unten, 2: von links nach rechts */
+} backdrop_t;
+
 typedef struct style {
     /* wird vererbt */
     uint32_t color;                     /* HTML_COLOR_SET plus Farbe, oder 0: die übliche */
@@ -72,6 +81,7 @@ typedef struct style {
     uint8_t text;                       /* STYLE_BOLD, _ITALIC, _MONO, _UNDERLINE, _LINK */
     uint8_t align, white_space, transform, list_type, break_words;
     bool invisible;                     /* visibility: hidden */
+    bool trust_colors;                  /* der Text steht auf einem Bild: Die Farben der Seite gelten ungeprüft */
     int16_t line_px;                    /* Zeilenhöhe in Pixeln, oder 0 ... */
     int32_t line_factor;                /* ... dann als Vielfaches der Schrift mal 1000, oder 0: üblich */
     int16_t indent;
@@ -81,8 +91,9 @@ typedef struct style {
     bool caption_below;                 /* die Beschriftung steht unter der Tabelle */
     /* wird nicht vererbt */
     uint8_t display, position, float_side, clear, box_sizing, overflow, valign;
-    uint8_t clear_after;                /* der Kasten reicht bis unter das, was in ihm nebeneinander steht */
+    bool has_before, has_after;         /* es gibt Scheinelemente (::before, ::after) */
     bool background_set, z_set;
+    backdrop_t *backdrop;
     uint32_t background;
     uint8_t border[4];                  /* Breite des Rahmens in Pixeln: oben, rechts, unten, links */
     uint8_t border_style[4];            /* CSS_BS_..., oder 0: wird nicht gezeichnet */
@@ -140,6 +151,7 @@ typedef struct lbox {
     style_t *st;
     uint8_t kind, inner;
     uint16_t flags;
+    uint16_t clip, clip_kids;           /* Ausschnitt (Nummer plus 1), der für den Kasten gilt und für seinen Inhalt */
     uint32_t seq;                       /* laufende Nummer: die Reihenfolge in der Seite */
     int16_t image, widget;              /* Bild bzw. Feld der Seite, oder -1 */
     int32_t ordinal;                    /* Nummer eines Listenpunkts */
@@ -552,7 +564,8 @@ static void reset_box(style_t *st)
     st->position = CSS_POS_STATIC;
     st->float_side = CSS_SIDE_NONE;
     st->clear = CSS_SIDE_NONE;
-    st->clear_after = CSS_SIDE_NONE;
+    st->has_before = st->has_after = false;
+    st->backdrop = NULL;
     st->box_sizing = CSS_BOX_CONTENT;
     st->overflow = CSS_OV_VISIBLE;
     st->valign = CSS_VA_BASELINE;
@@ -605,6 +618,53 @@ static bool readable(uint32_t color, uint32_t back)
  * Bestimmt, was für das Element gilt: die Regeln der Seite, seine Attribute,
  * die Grundregeln des Browsers - und was es von seiner Umgebung erbt.
  */
+static char *resolve(lay_t *L, const char *reference, bool web_only);
+
+/* Meldet ein Hintergrundbild bei der Seite an (damit es geholt wird); liefert seine Nummer plus 1 oder 0. */
+static uint16_t backdrop_image(lay_t *L, const char *url, size_t length, bool *ready)
+{
+    page_t *page = L->page;
+    const html_pictures_t *pictures = L->opt->pictures;
+    char text[600];
+    *ready = false;
+    if (!pictures || length == 0 || length >= sizeof(text))
+        return 0;
+    memcpy(text, url, length);
+    text[length] = '\0';
+    if (memcmp(text, "data:", 5) == 0)
+        return 0;
+    /* Vektorgrafiken (SVG) lassen sich hier nicht zeigen: gar nicht erst holen */
+    size_t end = 0;
+    while (text[end] && text[end] != '?' && text[end] != '#')
+        end++;
+    if (end >= 4 && lower(text[end - 4]) == '.' && lower(text[end - 3]) == 's' && lower(text[end - 2]) == 'v' &&
+        lower(text[end - 1]) == 'g')
+        return 0;
+    char *full = resolve(L, text, true);
+    if (!full)
+        return 0;
+    int w = 0, h = 0;
+    *ready = pictures->lookup(pictures->ctx, full, &w, &h) == PICTURE_READY;
+    for (int i = 0; i < page->image_count; i++) {
+        if (page->images[i].url && strcmp(page->images[i].url, full) == 0) {
+            kfree(full);
+            return (uint16_t)(i + 1);
+        }
+    }
+    if (page->image_count >= IMAGES_MAX || !GROW(L, page->images, page->image_count, page->image_cap)) {
+        kfree(full);
+        return 0;
+    }
+    page_image_t *image = &page->images[page->image_count];
+    memset(image, 0, sizeof(*image));
+    image->url = full;
+    image->link = -1;
+    image->y = -1;                      /* kein Bild im Lauftext: Es liegt hinter einem Kasten */
+    return (uint16_t)(++page->image_count);
+}
+
+static style_t *make_style(lay_t *L, const css_style_t *cs, const style_t *ps, const dom_node *e, bool root);
+
 __attribute__((noinline))
 static style_t *compute_style(lay_t *L, const dom_node *e, const style_t *ps, bool root)
 {
@@ -614,10 +674,18 @@ static style_t *compute_style(lay_t *L, const dom_node *e, const style_t *ps, bo
     hints_for(e, hints, sizeof(hints));
     css_match_full(L->css, &e->css, hints, strlen(hints), inline_style,
                    inline_style ? strlen(inline_style) : 0, &cs);
+    return make_style(L, &cs, ps, e, root);
+}
 
+/* Aus dem, was die Regeln festlegen, und dem Geerbten wird die Gestaltung (e NULL: ein Scheinelement). */
+static style_t *make_style(lay_t *L, const css_style_t *css, const style_t *ps, const dom_node *e, bool root)
+{
+    css_style_t cs = *css;
     style_t *st = arena(L, sizeof(*st));
     *st = *ps;
     reset_box(st);
+    st->has_before = cs.has_before;
+    st->has_after = cs.has_after;
 
     /* Schrift */
     if (cs.font_size.kind == CSS_LEN_VALUE) {
@@ -646,7 +714,7 @@ static style_t *compute_style(lay_t *L, const dom_node *e, const style_t *ps, bo
     }
 
     /* Farben */
-    bool link = is_tag(e, "a") && dom_attr_get(e, "href");
+    bool link = e && is_tag(e, "a") && dom_attr_get(e, "href");
     if (cs.has & CSS_COLOR) {
         st->color = HTML_COLOR_SET | cs.color;
         st->text &= (uint8_t)~STYLE_LINK;
@@ -663,8 +731,35 @@ static style_t *compute_style(lay_t *L, const dom_node *e, const style_t *ps, bo
     }
     if (cs.masked == CSS_YES)
         st->background_set = false;     /* ein Symbol, das nur durch eine Maske zu sehen wäre: nichts zeichnen */
-    if (st->background_set)
+    if (st->background_set) {
         st->back = st->background;
+        st->trust_colors = false;
+    }
+    if (cs.masked != CSS_YES && (cs.background_url || (cs.gradient_set && cs.gradient_end != cs.gradient_color))) {
+        backdrop_t *bd = arena(L, sizeof(*bd));
+        bool ready = false;
+        if (cs.background_url)
+            bd->image = backdrop_image(L, cs.background_url, cs.background_url_length, &ready);
+        bd->repeat = cs.background_repeat;
+        bd->size = cs.background_size;
+        bd->w = make_len(&cs.background_w, st->size);
+        bd->h = make_len(&cs.background_h, st->size);
+        bd->x = make_len(&cs.background_x, st->size);
+        bd->y = make_len(&cs.background_y, st->size);
+        if (cs.gradient_set && cs.gradient_end != cs.gradient_color) {
+            bd->gradient = cs.gradient_across ? 2 : 1;
+            bd->gradient_to = cs.gradient_end;
+            /* für die Lesbarkeit zählt die Mitte des Verlaufs */
+            st->back = ((((cs.gradient_color >> 16) & 0xFF) + ((cs.gradient_end >> 16) & 0xFF)) / 2) << 16 |
+                       ((((cs.gradient_color >> 8) & 0xFF) + ((cs.gradient_end >> 8) & 0xFF)) / 2) << 8 |
+                       (((cs.gradient_color & 0xFF) + (cs.gradient_end & 0xFF)) / 2);
+        }
+        if (bd->image || bd->gradient)
+            st->backdrop = bd;
+        /* Ist das Bild da, steht der Text darauf: Welche Farbe dort lesbar ist, weiß nur die Seite. */
+        if (ready)
+            st->trust_colors = true;
+    }
     if (cs.has & CSS_UNDERLINE)
         st->text = (uint8_t)(cs.underline ? st->text | STYLE_UNDERLINE : st->text & ~STYLE_UNDERLINE);
     else if (link)
@@ -702,7 +797,7 @@ static style_t *compute_style(lay_t *L, const dom_node *e, const style_t *ps, bo
         st->display = CSS_D_NONE;
     if (((cs.has & CSS_CLIP) && cs.clipped) || cs.off_top)
         st->display = CSS_D_NONE;       /* nur für Vorleseprogramme gedacht */
-    if (!L->author_rules) {
+    if (!L->author_rules && e) {
         /* ohne Stylesheets entscheiden ein paar Anzeichen, was verborgen sein soll */
         const char *classes = dom_attr_get(e, "class");
         if (classes && html_class_hides(classes, strlen(classes), L->opt->scripts))
@@ -714,7 +809,6 @@ static style_t *compute_style(lay_t *L, const dom_node *e, const style_t *ps, bo
         st->float_side = cs.float_side;
     if (cs.has & CSS_CLEAR)
         st->clear = cs.clear;
-    st->clear_after = cs.clear_after;
     if (cs.box_sizing)
         st->box_sizing = cs.box_sizing;
     if (cs.overflow)
@@ -1496,6 +1590,160 @@ static void fix_children(lay_t *L, lbox_t *box)
     }
 }
 
+/* Der Kasten eines Elements (oder Scheinelements) - welcher Art, sagt seine Gestaltung. */
+static lbox_t *element_box(lay_t *L, const dom_node *e, style_t *st)
+{
+    uint8_t d = st->display;
+    bool absolute = st->position == CSS_POS_ABSOLUTE || st->position == CSS_POS_FIXED;
+    bool floats = st->float_side != CSS_SIDE_NONE && !absolute;
+    lbox_t *b = new_box(L, d == CSS_D_INLINE && !absolute && !floats ? K_INLINE : K_BLOCK, e, st);
+    b->inner = d == CSS_D_FLEX || d == CSS_D_INLINE_FLEX ? IN_FLEX
+             : d == CSS_D_GRID || d == CSS_D_INLINE_GRID ? IN_GRID
+             : d == CSS_D_TABLE || d == CSS_D_INLINE_TABLE ? IN_TABLE : IN_FLOW;
+    if (absolute)
+        b->flags |= F_ABS | F_ROOT | (st->position == CSS_POS_FIXED ? F_FIXED : 0);
+    else if (floats)
+        b->flags |= F_FLOAT | F_ROOT;
+    else if (d == CSS_D_INLINE_BLOCK || d == CSS_D_INLINE_FLEX || d == CSS_D_INLINE_GRID ||
+             d == CSS_D_INLINE_TABLE)
+        b->flags |= F_ATOMIC | F_ROOT;
+    if (st->position == CSS_POS_RELATIVE)
+        b->flags |= F_RELATIVE;
+    if (b->kind == K_BLOCK && (b->inner != IN_FLOW || st->overflow != CSS_OV_VISIBLE ||
+                               d == CSS_D_TABLE_CELL || d == CSS_D_TABLE_CAPTION || d == CSS_D_FLOW_ROOT))
+        b->flags |= F_ROOT;
+    return b;
+}
+
+/* Hängt ein UTF-8-Zeichen an; Zeichen aus Symbolschriften (die es hier nicht gibt) entfallen. */
+static size_t put_char(char *out, size_t n, size_t size, uint32_t cp)
+{
+    if ((cp >= 0xE000 && cp <= 0xF8FF) || cp >= 0xF0000 || cp == 0 || n + 5 >= size)
+        return n;
+    if (cp < 0x80) {
+        out[n++] = (char)cp;
+    } else if (cp < 0x800) {
+        out[n++] = (char)(0xC0 | (cp >> 6));
+        out[n++] = (char)(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        out[n++] = (char)(0xE0 | (cp >> 12));
+        out[n++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[n++] = (char)(0x80 | (cp & 0x3F));
+    } else {
+        out[n++] = (char)(0xF0 | (cp >> 18));
+        out[n++] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        out[n++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[n++] = (char)(0x80 | (cp & 0x3F));
+    }
+    return n;
+}
+
+/*
+ * Der Text eines Scheinelements aus seiner Angabe "content": Zeichenketten
+ * (mit \-Angaben für Zeichen), attr(name), Anführungszeichen. false: Es gibt
+ * das Scheinelement nicht (none, normal).
+ */
+static bool pseudo_text(const dom_node *e, const char *content, size_t length, char *out, size_t size)
+{
+    size_t n = 0, i = 0;
+    out[0] = '\0';
+    while (i < length && is_space(content[i]))
+        i++;
+    if (length - i >= 4 && (starts(content + i, "none") || starts(content + i, "norm")))
+        return false;
+    while (i < length) {
+        char c = content[i];
+        if (c == '"' || c == '\'') {
+            for (i++; i < length && content[i] != c; i++) {
+                if (content[i] != '\\') {
+                    if (n + 2 < size)
+                        out[n++] = content[i];
+                    continue;
+                }
+                /* \201C: ein Zeichen nach seiner Nummer; \" und Ähnliches: das Zeichen selbst */
+                uint32_t cp = 0;
+                int digits = 0;
+                while (digits < 6 && i + 1 < length) {
+                    char h = lower(content[i + 1]);
+                    int v = h >= '0' && h <= '9' ? h - '0' : h >= 'a' && h <= 'f' ? h - 'a' + 10 : -1;
+                    if (v < 0)
+                        break;
+                    cp = cp * 16 + (uint32_t)v;
+                    digits++;
+                    i++;
+                }
+                if (digits) {
+                    n = put_char(out, n, size, cp);
+                    if (i + 1 < length && content[i + 1] == ' ')
+                        i++;            /* ein Leerzeichen beendet die Nummer und zählt nicht */
+                } else if (i + 1 < length) {
+                    i++;
+                    if (n + 2 < size && content[i] != '\n')
+                        out[n++] = content[i];
+                }
+            }
+            i++;
+        } else if (length - i >= 5 && starts(content + i, "attr(")) {
+            char name[40];
+            size_t k = 0;
+            for (i += 5; i < length && content[i] != ')'; i++) {
+                if (!is_space(content[i]) && k + 1 < sizeof(name))
+                    name[k++] = lower(content[i]);
+            }
+            name[k] = '\0';
+            i++;
+            const char *value = e ? dom_attr_get(e, name) : NULL;
+            for (; value && *value && n + 2 < size; value++)
+                out[n++] = *value;
+        } else if (length - i >= 10 && starts(content + i, "open-quote")) {
+            n = put_char(out, n, size, 0x201E);
+            i += 10;
+        } else if (length - i >= 11 && starts(content + i, "close-quote")) {
+            n = put_char(out, n, size, 0x201C);
+            i += 11;
+        } else if (c == '/') {
+            break;                      /* dahinter steht nur noch Ersatztext für Vorleseprogramme */
+        } else {
+            /* Zähler, Bilder und anderes: übergehen bis zum nächsten Stück */
+            int level = 0;
+            while (i < length && (level > 0 || !is_space(content[i]))) {
+                level += content[i] == '(' ? 1 : content[i] == ')' ? -1 : 0;
+                i++;
+            }
+        }
+        while (i < length && is_space(content[i]))
+            i++;
+    }
+    out[n] = '\0';
+    return true;
+}
+
+/* Ein Scheinelement vor (which 1) oder nach (2) dem Inhalt des Elements e */
+static void build_pseudo(lay_t *L, const dom_node *e, lbox_t *parent, style_t *pst, int which, int depth)
+{
+    css_style_t cs;
+    const char *content = NULL;
+    size_t length = 0;
+    char text[240];
+    if (depth > DEPTH_MAX || L->failed)
+        return;
+    css_match_pseudo(L->css, &e->css, which, &cs, &content, &length);
+    if (!content || !pseudo_text(e, content, length, text, sizeof(text)))
+        return;
+    style_t *st = make_style(L, &cs, pst, NULL, false);
+    st->has_before = st->has_after = false;
+    if (st->display == CSS_D_NONE || st->display == CSS_D_CONTENTS || st->display == CSS_D_TABLE_COLUMN)
+        return;
+    if (st->display == CSS_D_LIST_ITEM)
+        st->display = CSS_D_BLOCK;
+    lbox_t *b = element_box(L, e, st);
+    append(parent, b);
+    if (text[0])
+        own_text(L, b, e, st, text);
+    if (b->kind == K_BLOCK)
+        fix_children(L, b);
+}
+
 /* Baut den Kasten für ein Element und alles darin. */
 static void build_element(lay_t *L, const dom_node *e, lbox_t *parent, style_t *pst, int depth,
                           int *counter)
@@ -1579,24 +1827,7 @@ static void build_element(lay_t *L, const dom_node *e, lbox_t *parent, style_t *
     }
 
     uint8_t d = st->display;
-    bool absolute = st->position == CSS_POS_ABSOLUTE || st->position == CSS_POS_FIXED;
-    bool floats = st->float_side != CSS_SIDE_NONE && !absolute;
-    lbox_t *b = new_box(L, d == CSS_D_INLINE && !absolute && !floats ? K_INLINE : K_BLOCK, e, st);
-    b->inner = d == CSS_D_FLEX || d == CSS_D_INLINE_FLEX ? IN_FLEX
-             : d == CSS_D_GRID || d == CSS_D_INLINE_GRID ? IN_GRID
-             : d == CSS_D_TABLE || d == CSS_D_INLINE_TABLE ? IN_TABLE : IN_FLOW;
-    if (absolute)
-        b->flags |= F_ABS | F_ROOT | (st->position == CSS_POS_FIXED ? F_FIXED : 0);
-    else if (floats)
-        b->flags |= F_FLOAT | F_ROOT;
-    else if (d == CSS_D_INLINE_BLOCK || d == CSS_D_INLINE_FLEX || d == CSS_D_INLINE_GRID ||
-             d == CSS_D_INLINE_TABLE)
-        b->flags |= F_ATOMIC | F_ROOT;
-    if (st->position == CSS_POS_RELATIVE)
-        b->flags |= F_RELATIVE;
-    if (b->kind == K_BLOCK && (b->inner != IN_FLOW || st->overflow != CSS_OV_VISIBLE ||
-                               d == CSS_D_TABLE_CELL || d == CSS_D_TABLE_CAPTION || d == CSS_D_FLOW_ROOT))
-        b->flags |= F_ROOT;
+    lbox_t *b = element_box(L, e, st);
     if (d == CSS_D_LIST_ITEM) {
         if (counter) {
             int value;
@@ -1648,6 +1879,8 @@ static void build_children(lay_t *L, const dom_node *e, lbox_t *parent, style_t 
         bool open = !L->opt->scripts || dom_attr_get(e->parent, "open");
         own_text(L, parent, e, st, open ? "\xE2\x96\xBE " : "\xE2\x96\xB8 ");
     }
+    if (st->has_before && !closed)
+        build_pseudo(L, e, parent, st, 1, depth + 1);
     for (const dom_node *c = e->first; c && !L->failed; c = c->next) {
         if (c->type == DOM_ELEMENT) {
             if (closed && !is_tag(c, "summary"))
@@ -1660,12 +1893,15 @@ static void build_children(lay_t *L, const dom_node *e, lbox_t *parent, style_t 
             append(parent, t);
         }
     }
+    if (st->has_after && !closed)
+        build_pseudo(L, e, parent, st, 2, depth + 1);
 }
 
 /* --- Maße eines Kastens ------------------------------------------------------------------------ */
 
 static void intrinsic(lay_t *L, lbox_t *b);
 static void layout_block(lay_t *L, lbox_t *b, int width, floats_t *fc, int fx, int fy);
+static void layout_abs(lay_t *L, lbox_t *owner);
 
 /* Die erste Zelle einer Tabelle (oder NULL) */
 static const lbox_t *first_cell(const lbox_t *b, int depth)
@@ -1918,7 +2154,7 @@ static void register_abs(lay_t *L, lbox_t *b)
     lbox_t *owner = L->root;
     if (!(b->flags & F_FIXED)) {
         for (lbox_t *p = b->parent; p; p = p->parent) {
-            if (p->st->position != CSS_POS_STATIC && p->kind == K_BLOCK) {
+            if (p->st->position != CSS_POS_STATIC && (p->kind == K_BLOCK || p->kind == K_INLINE)) {
                 owner = p;
                 break;
             }
@@ -2484,7 +2720,12 @@ static void inline_span(inl_t *I, lbox_t *b)
     resolve_edges(b, I->measure ? -1 : I->width);
     b->line_block = I->block;
     b->line_y = I->y;
+    b->abs_list = NULL;
     int left = b->margin[3] + b->bor[3] + b->pad[3], right = b->margin[1] + b->bor[1] + b->pad[1];
+    /* ein Element im Text mit "position": Frei Platziertes darin richtet sich nach seiner Fläche */
+    bool anchor = !I->measure && st->position != CSS_POS_STATIC;
+    int begin_x = I->x + (I->space && I->any ? text_width(I->L, I->space_style, " ", 1) : 0) + I->edge + b->margin[3];
+    int begin_y = I->y;
     bool deco = !I->measure && !st->invisible && I->open_n < OPEN_MAX &&
                 (st->background_set || st->border_style[0] || st->border_style[1] ||
                  st->border_style[2] || st->border_style[3]);
@@ -2517,6 +2758,17 @@ static void inline_span(inl_t *I, lbox_t *b)
         I->unbroken += right;
     } else {
         I->x += right;
+    }
+    if (anchor) {
+        /* seine Fläche: vom Anfang bis hierher - nach einem Umbruch das Stück in der letzten Zeile */
+        int from = I->y == begin_y ? begin_x : I->left;
+        b->x = I->ox + from;
+        b->y = I->oy + I->y;
+        b->w = max_int(I->x - from, 1);
+        b->h = line_height_of(I->L, I->block->st);
+        memset(b->bor, 0, sizeof(b->bor));
+        if (b->abs_list)
+            layout_abs(I->L, b);
     }
 }
 
@@ -2842,24 +3094,23 @@ static void layout_block(lay_t *L, lbox_t *b, int width, floats_t *fc, int fx, i
     else
         ch = layout_flow(L, b, cw, fc, fx, fy);
 
-    /* "clear" am Ende des Kastens (clearfix): Er reicht bis unter die Kästen daneben */
-    if (st->clear_after != CSS_SIDE_NONE && fc && b->inner == IN_FLOW) {
-        int top = fy + b->bor[0] + b->pad[0];
-        int below = float_clear(fc, top + ch, st->clear_after) - top;
-        if (below > ch) {
-            ch = below;
-            b->leak_bottom = 0;
-        }
-    }
     /* ein eigener Abschnitt schließt ein, was in ihm neben dem Text steht */
     if ((b->flags & F_ROOT) && fc) {
         for (int i = 0; i < fc->count; i++)
             ch = max_int(ch, fc->items[i].y + fc->items[i].h - b->bor[0] - b->pad[0]);
     }
-    /* Höhenangaben: Der Kasten wird nie kleiner als sein Inhalt (nichts wird abgeschnitten) */
+    /*
+     * Höhenangaben: Ein Kasten, der Überstehendes abschneidet (overflow:
+     * hidden), ist genau so hoch wie verlangt. Jeder andere wird nie kleiner
+     * als sein Inhalt - Rollbereiche in der Seite gibt es nicht, und nichts
+     * soll unerreichbar werden.
+     */
     int extra = st->box_sizing == CSS_BOX_BORDER ? edge_h(b) : 0;
+    bool cuts = st->overflow == CSS_OV_HIDDEN;
     if (len_fixed(st->height))
-        ch = max_int(ch, st->height.px - extra);
+        ch = cuts ? max_int(st->height.px - extra, 0) : max_int(ch, st->height.px - extra);
+    if (cuts && len_fixed(st->max_height))
+        ch = min_int(ch, max_int(st->max_height.px - extra, 0));
     if (len_fixed(st->min_height))
         ch = max_int(ch, st->min_height.px - extra);
     b->h = ch + edge_h(b);
@@ -2900,6 +3151,10 @@ static void layout_abs(lay_t *L, lbox_t *owner)
         for (lbox_t *p = a->parent; p && p != owner; p = p->parent) {
             sx += p->x;
             sy += p->y;
+        }
+        if (owner->kind == K_INLINE) {  /* die Stelle ist ab dem Kasten gemessen, in dem der Text steht */
+            sx -= owner->x;
+            sy -= owner->y;
         }
         if (a->flags & F_FIXED) {
             /* am Fenster befestigt: oben steht es am Seitenanfang, unten am Seitenende */
@@ -3726,24 +3981,52 @@ static int layout_table(lay_t *L, lbox_t *b, int cw)
 
 /* --- Lage auf der Seite ------------------------------------------------------------------------ */
 
-static void finalize(lay_t *L, lbox_t *b, int ax, int ay, int depth);
+static void finalize(lay_t *L, lbox_t *b, int ax, int ay, int depth, uint16_t clip);
 
-static void finalize_children(lay_t *L, lbox_t *parent, int ax, int ay, int depth)
+static void finalize_children(lay_t *L, lbox_t *parent, int ax, int ay, int depth, uint16_t clip)
 {
     for (lbox_t *c = parent->first; c; c = c->next) {
         if (c->flags & F_ABS)
             continue;                   /* steht, wo sein Bezugskasten es sagt */
         if (c->kind == K_BLOCK) {
-            finalize(L, c, ax + c->x, ay + c->y, depth + 1);
+            finalize(L, c, ax + c->x, ay + c->y, depth + 1, clip);
         } else if (c->kind == K_INLINE) {
             c->ax = ax;
             c->ay = ay;
-            finalize_children(L, c, ax, ay, depth + 1);
+            finalize_children(L, c, ax, ay, depth + 1, clip);
+            /* frei Platziertes, das sich nach diesem Element im Text richtet */
+            for (lbox_t *a = c->abs_list; a; a = a->abs_next)
+                finalize(L, a, ax + c->x + a->x, ay + c->y + a->y, depth + 1, clip);
         }
     }
 }
 
-static void finalize(lay_t *L, lbox_t *b, int ax, int ay, int depth)
+/*
+ * Ein neuer Ausschnitt: die Fläche (x, y, w, h), soweit sie im Ausschnitt
+ * outer liegt (0: unbegrenzt). Liefert seine Nummer plus 1.
+ */
+static uint16_t new_clip(lay_t *L, uint16_t outer, int x, int y, int w, int h)
+{
+    page_t *page = L->page;
+    if (outer && outer <= page->clip_count) {
+        const clip_t *o = &page->clips[outer - 1];
+        int right = min_int(x + w, o->x + o->w), bottom = min_int(y + h, o->y + o->h);
+        x = max_int(x, o->x);
+        y = max_int(y, o->y);
+        w = right - x;
+        h = bottom - y;
+    }
+    if (page->clip_count >= 60000 || !GROW(L, page->clips, page->clip_count, page->clip_cap))
+        return outer;
+    clip_t *c = &page->clips[page->clip_count];
+    c->x = x;
+    c->y = y;
+    c->w = max_int(w, 0);
+    c->h = max_int(h, 0);
+    return (uint16_t)(++page->clip_count);
+}
+
+static void finalize(lay_t *L, lbox_t *b, int ax, int ay, int depth, uint16_t clip)
 {
     const style_t *st = b->st;
     if (depth > DEPTH_MAX * 4)
@@ -3757,12 +4040,28 @@ static void finalize(lay_t *L, lbox_t *b, int ax, int ay, int depth)
     }
     b->ax = ax;
     b->ay = ay;
+    b->clip = b->clip_kids = clip;
+    /* was übersteht, wird abgeschnitten: Der Inhalt ist nur innerhalb des Rahmens zu sehen */
+    if (st->overflow == CSS_OV_HIDDEN && !(b->flags & F_REPLACED) && b != L->root)
+        b->clip_kids = new_clip(L, clip, ax + b->bor[3], ay + b->bor[0], b->w - b->bor[1] - b->bor[3],
+                                b->h - b->bor[0] - b->bor[2]);
     /* verschoben und mit eigener Ebene: wird wie ein frei platzierter Kasten gezeichnet */
     if ((b->flags & F_RELATIVE) && st->z_set && b != L->root)
         add_layer(L, b);
-    finalize_children(L, b, ax, ay, depth);
+    finalize_children(L, b, ax, ay, depth, b->clip_kids);
     for (lbox_t *a = b->abs_list; a; a = a->abs_next)
-        finalize(L, a, ax + a->x, ay + a->y, depth + 1);
+        finalize(L, a, ax + a->x, ay + a->y, depth + 1, b->clip_kids);
+}
+
+/* Die Seite reicht mindestens bis hierher - soweit es nicht abgeschnitten ist. */
+static void reach(lay_t *L, int bottom)
+{
+    const page_t *page = L->page;
+    if (page->paint_clip && page->paint_clip <= page->clip_count) {
+        const clip_t *c = &page->clips[page->paint_clip - 1];
+        bottom = min_int(bottom, c->y + c->h);
+    }
+    L->bottom = max_int(L->bottom, bottom);
 }
 
 /* --- Die fertige Seite -------------------------------------------------------------------------- */
@@ -3775,6 +4074,8 @@ static uint32_t text_color(const lay_t *L, const style_t *st)
     const html_text_t *t = L->opt->text;
     uint32_t usual = st->text & STYLE_LINK ? t->link_color : st->text & STYLE_MUTED ? 0x80848E : t->text_color;
     uint32_t color = st->color ? st->color & 0xFFFFFF : usual & 0xFFFFFF;
+    if (st->trust_colors)
+        return HTML_COLOR_SET | color;
     if (readable(color, st->back))
         return st->color || st->back != (t->page_color & 0xFFFFFF) ? HTML_COLOR_SET | color : 0;
     if (readable(t->text_color & 0xFFFFFF, st->back))
@@ -3786,12 +4087,11 @@ static uint32_t text_color(const lay_t *L, const style_t *st)
 static void emit_decoration(lay_t *L, const style_t *st, const dom_node *node, int x, int y, int w, int h,
                             const uint8_t *border, bool left_end, bool right_end)
 {
+    const backdrop_t *bd = st->backdrop;
     bool lines = false;
     for (int i = 0; i < 4; i++)
         lines = lines || (border[i] && st->border_style[i]);
-    if (st->invisible || w <= 0 || h <= 0 || (!st->background_set && !lines && st->link < 0))
-        return;
-    if (!st->background_set && !lines)
+    if (st->invisible || w <= 0 || h <= 0 || (!st->background_set && !lines && !bd))
         return;                         /* nichts zu sehen */
     box_t box;
     memset(&box, 0, sizeof(box));
@@ -3810,10 +4110,29 @@ static void emit_decoration(lay_t *L, const style_t *st, const dom_node *node, i
     box.radius = st->radius == 255 ? (uint8_t)min_int(min_int(w, h) / 2, 250) : st->radius;
     box.link = st->link;
     box.node = node ? node->id : 0;
+    if (bd && bd->gradient && st->background_set) {
+        box.gradient = HTML_COLOR_SET | bd->gradient_to;
+        box.gradient_side = bd->gradient == 2;
+    }
+    if (bd && bd->image) {
+        int inner_w = w - border[1] - border[3], inner_h = h - border[0] - border[2];
+        box.picture = bd->image;
+        box.picture_repeat = bd->repeat == CSS_REPEAT_NONE ? 0 : bd->repeat == CSS_REPEAT_X ? 1
+                           : bd->repeat == CSS_REPEAT_Y ? 2 : 3;
+        box.picture_size = bd->size == CSS_BG_COVER ? PICTURE_COVER : bd->size == CSS_BG_CONTAIN ? PICTURE_CONTAIN
+                         : bd->size == CSS_BG_GIVEN ? PICTURE_GIVEN : PICTURE_AS_IS;
+        box.picture_w = (int16_t)clamp(len_px(bd->w, inner_w), 0, 8000);
+        box.picture_h = (int16_t)clamp(len_px(bd->h, inner_h), 0, 8000);
+        /* Lage: Pixel plus Prozent des freien Platzes */
+        box.picture_x = (int16_t)clamp(bd->x.kind == CSS_LEN_VALUE ? bd->x.px : 0, -8000, 8000);
+        box.picture_y = (int16_t)clamp(bd->y.kind == CSS_LEN_VALUE ? bd->y.px : 0, -8000, 8000);
+        box.picture_px = (int8_t)clamp(bd->x.kind == CSS_LEN_VALUE ? bd->x.percent / 1000 : 0, -100, 100);
+        box.picture_py = (int8_t)clamp(bd->y.kind == CSS_LEN_VALUE ? bd->y.percent / 1000 : 0, -100, 100);
+    }
     int index = page_add_box(L->page, &box);
     if (index >= 0)
         page_add_paint(L->page, PAINT_BOX, index);
-    L->bottom = max_int(L->bottom, y + h);
+    reach(L, y + h);
 }
 
 static uint32_t pool_add(lay_t *L, const char *text, size_t n)
@@ -3854,7 +4173,7 @@ static line_t *page_line(lay_t *L, int y, int height, int baseline)
     line->y = y;
     line->height = (uint16_t)clamp(height, 1, 60000);
     line->baseline = (uint16_t)clamp(baseline, 0, 60000);
-    L->bottom = max_int(L->bottom, y + height);
+    reach(L, y + height);
     return line;
 }
 
@@ -3997,14 +4316,24 @@ static void emit_children(lay_t *L, lbox_t *parent, int depth, bool floats_only)
 }
 
 static void emit_layers(lay_t *L, bool behind);
+static void emit_inside(lay_t *L, lbox_t *b, int depth);
 
 static void emit_box(lay_t *L, lbox_t *b, int depth)
 {
     page_t *page = L->page;
-    const style_t *st = b->st;
     if (depth > DEPTH_MAX * 4)
         return;
-    L->bottom = max_int(L->bottom, b->ay + b->h);
+    uint16_t outer = page->paint_clip;
+    page->paint_clip = b->clip;
+    reach(L, b->ay + b->h);
+    emit_inside(L, b, depth);
+    page->paint_clip = outer;
+}
+
+static void emit_inside(lay_t *L, lbox_t *b, int depth)
+{
+    page_t *page = L->page;
+    const style_t *st = b->st;
     if (b->widget >= 0) {
         widget_t *w = &page->widgets[b->widget];
         w->x = b->ax;
@@ -4043,6 +4372,7 @@ static void emit_box(lay_t *L, lbox_t *b, int depth)
         return;
     if ((b->flags & F_MARKER) && !st->invisible)
         emit_marker(L, b);
+    page->paint_clip = b->clip_kids;
     if (b->flags & F_LINES) {
         emit_children(L, b, depth, true);
         emit_lines(L, b, depth);
@@ -4150,7 +4480,7 @@ static void run(void *arg)
 
     resolve_edges(root, opt->width);
     layout_block(L, root, max_int(opt->width - root->margin[1] - root->margin[3], 50), NULL, 0, 0);
-    finalize(L, root, root->margin[3], root->margin[0], 0);
+    finalize(L, root, root->margin[3], root->margin[0], 0, 0);
     emit_box(L, root, 0);
     emit_layers(L, false);
 

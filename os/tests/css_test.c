@@ -403,6 +403,10 @@ static void test_media(void)
         "@font-face { font-family: x; src: url(x.woff) }\n"
         "@import url(anderes.css);\n"
         "@media screen { @media (min-width: 100px) { strong { color: #000006 } } }\n"
+        "@media screen and (max-width: calc(1120px - 1px)) { em { text-align: right } }\n"
+        "@media screen and (min-width: calc(640px - 1px)) and (max-width: calc(1680px - 1px)) { strong { text-decoration: underline } }\n"
+        "@media (width >= 500px) and (min-height: 10px) { strong { text-align: center } }\n"
+        "@media (prefers-color-scheme: dark), (orientation: portrait) and (min-width: 1px) { em { text-decoration: underline } }\n"
         "em { font-weight: bold }\n";
     css_node_t p = node("p", NULL, NULL, NULL), em = node("em", NULL, NULL, NULL);
     css_node_t strong = node("strong", NULL, NULL, NULL);
@@ -415,12 +419,17 @@ static void test_media(void)
           s.underline);
     CHECK(match(wide, &em, NULL).color == 0x000004 && match(wide, &em, NULL).bold);
     CHECK(match(wide, &strong, NULL).color == 0x000006 && match(wide, &strong, NULL).italic);
+    /* Bedingungen mit calc(), mehreren Teilen, Vergleichen; Hochformat gilt bei 900x675 nicht */
+    CHECK(match(wide, &em, NULL).align == CSS_RIGHT && match(wide, &strong, NULL).underline &&
+          match(wide, &strong, NULL).align == CSS_CENTER && !match(wide, &em, NULL).underline);
     css_free(wide);
 
     css_sheet_t *narrow = css_create(400);
     CHECK(css_add(narrow, text, sizeof(text) - 1));
     s = match(narrow, &p, NULL);
     CHECK(s.color == 0x000005 && !(s.has & CSS_WEIGHT) && s.italic && !(s.has & CSS_ALIGN));
+    CHECK(!match(narrow, &strong, NULL).underline && !(match(narrow, &strong, NULL).has & CSS_ALIGN) &&
+          match(narrow, &em, NULL).align == CSS_RIGHT);
     css_free(narrow);
 }
 
@@ -548,6 +557,48 @@ static void test_box_model(void)
     CHECK(s.area_rows == 2 && s.area_columns == 2 && s.area_map[1][0] != s.area_map[1][1] && s.grid_count == 2 &&
           len_is(s.grid[0].size, 192000, 0, 0) && s.grid[1].fr == 1000);
 
+    /* Scheinelemente: Die Regel gilt nicht dem Element; ihr "content" gibt es auf Nachfrage */
+    static const char pseudo[] =
+        ".q::before { content: '\\201E'; color: #ff0000; margin-right: 4px }\n"
+        ".q:after { content: ' - ' attr(title); display: block }\n"
+        ".q { color: #00ff00 }\n"
+        "p::before { content: none }\n";
+    css_node_t q = node("q", NULL, "q", NULL);
+    CHECK(css_add(sheet, pseudo, sizeof(pseudo) - 1));
+    s = full(sheet, &q, NULL, NULL);
+    CHECK(s.has_before && s.has_after && s.color == 0x00FF00 && s.margin[1].kind == CSS_LEN_UNSET && s.display_kind == 0);
+    CHECK(!match(sheet, &q, NULL).has_before && match(sheet, &q, NULL).color == 0x00FF00);
+    const char *content = NULL;
+    size_t content_length = 0;
+    css_match_pseudo(sheet, &q, 1, &s, &content, &content_length);
+    CHECK(content && content_length == 7 && memcmp(content, "'\\201E'", 7) == 0 && s.color == 0xFF0000 &&
+          len_is(s.margin[1], 4000, 0, 0));
+    css_match_pseudo(sheet, &q, 2, &s, &content, &content_length);
+    CHECK(content && content_length == 17 && s.display_kind == CSS_D_BLOCK && !(s.has & CSS_COLOR));
+    css_match_pseudo(sheet, &div, 1, &s, &content, &content_length);
+    CHECK(!content && !full(sheet, &div, NULL, NULL).has_before && full(sheet, &p, NULL, NULL).has_before);
+
+    /* Hintergrundbild: Adresse, Wiederholung, Lage, Größe; Farbverlauf mit Richtung */
+    static const char back[] = "background: #102030 url( \"bilder/a b.png\" ) no-repeat right 10px / 50% auto";
+    s = full(sheet, &div, NULL, back);
+    CHECK(s.background_url && s.background_url_length == 14 && memcmp(s.background_url, "bilder/a b.png", 14) == 0 &&
+          s.background_url >= back && s.background_url < back + sizeof(back));
+    CHECK(s.background == 0x102030 && s.background_image == CSS_YES && s.background_repeat == CSS_REPEAT_NONE &&
+          len_is(s.background_x, 0, 100000, 0) && len_is(s.background_y, 10000, 0, 0) && s.background_size == CSS_BG_GIVEN &&
+          len_is(s.background_w, 0, 50000, 0) && s.background_h.kind == CSS_LEN_AUTO);
+    s = full(sheet, &div, NULL, "background-image: url(x.png); background-size: cover; background-position: center bottom;"
+                                " background-repeat: repeat-y");
+    CHECK(s.background_size == CSS_BG_COVER && len_is(s.background_x, 0, 50000, 0) && len_is(s.background_y, 0, 100000, 0) &&
+          s.background_repeat == CSS_REPEAT_Y && s.background_url_length == 5);
+    s = full(sheet, &div, NULL, "background: url(x.png); background: none");
+    CHECK(!s.background_url && s.background_image == CSS_NO);
+    s = full(sheet, &div, NULL, "background: linear-gradient(to left, #111111, #222222 40%, #333333)");
+    CHECK(s.gradient_set && s.gradient_color == 0x333333 && s.gradient_end == 0x111111 && s.gradient_across && !s.background_url);
+    s = full(sheet, &div, NULL, "background-image: linear-gradient(180deg, rgba(0,0,0,.5), #444444)");
+    CHECK(s.gradient_set && s.gradient_end == 0x444444 && !s.gradient_across);
+    s = full(sheet, &div, NULL, "background: repeating-linear-gradient(45deg, #555555, #666666 10px)");
+    CHECK(s.gradient_set && s.gradient_color == 0x555555 && s.gradient_end == 0x555555);
+
     css_len_t l;
     CHECK(css_length(sheet, "12.5pt", 6, &l) && l.px == 16666 && css_length(sheet, "50vw", 4, &l) && l.px == 500000 &&
           css_length(sheet, "10vh", 4, &l) && l.px == 60000 && css_length(sheet, "auto", 4, &l) && l.kind == CSS_LEN_AUTO &&
@@ -565,7 +616,9 @@ static void test_fuzz(void)
         "/* m */ n{display:none;visibility:hidden;list-style:none;text-align:center}"
         "e{margin:1px 2em;padding:calc(1px + 2%);border:1px solid red;width:min(1px,2%);font:bold 12px/1.2 a,b;"
         "grid-template-columns:repeat(2,minmax(1px,1fr)) [x] auto;flex:1 1 0;gap:1px 2px;grid-column:1 / span 2;"
-        "background:linear-gradient(red,blue);height:clamp(1px,2vw,3em);border-color:red blue;inset:0 auto}";
+        "background:linear-gradient(red,blue);height:clamp(1px,2vw,3em);border-color:red blue;inset:0 auto}"
+        "e::before{content:'a\\201C' attr(x);background:url(\"a.png\") no-repeat 1px 2% / cover #fff;display:block}"
+        "d:after{content:none;background-position:right top;background-size:1px auto;background-image:linear-gradient(to top,red,#000)}";
     css_node_t root = node("html", NULL, NULL, NULL);
     css_node_t mid = node("d", "c", "b x y", &root);
     css_node_t leaf = node("e", "c", "b", &mid);
@@ -573,7 +626,7 @@ static void test_fuzz(void)
     mid.attrs_len = strlen(mid.attrs);
     srand(777);
     for (int round = 0; round < 30000; round++) {
-        char text[1100];
+        char text[1500];
         size_t length = sizeof(sample) - 1;
         memcpy(text, sample, length);
         if (round % 3 == 0) {
@@ -597,6 +650,10 @@ static void test_fuzz(void)
         css_match(sheet, &root, NULL, 0, &out);
         css_match_full(sheet, &leaf, copy, length, copy, length, &out);
         css_match_full(sheet, &mid, NULL, 0, NULL, 0, &out);
+        const char *content;
+        size_t content_length;
+        css_match_pseudo(sheet, &leaf, 1 + rand() % 2, &out, &content, &content_length);
+        css_match_pseudo(sheet, &mid, 2, &out, &content, &content_length);
         css_len_t l;
         css_length(sheet, copy, length > 60 ? 60 : length, &l);
         uint32_t color;

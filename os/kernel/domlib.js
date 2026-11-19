@@ -347,8 +347,11 @@
      * überhaupt zu sehen ist - daran hängen Ein- und Ausblenden in vielen Bibliotheken.
      * Sichtbares bekommt eine angenommene Größe am Anfang der Seite.
      */
+    /* Die ganze Seite (html, body) ist so groß wie das Fenster; alles andere hat eine angenommene Größe. */
+    function wholePage(el) { var n = dom.name(el); return n === 'html' || n === 'body'; }
     function box(el) {
-        var w = dom.shown(el) ? 100 : 0, h = w ? 20 : 0;
+        var page = wholePage(el);
+        var w = !dom.shown(el) ? 0 : page ? window.innerWidth : 100, h = !w ? 0 : page ? window.innerHeight : 20;
         return { x: 0, y: 0, top: 0, left: 0, right: w, bottom: h, width: w, height: h };
     }
     E.getBoundingClientRect = function () { return box(this); };
@@ -360,10 +363,10 @@
         accessor(E, name, function () { return 0; }, function () {});
     });
     ['offsetWidth', 'clientWidth', 'scrollWidth'].forEach(function (name) {
-        accessor(E, name, function () { return dom.shown(this) ? 100 : 0; }, function () {});
+        accessor(E, name, function () { return box(this).width; }, function () {});
     });
     ['offsetHeight', 'clientHeight', 'scrollHeight'].forEach(function (name) {
-        accessor(E, name, function () { return dom.shown(this) ? 20 : 0; }, function () {});
+        accessor(E, name, function () { return box(this).height; }, function () {});
     });
     accessor(E, 'offsetParent', function () { return dom.shown(this) && dom.name(this) !== 'body' ? document.body : null; });
 
@@ -733,10 +736,48 @@
     window.prompt = function () { return null; };
     window.open = function (url) { if (url) dom.wish(1, text(url)); return null; };
     window.getComputedStyle = function (el) { return dom.computed(el); };
+    /* Eine Bedingung an die Anzeige: Breite und Höhe des Fensters, Bildschirm, Vorlieben */
+    function mediaLength(value) {
+        var m = /^(-?[\d.]+)(px|em|rem)?$/.exec(value);
+        return m ? parseFloat(m[1]) * (m[2] && m[2] !== 'px' ? 16 : 1) : NaN;
+    }
+    function mediaPart(part) {
+        part = part.trim().toLowerCase();
+        if (part === 'all' || part === 'screen' || part === 'only screen' || part === '') return true;
+        if (part === 'print' || part === 'speech') return false;
+        var m = /^\(\s*(min-|max-)?(width|height)\s*:\s*([^)]+?)\s*\)$/.exec(part);
+        if (m) {
+            var have = m[2] === 'width' ? window.innerWidth : window.innerHeight, want = mediaLength(m[3]);
+            return m[1] === 'min-' ? have >= want : m[1] === 'max-' ? have <= want : have === want;
+        }
+        m = /^\(\s*(width|height)\s*(<=|>=|<|>)\s*([^)]+?)\s*\)$/.exec(part);
+        if (m) {
+            have = m[1] === 'width' ? window.innerWidth : window.innerHeight; want = mediaLength(m[3]);
+            return m[2] === '<=' ? have <= want : m[2] === '>=' ? have >= want : m[2] === '<' ? have < want : have > want;
+        }
+        m = /^\(\s*([a-z-]+)\s*(?::\s*([^)]+?)\s*)?\)$/.exec(part);
+        if (!m) return false;
+        switch (m[1]) {
+        case 'orientation': return (m[2] === 'landscape') === (window.innerWidth >= window.innerHeight);
+        case 'prefers-color-scheme': return m[2] === 'light';
+        case 'prefers-reduced-motion': return m[2] === 'reduce';      /* hier bewegt sich ohnehin nichts */
+        case 'hover': case 'any-hover': return m[2] === 'hover';
+        case 'pointer': case 'any-pointer': return m[2] === 'fine';
+        case 'color': return true;
+        default: return false;
+        }
+    }
+    function mediaMatches(query) {
+        return String(query).split(',').some(function (one) {
+            one = one.trim();
+            var negate = /^not\s+/i.test(one);
+            if (negate) one = one.replace(/^not\s+/i, '');
+            var ok = one.split(/\s+and\s+/i).every(mediaPart);
+            return negate ? !ok : ok;
+        });
+    }
     window.matchMedia = function (query) {
-        var m = /\((min|max)-width:\s*(\d+)px\)/.exec(String(query)), matches = false;
-        if (m) matches = m[1] === 'min' ? window.innerWidth >= +m[2] : window.innerWidth <= +m[2];
-        else if (/^\s*(all|screen)\s*$/.test(String(query))) matches = true;
+        var matches = mediaMatches(query);
         return { matches: matches, media: String(query), onchange: null, addListener: function () {},
                  removeListener: function () {}, addEventListener: function () {},
                  removeEventListener: function () {}, dispatchEvent: function () { return true; } };

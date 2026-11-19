@@ -129,13 +129,35 @@ typedef struct {
     uint8_t dashed;                     /* Rahmen gestrichelt (1) oder gepunktet (2) */
     int16_t link;                       /* der Kasten gehört zu diesem Link, oder -1 */
     uint32_t node;                      /* Nummer des Elements, oder 0 */
+    /* Farbverlauf statt einfarbigem Hintergrund: von background nach gradient */
+    uint32_t gradient;                  /* HTML_COLOR_SET plus Farbe, oder 0: keiner */
+    uint8_t gradient_side;              /* 0: von oben nach unten, 1: von links nach rechts */
+    /*
+     * Hintergrundbild: Nummer des Bildes der Seite plus 1, oder 0. Es liegt
+     * innerhalb des Rahmens; Lage wie bei background-position: Pixel plus
+     * Prozent des freien Platzes.
+     */
+    uint16_t picture;
+    uint8_t picture_repeat;             /* 1: waagerecht wiederholt, 2: senkrecht, 3: beides */
+    uint8_t picture_size;               /* PICTURE_AS_IS, _COVER, _CONTAIN, _GIVEN */
+    int16_t picture_w, picture_h;       /* _GIVEN: Maße in Pixeln (0: nach dem Seitenverhältnis) */
+    int16_t picture_x, picture_y;
+    int8_t picture_px, picture_py;
 } box_t;
+
+enum { PICTURE_AS_IS, PICTURE_COVER, PICTURE_CONTAIN, PICTURE_GIVEN };
+
+/* Ein Ausschnitt: Was ein Kasten abschneidet (overflow: hidden), ist nur darin zu sehen. */
+typedef struct {
+    int32_t x, y, w, h;
+} clip_t;
 
 /* Die Teile der Seite in der Reihenfolge, in der sie gezeichnet werden */
 enum { PAINT_BOX, PAINT_LINE, PAINT_IMAGE, PAINT_WIDGET };
 
 typedef struct {
     uint8_t kind;
+    uint16_t clip;                      /* Nummer des Ausschnitts plus 1, oder 0: keiner */
     int32_t index;
 } paint_t;
 
@@ -179,6 +201,9 @@ typedef struct {
     int box_count, box_cap;
     paint_t *paint;
     int paint_count, paint_cap;
+    clip_t *clips;
+    int clip_count, clip_cap;
+    uint16_t paint_clip;                /* für den Seitenaufbau: gilt für alles, was jetzt angehängt wird */
     int height;                         /* Höhe der ganzen Seite in Pixeln */
     int heading_y;                      /* Lage der ersten Hauptüberschrift oder -1 */
     bool rows;                          /* im Zeilenraster gesetzt (der einfache Seitenaufbau) */

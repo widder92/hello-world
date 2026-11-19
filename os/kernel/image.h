@@ -35,6 +35,13 @@ void image_free(image_t *image);
 image_t *image_scale(const image_t *source, int width, int height,
                      uint32_t background);
 
+/*
+ * Wie image_scale(), aber die Durchsichtigkeit bleibt erhalten (Ergebnis:
+ * 0xAARRGGBB, wenn die Quelle durchscheinende Pixel hat, sonst 0x00RRGGBB) -
+ * für Bilder, die erst beim Zeichnen über ihren Grund gelegt werden.
+ */
+image_t *image_resize(const image_t *source, int width, int height);
+
 /* Die einzelnen Formate (von image_decode benutzt) */
 image_t *png_decode(const uint8_t *data, size_t length, const char **error);
 image_t *jpeg_decode(const uint8_t *data, size_t length, const char **error);

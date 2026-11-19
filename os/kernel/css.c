@@ -29,7 +29,7 @@ enum { P_COLOR, P_BACKGROUND, P_BACKGROUND_COLOR, P_WEIGHT, P_STYLE, P_SIZE, P_A
        P_BORDER_LEFT_WIDTH, P_BORDER_TOP_STYLE, P_BORDER_RIGHT_STYLE, P_BORDER_BOTTOM_STYLE,
        P_BORDER_LEFT_STYLE, P_BORDER_TOP_COLOR, P_BORDER_RIGHT_COLOR, P_BORDER_BOTTOM_COLOR,
        P_BORDER_LEFT_COLOR, P_BREAK, P_WORD_BREAK, P_OPACITY, P_BACKGROUND_IMAGE, P_GRID_AREA,
-       P_GRID_ROW, P_MASK, P_CAPTION_SIDE, P_COUNT };
+       P_GRID_ROW, P_MASK, P_CAPTION_SIDE, P_CONTENT, P_BG_REPEAT, P_BG_POSITION, P_BG_SIZE, P_COUNT };
 
 /* Die Einzelangaben für Kästen: Jede hat ihren eigenen Rang (Kurzschreibweisen setzen mehrere) */
 enum { L_DISPLAY, L_POSITION, L_BOX_SIZING, L_WHITE_SPACE, L_VALIGN, L_TRANSFORM, L_OVERFLOW,
@@ -40,7 +40,7 @@ enum { L_DISPLAY, L_POSITION, L_BOX_SIZING, L_WHITE_SPACE, L_VALIGN, L_TRANSFORM
        L_HEIGHT, L_MIN_WIDTH, L_MAX_WIDTH, L_MIN_HEIGHT, L_MAX_HEIGHT, L_FONT_SIZE, L_LINE_HEIGHT,
        L_INDENT, L_RADIUS, L_GAP_ROW, L_GAP_COLUMN, L_BASIS, L_SPACING, L_GROW, L_SHRINK, L_ZINDEX,
        L_ORDER, L_GRID, L_GRID_ITEM, L_BREAK, L_OPACITY, L_BG_IMAGE, L_AREAS, L_GRID_AREA,
-       L_GRID_ROW, L_MASK, L_CAPTION, L_CLEAR_AFTER, L_COUNT };
+       L_GRID_ROW, L_MASK, L_CAPTION, L_BG_REPEAT, L_BG_POSITION, L_BG_SIZE, L_COUNT };
 
 static const struct {
     const char *name;
@@ -99,7 +99,9 @@ static const struct {
     { "mask-image", P_MASK }, { "-webkit-mask", P_MASK }, { "-webkit-mask-image", P_MASK },
     { "mask-size", P_MASK }, { "-webkit-mask-size", P_MASK }, { "mask-position", P_MASK },
     { "-webkit-mask-position", P_MASK }, { "mask-repeat", P_MASK }, { "-webkit-mask-repeat", P_MASK },
-    { "caption-side", P_CAPTION_SIDE },
+    { "caption-side", P_CAPTION_SIDE }, { "content", P_CONTENT },
+    { "background-repeat", P_BG_REPEAT }, { "background-position", P_BG_POSITION },
+    { "background-size", P_BG_SIZE },
 };
 
 enum { S_TAG, S_CLASS, S_ID, S_ROOT, S_ATTR };
@@ -129,7 +131,7 @@ typedef struct {
     uint32_t first_decl, decl_count;
     int32_t next;                       /* nächste Regel im selben Fach */
     bool ua;                            /* eine Grundregel des Browsers, keine der Seite */
-    bool after;                         /* gilt dem nachgestellten Scheinelement (::after) */
+    uint8_t pseudo;                     /* gilt einem Scheinelement: 1 ::before, 2 ::after */
 } rule_t;
 
 typedef struct {
@@ -503,6 +505,10 @@ typedef struct {
     uint64_t priority[P_COUNT];
     uint64_t box_priority[L_COUNT];
     bool boxes;                         /* auch die Angaben für Kästen und die Grundregeln auswerten */
+    uint8_t pseudo;                     /* gesucht sind die Regeln dieses Scheinelements (0: des Elements) */
+    const char *content;                /* der Wert von "content" */
+    size_t content_length;
+    uint64_t content_priority;
     css_style_t *style;
 } cascade_t;
 
@@ -1238,8 +1244,12 @@ static bool grid_template(const css_sheet_t *sheet, const char *text, size_t len
     return true;
 }
 
-/* Die erste Farbe in einem Farbverlauf ("linear-gradient(to right, #fff, #000)") */
-static bool gradient_color(const char *text, size_t length, uint32_t *rgb)
+/*
+ * Ein Farbverlauf ("linear-gradient(to right, #fff, #000)"): seine erste und
+ * letzte Farbe und ob er von links nach rechts läuft. Andere Verläufe
+ * (kreisförmig, wiederholt) liefern nur ihre erste Farbe.
+ */
+static bool gradient_color(const char *text, size_t length, uint32_t *rgb, uint32_t *last, bool *across)
 {
     size_t open = 0;
     while (open < length && text[open] != '(')
@@ -1251,6 +1261,13 @@ static bool gradient_color(const char *text, size_t length, uint32_t *rgb)
         gradient = gradient || word_is(text + i, 8, "gradient");
     if (!gradient)
         return false;
+    bool linear = false, found = false, swap = false;
+    for (size_t i = 0; i + 15 <= open; i++)
+        linear = linear || word_is(text + i, 15, "linear-gradient");
+    for (size_t i = 0; i + 9 <= open; i++)
+        linear = linear && !word_is(text + i, 9, "repeating");
+    *across = false;
+    bool first_part = true, heading = false;
     for (size_t i = open + 1; i < length;) {
         while (i < length && (space(text[i]) || text[i] == ','))
             i++;
@@ -1260,12 +1277,106 @@ static bool gradient_color(const char *text, size_t length, uint32_t *rgb)
             level += text[i] == '(' ? 1 : text[i] == ')' ? -1 : 0;
             i++;
         }
-        if (i > start && css_color(text + start, i - start, rgb))
-            return true;
+        size_t n = i - start;
+        uint32_t color;
+        if (n && css_color(text + start, n, &color)) {
+            if (!found)
+                *rgb = color;
+            *last = color;
+            found = true;
+            first_part = false;
+        } else if (n && first_part && !found) {
+            /* die Richtung: "to right", "to top left", "90deg" */
+            const char *unit, *q = text + start;
+            size_t unit_length;
+            int64_t value;
+            if (word_is(text + start, n, "to")) {
+                heading = true;
+            } else if (heading && (word_is(text + start, n, "right") || word_is(text + start, n, "left"))) {
+                *across = true;
+                swap = lower(text[start]) == 'l';
+            } else if (heading && word_is(text + start, n, "top")) {
+                swap = true;
+            } else if (number(&q, text + start + n, &value, &unit, &unit_length) && word_is(unit, unit_length, "deg")) {
+                int degrees = (int)(((value / 1000) % 360 + 360) % 360);
+                *across = (degrees >= 45 && degrees < 135) || (degrees >= 225 && degrees < 315);
+                swap = degrees < 45 || degrees >= 225;      /* 0 Grad: nach oben; 270: nach links */
+            }
+        }
+        if (i < length && text[i] == ',')
+            first_part = false;
         if (i < length && text[i] == ')')
             i++;
     }
-    return false;
+    if (!found)
+        return false;
+    if (!linear) {
+        *last = *rgb;
+        *across = false;
+    } else if (swap) {
+        uint32_t keep = *rgb;
+        *rgb = *last;
+        *last = keep;
+    }
+    return true;
+}
+
+/* Die Adresse in "url(...)": ihr Anfang im Text und ihre Länge; NULL, wenn keine dasteht */
+static const char *url_inside(const char *text, size_t length, size_t *n)
+{
+    for (size_t i = 0; i + 4 <= length; i++) {
+        if (lower(text[i]) != 'u' || lower(text[i + 1]) != 'r' || lower(text[i + 2]) != 'l' || text[i + 3] != '(')
+            continue;
+        size_t start = i + 4, end;
+        while (start < length && space(text[start]))
+            start++;
+        char quote = start < length && (text[start] == '"' || text[start] == '\'') ? text[start++] : 0;
+        end = start;
+        while (end < length && (quote ? text[end] != quote : text[end] != ')' && !space(text[end])))
+            end++;
+        if (end > start && end - start < 2000) {
+            *n = end - start;
+            return text + start;
+        }
+        return NULL;
+    }
+    return NULL;
+}
+
+/* Lage des Hintergrundbilds: Wörter oder Längen, erst waagerecht, dann senkrecht */
+static bool position_pair(const css_sheet_t *sheet, const char *const *pieces, const size_t *lengths, int count,
+                          css_len_t *x, css_len_t *y)
+{
+    css_len_t middle = { CSS_LEN_VALUE, 0, 50000, 0 };
+    bool has_x = false, has_y = false;
+    *x = *y = middle;
+    for (int i = 0; i < count && i < 2; i++) {
+        const char *t = pieces[i];
+        size_t n = lengths[i];
+        css_len_t v = { CSS_LEN_VALUE, 0, 0, 0 };
+        if (word_is(t, n, "left") || word_is(t, n, "right")) {
+            v.percent = lower(t[0]) == 'r' ? 100000 : 0;
+            *x = v;
+            has_x = true;
+        } else if (word_is(t, n, "top") || word_is(t, n, "bottom")) {
+            v.percent = lower(t[0]) == 'b' ? 100000 : 0;
+            *y = v;
+            has_y = true;
+        } else if (word_is(t, n, "center")) {
+            continue;
+        } else if (parse_len(sheet, t, n, LEN_NUMBER_PX, &v)) {
+            if (!has_x && i == 0) {
+                *x = v;
+                has_x = true;
+            } else if (!has_y) {
+                *y = v;
+                has_y = true;
+            }
+        } else {
+            return false;
+        }
+    }
+    return count > 0;
 }
 
 #define BOX_SET(id) (priority >= c->box_priority[id] ? (c->box_priority[id] = priority, true) : false)
@@ -1291,7 +1402,7 @@ static void border_parts(cascade_t *c, uint64_t priority, unsigned sides, const 
 
 /* Die neue Rangfolge: jede Einzelangabe für sich, Kurzschreibweisen setzen mehrere. */
 static void apply_box(const css_sheet_t *sheet, cascade_t *c, uint8_t property, const char *text,
-                      size_t length, uint64_t priority)
+                      size_t length, uint64_t priority, bool lasting)
 {
     css_style_t *s = c->style;
     css_len_t len, four[4];
@@ -1902,15 +2013,114 @@ static void apply_box(const css_sheet_t *sheet, cascade_t *c, uint8_t property, 
         break;
     }
     case P_BACKGROUND: case P_BACKGROUND_IMAGE: {
-        bool image = false;
-        for (const char *q = text; q + 4 <= end; q++)
-            image = image || (lower(q[0]) == 'u' && lower(q[1]) == 'r' && lower(q[2]) == 'l' && q[3] == '(');
-        bool gradient = gradient_color(text, length, &color);
-        if (!BOX_SET(L_BG_IMAGE))
-            break;
-        s->background_image = image || gradient ? CSS_YES : CSS_NO;
-        s->gradient_set = gradient;
-        s->gradient_color = gradient ? color : 0;
+        size_t url_length = 0;
+        const char *url = url_inside(text, length, &url_length);
+        uint32_t last = 0;
+        bool across = false;
+        bool gradient = gradient_color(text, length, &color, &last, &across);
+        if (BOX_SET(L_BG_IMAGE)) {
+            s->background_image = url || gradient ? CSS_YES : CSS_NO;
+            s->gradient_set = gradient;
+            s->gradient_color = gradient ? color : 0;
+            s->gradient_end = gradient ? last : 0;
+            s->gradient_across = gradient && across;
+            /* die Adresse nur, wenn ihr Text bestehen bleibt (nicht aus einer Variablen zusammengesetzt) */
+            s->background_url = url && lasting ? url : NULL;
+            s->background_url_length = url && lasting ? (uint16_t)url_length : 0;
+        }
+        if (property == P_BACKGROUND) {
+            /* die Kurzschreibweise nennt auch Wiederholung, Lage und - hinter "/" - Größe */
+            const char *spots[2], *sizes[2];
+            size_t spot_lengths[2], size_lengths[2];
+            int spot_count = 0, size_count = 0;
+            uint8_t repeat = CSS_REPEAT_BOTH;
+            bool after_slash = false;
+            while (next_piece(&p, end, '/', &piece, &n)) {
+                uint32_t rgb;
+                if (n == 1 && piece[0] == '/') {
+                    after_slash = true;
+                } else if (piece[n - 1] == ')' || css_color(piece, n, &rgb) || word_is(piece, n, "transparent")) {
+                    continue;           /* Bild, Verlauf oder Farbe */
+                } else if (word_is(piece, n, "no-repeat")) {
+                    repeat = CSS_REPEAT_NONE;
+                } else if (word_is(piece, n, "repeat-x") || word_is(piece, n, "repeat-y")) {
+                    repeat = lower(piece[7]) == 'x' ? CSS_REPEAT_X : CSS_REPEAT_Y;
+                } else if (word_is(piece, n, "repeat") || word_is(piece, n, "scroll") || word_is(piece, n, "fixed") ||
+                           word_is(piece, n, "none") || has_word_starting(piece, n, "border") ||
+                           has_word_starting(piece, n, "padding") || has_word_starting(piece, n, "content")) {
+                    continue;
+                } else if (after_slash && size_count < 2) {
+                    sizes[size_count] = piece;
+                    size_lengths[size_count++] = n;
+                } else if (!after_slash && spot_count < 2) {
+                    spots[spot_count] = piece;
+                    spot_lengths[spot_count++] = n;
+                }
+            }
+            if (BOX_SET(L_BG_REPEAT))
+                s->background_repeat = repeat;
+            if (BOX_SET(L_BG_POSITION)) {
+                css_len_t x = { CSS_LEN_VALUE, 0, 0, 0 }, y = x;
+                if (spot_count)
+                    position_pair(sheet, spots, spot_lengths, spot_count, &x, &y);
+                s->background_x = x;
+                s->background_y = y;
+            }
+            if (BOX_SET(L_BG_SIZE)) {
+                s->background_size = CSS_BG_AUTO;
+                if (size_count && word_is(sizes[0], size_lengths[0], "cover")) {
+                    s->background_size = CSS_BG_COVER;
+                } else if (size_count && word_is(sizes[0], size_lengths[0], "contain")) {
+                    s->background_size = CSS_BG_CONTAIN;
+                } else if (size_count) {
+                    s->background_size = CSS_BG_GIVEN;
+                    if (!parse_len(sheet, sizes[0], size_lengths[0], LEN_AUTO | LEN_NUMBER_PX, &s->background_w))
+                        s->background_w.kind = CSS_LEN_AUTO;
+                    if (size_count < 2 || !parse_len(sheet, sizes[1], size_lengths[1], LEN_AUTO | LEN_NUMBER_PX, &s->background_h))
+                        s->background_h.kind = CSS_LEN_AUTO;
+                }
+            }
+        }
+        break;
+    }
+    case P_BG_REPEAT:
+        if (BOX_SET(L_BG_REPEAT))
+            s->background_repeat = word_is(text, length, "no-repeat") ? CSS_REPEAT_NONE
+                                 : word_is(text, length, "repeat-x") ? CSS_REPEAT_X
+                                 : word_is(text, length, "repeat-y") ? CSS_REPEAT_Y : CSS_REPEAT_BOTH;
+        break;
+    case P_BG_POSITION: {
+        const char *spots[2];
+        size_t spot_lengths[2];
+        int count = 0;
+        while (count < 2 && next_piece(&p, end, ',', &piece, &n)) {
+            if (n == 1 && piece[0] == ',')
+                break;                  /* mehrere Bilder: Das erste zählt */
+            spots[count] = piece;
+            spot_lengths[count++] = n;
+        }
+        css_len_t x, y;
+        if (position_pair(sheet, spots, spot_lengths, count, &x, &y) && BOX_SET(L_BG_POSITION)) {
+            s->background_x = x;
+            s->background_y = y;
+        }
+        break;
+    }
+    case P_BG_SIZE: {
+        uint8_t kind = word_is(text, length, "cover") ? CSS_BG_COVER : word_is(text, length, "contain") ? CSS_BG_CONTAIN
+                     : word_is(text, length, "auto") ? CSS_BG_AUTO : CSS_BG_GIVEN;
+        css_len_t w = { CSS_LEN_AUTO, 0, 0, 0 }, h = w;
+        if (kind == CSS_BG_GIVEN) {
+            if (!next_piece(&p, end, ',', &piece, &n) || !parse_len(sheet, piece, n, LEN_AUTO | LEN_NUMBER_PX, &w))
+                break;
+            if (next_piece(&p, end, ',', &piece, &n) && !(n == 1 && piece[0] == ','))
+                parse_len(sheet, piece, n, LEN_AUTO | LEN_NUMBER_PX, &h);
+        }
+        if (BOX_SET(L_BG_SIZE)) {
+            s->background_size = kind;
+            s->background_w = w;
+            s->background_h = h;
+        }
         break;
     }
     default:
@@ -1926,6 +2136,15 @@ static void apply(const css_sheet_t *sheet, cascade_t *c, uint8_t property, cons
                  : property == P_CLIP_PATH ? P_CLIP : property;
     if (!c->boxes && (property >= P_POSITION || priority < c->priority[slot]))
         return;
+    if (property == P_CONTENT) {
+        /* der Inhalt eines Scheinelements: wird so festgehalten, wie er dasteht */
+        if (priority >= c->content_priority) {
+            c->content = raw;
+            c->content_length = raw_length;
+            c->content_priority = priority;
+        }
+        return;
+    }
 
     char resolved[VALUE_MAX];
     const char *text = raw;
@@ -1945,7 +2164,7 @@ static void apply(const css_sheet_t *sheet, cascade_t *c, uint8_t property, cons
         word_is(text, length, "initial") || word_is(text, length, "revert"))
         return;                         /* gilt wie nicht angegeben */
     if (c->boxes) {
-        apply_box(sheet, c, property, text, length, priority);
+        apply_box(sheet, c, property, text, length, priority, text != resolved);
         if (property >= P_POSITION || priority < c->priority[slot])
             return;
     }
@@ -2498,24 +2717,22 @@ static void match_bucket(const css_sheet_t *sheet, uint32_t bucket, const css_no
 {
     for (int32_t index = sheet->buckets[bucket]; index >= 0; index = sheet->rules[index].next) {
         const rule_t *rule = &sheet->rules[index];
-        if (((rule->ua || rule->after) && !c->boxes) || !selector_matches(rule, rule->compound_count - 1, node))
+        if (((rule->ua || rule->pseudo) && !c->boxes) || (rule->pseudo && c->pseudo && rule->pseudo != c->pseudo) ||
+            (!rule->pseudo && c->pseudo) || !selector_matches(rule, rule->compound_count - 1, node))
             continue;
+        if (rule->pseudo && !c->pseudo) {
+            /* nur vermerken: Das Element hat ein Scheinelement davor oder danach */
+            if (rule->pseudo == 1)
+                c->style->has_before = true;
+            else
+                c->style->has_after = true;
+            continue;
+        }
         for (uint32_t d = 0; d < rule->decl_count; d++) {
             const decl_t *decl = &sheet->decls[rule->first_decl + d];
             /* Regeln der Seite gehen den Grundregeln des Browsers immer vor */
             uint64_t priority = ((uint64_t)decl->important << 50) | ((uint64_t)!rule->ua << 48) |
                                 ((uint64_t)rule->specificity << 24) | (uint32_t)index;
-            if (rule->after) {
-                /* Regeln für "::after": nur "clear" wird festgehalten */
-                if (decl->property == P_CLEAR && priority + 1 >= c->box_priority[L_CLEAR_AFTER]) {
-                    const char *v = decl->value;
-                    size_t n = decl->length;
-                    c->box_priority[L_CLEAR_AFTER] = priority + 1;
-                    c->style->clear_after = word_is(v, n, "both") ? CSS_SIDE_BOTH : word_is(v, n, "left") ? CSS_SIDE_LEFT
-                                          : word_is(v, n, "right") ? CSS_SIDE_RIGHT : CSS_SIDE_NONE;
-                }
-                continue;
-            }
             apply(sheet, c, decl->property, decl->value, decl->length, priority + 1);
         }
     }
@@ -2603,13 +2820,14 @@ static void inline_found(void *ctx, uint8_t property, bool important, const char
 
 static void match(const css_sheet_t *sheet, const css_node_t *node, const char *hints,
                   size_t hints_length, const char *style, size_t style_length, css_style_t *out,
-                  bool boxes)
+                  bool boxes, int pseudo, const char **content, size_t *content_length)
 {
     cascade_t c;
     memset(&c, 0, sizeof(c));
     memset(out, 0, sizeof(*out));
     c.style = out;
     c.boxes = boxes;
+    c.pseudo = (uint8_t)pseudo;
 
     if (sheet && node) {
         if (node->id_len)
@@ -2635,19 +2853,29 @@ static void match(const css_sheet_t *sheet, const css_node_t *node, const char *
         inline_ctx_t ctx = { sheet, &c, false };
         each_declaration(style, style_length, inline_found, &ctx);
     }
+    if (content) {
+        *content = c.content;
+        *content_length = c.content_length;
+    }
 }
 
 void css_match(const css_sheet_t *sheet, const css_node_t *node, const char *style,
                size_t style_length, css_style_t *out)
 {
-    match(sheet, node, NULL, 0, style, style_length, out, false);
+    match(sheet, node, NULL, 0, style, style_length, out, false, 0, NULL, NULL);
+}
+
+void css_match_pseudo(const css_sheet_t *sheet, const css_node_t *node, int which, css_style_t *out,
+                      const char **content, size_t *content_length)
+{
+    match(sheet, node, NULL, 0, NULL, 0, out, true, which == 1 ? 1 : 2, content, content_length);
 }
 
 void css_match_full(const css_sheet_t *sheet, const css_node_t *node, const char *hints,
                     size_t hints_length, const char *style, size_t style_length,
                     css_style_t *out)
 {
-    match(sheet, node, hints, hints_length, style, style_length, out, true);
+    match(sheet, node, hints, hints_length, style, style_length, out, true, 0, NULL, NULL);
 }
 
 void css_set_viewport_height(css_sheet_t *sheet, int height)
@@ -2769,7 +2997,7 @@ static bool parse_attribute(const char *text, size_t length, size_t *at, simple_
  * vorkommt, das wir nicht prüfen können - die Regel entfällt dann.
  */
 static bool parse_selector(const char *text, size_t length, compound_t *out, int *count,
-                           uint32_t *specificity, bool *after)
+                           uint32_t *specificity, uint8_t *pseudo)
 {
     int ids = 0, classes = 0, tags = 0;
     bool child = false;
@@ -2822,9 +3050,10 @@ static bool parse_selector(const char *text, size_t length, compound_t *out, int
                     start = ++i;        /* "::after" */
                 while (i < length && name_char(text[i]))
                     i++;
-                if (after && word_is(text + start, i - start, "after") && i == length) {
-                    /* das nachgestellte Scheinelement: Von seinen Regeln zählt hier nur "clear" */
-                    *after = true;
+                if (pseudo && i == length && (word_is(text + start, i - start, "after") ||
+                                              word_is(text + start, i - start, "before"))) {
+                    /* ein Scheinelement vor oder nach dem Inhalt: Die Regel gilt ihm, nicht dem Element */
+                    *pseudo = lower(text[start]) == 'b' ? 1 : 2;
                     any = true;
                     continue;
                 }
@@ -3001,8 +3230,8 @@ static void add_rule(css_sheet_t *sheet, const char *selectors, size_t selectors
         compound_t compounds[COMPOUNDS_MAX];
         int count;
         uint32_t specificity;
-        bool after = false;
-        if (!n || !parse_selector(one, n, compounds, &count, &specificity, &after))
+        uint8_t pseudo = 0;
+        if (!n || !parse_selector(one, n, compounds, &count, &specificity, &pseudo))
             continue;
         rule_t *rules = grow(sheet->rules, sheet->rule_count, &sheet->rule_capacity,
                              sizeof(rule_t), RULES_MAX);
@@ -3020,7 +3249,7 @@ static void add_rule(css_sheet_t *sheet, const char *selectors, size_t selectors
         rule->first_decl = first;
         rule->decl_count = (uint32_t)ctx.count;
         rule->ua = sheet->adding_ua;
-        rule->after = after;
+        rule->pseudo = pseudo;
 
         /* Ins Fach des aussagekräftigsten Merkmals des letzten Glieds */
         const compound_t *subject = &copy[count - 1];
@@ -3062,34 +3291,64 @@ static bool media_applies(const css_sheet_t *sheet, const char *text, size_t len
             if (k >= n)
                 break;
             if (query[k] == '(') {
-                size_t close = k;
-                while (close < n && query[close] != ')')
-                    close++;
+                /* bis zur zugehörigen Klammer - der Wert kann selbst welche enthalten: calc(...) */
+                size_t close = k + 1;
+                for (int level = 1; close < n; close++) {
+                    level += query[close] == '(' ? 1 : query[close] == ')' ? -1 : 0;
+                    if (level == 0)
+                        break;
+                }
                 const char *feature = query + k + 1;
                 size_t feature_length = close - k - 1, name_length = 0;
-                while (name_length < feature_length && feature[name_length] != ':')
+                trim(&feature, &feature_length);
+                while (name_length < feature_length && feature[name_length] != ':' &&
+                       feature[name_length] != '<' && feature[name_length] != '>')
                     name_length++;
-                const char *value = feature + name_length + (name_length < feature_length);
-                const char *value_end = feature + feature_length;
-                const char *name = feature;
-                trim(&name, &name_length);
-                while (value < value_end && space(*value))
+                const char *name = feature, *value = feature + name_length;
+                size_t value_length = feature_length - name_length;
+                /* "name: wert" oder ein Vergleich wie "width >= 600px" */
+                int compare = 0;        /* 0: Doppelpunkt; sonst 1 <, 2 <=, 3 >, 4 >= */
+                if (value_length && *value == ':') {
                     value++;
-                int64_t amount;
-                const char *unit;
-                size_t unit_length;
-                bool min = word_is(name, name_length, "min-width");
-                bool max = word_is(name, name_length, "max-width");
-                if ((min || max) && number(&value, value_end, &amount, &unit, &unit_length)) {
-                    int64_t px = word_is(unit, unit_length, "px") ? amount / 1000
-                               : (word_is(unit, unit_length, "em") ||
-                                  word_is(unit, unit_length, "rem")) ? amount * 16 / 1000 : -1;
-                    if (px < 0)
-                        ok = false;
-                    else
-                        ok = min ? sheet->viewport >= px : sheet->viewport <= px;
+                    value_length--;
+                } else if (value_length) {
+                    compare = *value == '<' ? 1 : 3;
+                    value++;
+                    value_length--;
+                    if (value_length && *value == '=') {
+                        compare++;
+                        value++;
+                        value_length--;
+                    }
+                }
+                trim(&name, &name_length);
+                trim(&value, &value_length);
+                bool low = name_length > 4 && word_is(name, 4, "min-"), high = name_length > 4 && word_is(name, 4, "max-");
+                const char *what = low || high ? name + 4 : name;
+                size_t what_length = low || high ? name_length - 4 : name_length;
+                bool wide = word_is(what, what_length, "width"), tall = word_is(what, what_length, "height");
+                css_len_t amount;
+                if ((wide || tall) && value_length && parse_len(sheet, value, value_length, LEN_NUMBER_PX, &amount) &&
+                    amount.kind == CSS_LEN_VALUE) {
+                    /* em meint in solchen Bedingungen immer 16 Pixel */
+                    int64_t px = ((int64_t)amount.px + (int64_t)amount.em * 16) / 1000;
+                    int64_t have = wide ? sheet->viewport : sheet_height(sheet);
+                    ok = low || compare == 4 ? have >= px : high || compare == 2 ? have <= px
+                       : compare == 1 ? have < px : compare == 3 ? have > px : have == px;
+                } else if (word_is(name, name_length, "orientation")) {
+                    ok = word_is(value, value_length, "landscape") == (sheet->viewport >= sheet_height(sheet));
+                } else if (word_is(name, name_length, "prefers-color-scheme")) {
+                    ok = word_is(value, value_length, "light");
+                } else if (word_is(name, name_length, "prefers-reduced-motion")) {
+                    ok = word_is(value, value_length, "reduce");    /* hier bewegt sich ohnehin nichts */
+                } else if (word_is(name, name_length, "hover") || word_is(name, name_length, "any-hover")) {
+                    ok = word_is(value, value_length, "hover");
+                } else if (word_is(name, name_length, "pointer") || word_is(name, name_length, "any-pointer")) {
+                    ok = word_is(value, value_length, "fine");
+                } else if (word_is(name, name_length, "color") && !value_length) {
+                    ok = true;
                 } else {
-                    ok = false;         /* Druck, dunkles Design, Zeigergeräte ...: gilt nicht */
+                    ok = false;         /* Druck, Auflösung, was es sonst gibt: gilt nicht */
                 }
                 k = close + 1;
             } else {

@@ -225,6 +225,7 @@ bool page_add_paint(page_t *page, uint8_t kind, int index)
     if (!ENSURE(page, page->paint, page->paint_count, page->paint_cap))
         return false;
     page->paint[page->paint_count].kind = kind;
+    page->paint[page->paint_count].clip = page->paint_clip;
     page->paint[page->paint_count].index = index;
     page->paint_count++;
     return true;
@@ -376,6 +377,7 @@ void page_free(page_t *page)
     kfree(page->lines);
     kfree(page->boxes);
     kfree(page->paint);
+    kfree(page->clips);
     kfree(page->links);
     kfree(page->widgets);
     kfree(page->options);

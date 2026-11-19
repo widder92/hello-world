@@ -119,6 +119,7 @@ typedef struct {
     int width, height;                  /* Größe des Bildes selbst */
     image_t *bitmap;                    /* aufbewahrte Fassung (höchstens so groß) */
     image_t *shown;                     /* auf die zuletzt gezeigte Größe gebracht */
+    image_t *back;                      /* ... und auf die Größe als Hintergrund eines Kastens */
 } picture_t;
 
 typedef struct {
@@ -625,8 +626,8 @@ static const char start_page[] =
     "<input name=\"q\" size=\"44\"> <input type=\"submit\" value=\"Im Web suchen\"></form>"
     "<p>Die Suche geht an DuckDuckGo.</p>"
     "<h2>Was dieser Browser kann</h2>"
-    "<ul><li>Seiten so zeigen, wie sie gestaltet sind: mit Abständen, Rahmen, Hintergründen, "
-    "Spalten, Rastern, Tabellen und Bildern</li>"
+    "<ul><li>Seiten so zeigen, wie sie gestaltet sind: mit Abständen, Rahmen, Hintergründen "
+    "(auch Bildern und Verläufen), Spalten, Rastern, Tabellen und Bildern</li>"
     "<li>Formulare ausfüllen und absenden, auch Anmeldungen (Cookies bleiben, "
     "solange das Fenster offen ist)</li>"
     "<li>Verschlüsselte Verbindungen (https) mit Prüfung des Servers</li>"
@@ -637,7 +638,7 @@ static const char start_page[] =
     "<h2>Was er nicht kann</h2>"
     "<ul><li>Videos, Ton und gezeichnete Flächen (Canvas)</li>"
     "<li>Große Web-Anwendungen (Karten, Videoportale)</li>"
-    "<li>Hintergrundbilder, Schatten, Bewegung und Schriften, die eine Seite mitbringt</li>"
+    "<li>Schatten, Bewegung und Schriften, die eine Seite mitbringt (auch Symbolschriften)</li>"
     "<li>Dateien hochladen</li></ul>"
     "<h2>Bedienung</h2>"
     "<ul><li>Pfeiltasten, Bild auf/ab, Pos1/Ende: blättern</li>"
@@ -1160,6 +1161,7 @@ static void picture_release(browser_t *b, picture_t *pic)
         b->picture_bytes -= (size_t)pic->bitmap->width * (size_t)pic->bitmap->height * 4;
     image_free(pic->bitmap);
     image_free(pic->shown);
+    image_free(pic->back);
     kfree(pic->url);
 }
 
@@ -1255,8 +1257,8 @@ static image_t *picture_fetch(const char *url, int *width, int *height)
                 if (keep_h < 1)
                     keep_h = 1;
             }
-            /* verkleinert und mit dem Seitenhintergrund unterlegt aufbewahren */
-            result = image_scale(image, keep_w, keep_h, C_BACKGROUND);
+            /* verkleinert aufbewahren; durchsichtige Stellen bleiben durchsichtig */
+            result = image_resize(image, keep_w, keep_h);
             image_free(image);
         }
     }
@@ -2545,6 +2547,108 @@ static void draw_widget(const browser_t *b, surface_t *s, int index, int x, int 
 }
 
 /*
+ * Legt ein Bild mit der linken oberen Ecke bei (x, y) auf die Fläche - nur
+ * innerhalb von area und des Ausschnitts der Fläche; durchscheinende Stellen
+ * lassen durch, was darunter liegt.
+ */
+static void blit_image(surface_t *s, const image_t *im, int x, int y, rect_t area)
+{
+    rect_t r = rect_intersect(rect_intersect(rect_make(x, y, im->width, im->height), area), s->clip);
+    r = rect_intersect(r, rect_make(0, 0, s->width, s->height));
+    for (int yy = r.y; yy < r.y + r.h; yy++) {
+        const uint32_t *from = im->pixels + (size_t)(yy - y) * im->width + (r.x - x);
+        uint32_t *to = s->pixels + (size_t)yy * s->stride + r.x;
+        if (!im->alpha) {
+            memcpy(to, from, (size_t)r.w * sizeof(uint32_t));
+            continue;
+        }
+        for (int i = 0; i < r.w; i++) {
+            uint32_t p = from[i], a = p >> 24;
+            if (a == 255) {
+                to[i] = p & 0xFFFFFF;
+            } else if (a) {
+                uint32_t d = to[i], rest = 255 - a;
+                to[i] = (((((p >> 16) & 0xFF) * a + ((d >> 16) & 0xFF) * rest + 127) / 255) << 16) |
+                        (((((p >> 8) & 0xFF) * a + ((d >> 8) & 0xFF) * rest + 127) / 255) << 8) |
+                        (((p & 0xFF) * a + (d & 0xFF) * rest + 127) / 255);
+            }
+        }
+    }
+}
+
+/*
+ * Das Hintergrundbild eines Kastens: in der Größe und Lage, die die Seite
+ * will, bei Bedarf wiederholt - und nur innerhalb des Rahmens.
+ */
+static void draw_backdrop(browser_t *b, surface_t *s, const page_t *page, const box_t *box, int x, int y)
+{
+    if (box->picture == 0 || box->picture > page->image_count)
+        return;
+    uint64_t flags = irq_save();
+    picture_t *pic = picture_find(b, page->images[box->picture - 1].url);
+    image_t *bitmap = pic && pic->state == PIC_READY ? pic->bitmap : NULL;
+    irq_restore(flags);
+    if (!bitmap || pic->width <= 0 || pic->height <= 0)
+        return;
+    /* die Fläche innerhalb des Rahmens */
+    rect_t area = rect_make(x + box->border[3], y + box->border[0], box->w - box->border[1] - box->border[3],
+                            box->h - box->border[0] - box->border[2]);
+    if (area.w <= 0 || area.h <= 0)
+        return;
+    int w = pic->width, h = pic->height;
+    if (box->picture_size == PICTURE_COVER || box->picture_size == PICTURE_CONTAIN) {
+        /* füllend: so groß, dass die Fläche bedeckt ist; eingepasst: so groß, dass es ganz hineinpasst */
+        bool by_width = (int64_t)area.w * h >= (int64_t)area.h * w;
+        if (box->picture_size == PICTURE_CONTAIN)
+            by_width = !by_width;
+        if (by_width) {
+            h = (int)((int64_t)h * area.w / w);
+            w = area.w;
+        } else {
+            w = (int)((int64_t)w * area.h / h);
+            h = area.h;
+        }
+    } else if (box->picture_size == PICTURE_GIVEN) {
+        int gw = box->picture_w, gh = box->picture_h;
+        if (gw > 0 && gh > 0) {
+            w = gw;
+            h = gh;
+        } else if (gw > 0) {
+            h = (int)((int64_t)h * gw / w);
+            w = gw;
+        } else if (gh > 0) {
+            w = (int)((int64_t)w * gh / h);
+            h = gh;
+        }
+    }
+    if (w < 1 || h < 1 || w > 4096 || h > 4096)
+        return;
+    if (bitmap->width != w || bitmap->height != h) {
+        if (!pic->back || pic->back->width != w || pic->back->height != h) {
+            image_free(pic->back);
+            pic->back = image_resize(bitmap, w, h);
+        }
+        bitmap = pic->back;
+        if (!bitmap)
+            return;
+    }
+    int ox = area.x + box->picture_x + (area.w - w) * box->picture_px / 100;
+    int oy = area.y + box->picture_y + (area.h - h) * box->picture_py / 100;
+    bool across = box->picture_repeat & 1, down = box->picture_repeat & 2;
+    int first_x = across ? ox - ((ox - area.x + w - 1) / w) * w : ox;
+    int first_y = down ? oy - ((oy - area.y + h - 1) / h) * h : oy;
+    for (int ty = first_y; ty < area.y + area.h; ty += h) {
+        for (int tx = first_x; tx < area.x + area.w; tx += w) {
+            blit_image(s, bitmap, tx, ty, area);
+            if (!across)
+                break;
+        }
+        if (!down)
+            break;
+    }
+}
+
+/*
  * Zeichnet ein Bild der Seite an die Stelle (x, y) - oder, solange es fehlt,
  * den freigehaltenen Platz mit Ersatztext. Gezeichnet wird nur, was im
  * Ausschnitt der Seite liegt.
@@ -2565,23 +2669,12 @@ static void draw_picture(browser_t *b, surface_t *s, const page_image_t *image, 
             if (!pic->shown || pic->shown->width != image->width ||
                 pic->shown->height != image->height) {
                 image_free(pic->shown);
-                pic->shown = image_scale(bitmap, image->width, image->height, C_BACKGROUND);
+                pic->shown = image_resize(bitmap, image->width, image->height);
             }
             bitmap = pic->shown;
         }
         if (bitmap) {
-            int skip = x < 0 ? -x : 0;
-            int count = bitmap->width - skip;
-            if (x + skip + count > right)
-                count = right - x - skip;
-            for (int line = 0; line < bitmap->height && count > 0; line++) {
-                int ty = y + line;
-                if (ty < CONTENT_Y || ty >= CONTENT_Y + CONTENT_H || ty >= s->height)
-                    continue;
-                memcpy(s->pixels + (size_t)ty * s->stride + x + skip,
-                       bitmap->pixels + (size_t)line * bitmap->width + skip,
-                       (size_t)count * sizeof(uint32_t));
-            }
+            blit_image(s, bitmap, x, y, rect_make(0, CONTENT_Y, right, CONTENT_H));
             return;
         }
     }
@@ -2603,7 +2696,21 @@ static void draw_picture(browser_t *b, surface_t *s, const page_image_t *image, 
 static void draw_box(surface_t *s, const box_t *box, int x, int y)
 {
     int w = box->w, h = box->h;
-    if (box->background) {
+    if (box->background && box->gradient) {
+        /* Farbverlauf: von oben nach unten oder von links nach rechts */
+        color_t from = box->background & 0xFFFFFF, to = box->gradient & 0xFFFFFF;
+        if (box->gradient_side == 0) {
+            gfx_gradient(s, x, y, w, h, from, to);
+        } else {
+            for (int i = 0; i < w; i++) {
+                int a = w > 1 ? i * 255 / (w - 1) : 0;
+                color_t color = RGB((((from >> 16) & 0xFF) * (255 - a) + ((to >> 16) & 0xFF) * a) / 255,
+                                    (((from >> 8) & 0xFF) * (255 - a) + ((to >> 8) & 0xFF) * a) / 255,
+                                    ((from & 0xFF) * (255 - a) + (to & 0xFF) * a) / 255);
+                gfx_fill(s, x + i, y, 1, h, color);
+            }
+        }
+    } else if (box->background) {
         color_t color = box->background & 0xFFFFFF;
         int r = box->radius;
         if (r > w / 2)
@@ -2740,13 +2847,28 @@ static void draw_page(browser_t *b, surface_t *s)
     int top = b->scroll, bottom = b->scroll + CONTENT_H, left = page_left(page);
     if (!page->rows && page->background)        /* der Hintergrund, den die Seite sich gibt */
         gfx_fill(s, 0, CONTENT_Y, SCROLL_X - 2, CONTENT_H, page->background & 0xFFFFFF);
+    rect_t view = rect_make(0, CONTENT_Y, SCROLL_X - 2, CONTENT_H);
+    int active = 0;
     for (int i = 0; i < page->paint_count; i++) {
         const paint_t *item = &page->paint[i];
+        if (item->clip != active) {
+            /* was ein Kasten abschneidet, ist nur in seinem Ausschnitt zu sehen */
+            rect_t r = view;
+            active = item->clip;
+            if (active > 0 && active <= page->clip_count) {
+                const clip_t *c = &page->clips[active - 1];
+                r = rect_intersect(view, rect_make(left + c->x, CONTENT_Y + c->y - top, c->w, c->h));
+            }
+            gfx_set_clip(s, r);
+        }
         switch (item->kind) {
         case PAINT_BOX: {
             const box_t *box = &page->boxes[item->index];
-            if (box->y < bottom && box->y + box->h > top)
+            if (box->y < bottom && box->y + box->h > top) {
                 draw_box(s, box, left + box->x, CONTENT_Y + box->y - top);
+                if (box->picture)
+                    draw_backdrop(b, s, page, box, left + box->x, CONTENT_Y + box->y - top);
+            }
             break;
         }
         case PAINT_LINE: {
@@ -3581,6 +3703,12 @@ static void mouse_pressed(browser_t *b, int x, int y)
         b->address_focus = false;
         for (int i = page->paint_count - 1; i >= 0; i--) {
             const paint_t *item = &page->paint[i];
+            if (item->clip > 0 && item->clip <= page->clip_count) {
+                /* abgeschnitten und hier nicht zu sehen: zählt nicht */
+                const clip_t *c = &page->clips[item->clip - 1];
+                if (px < c->x || px >= c->x + c->w || py < c->y || py >= c->y + c->h)
+                    continue;
+            }
             if (item->kind == PAINT_WIDGET) {
                 const widget_t *w = &page->widgets[item->index];
                 if (w->h > 0 && px >= w->x && px < w->x + w->w && py >= w->y && py < w->y + w->h) {
