@@ -81,6 +81,7 @@ typedef struct style {
     bool caption_below;                 /* die Beschriftung steht unter der Tabelle */
     /* wird nicht vererbt */
     uint8_t display, position, float_side, clear, box_sizing, overflow, valign;
+    uint8_t clear_after;                /* der Kasten reicht bis unter das, was in ihm nebeneinander steht */
     bool background_set, z_set;
     uint32_t background;
     uint8_t border[4];                  /* Breite des Rahmens in Pixeln: oben, rechts, unten, links */
@@ -551,6 +552,7 @@ static void reset_box(style_t *st)
     st->position = CSS_POS_STATIC;
     st->float_side = CSS_SIDE_NONE;
     st->clear = CSS_SIDE_NONE;
+    st->clear_after = CSS_SIDE_NONE;
     st->box_sizing = CSS_BOX_CONTENT;
     st->overflow = CSS_OV_VISIBLE;
     st->valign = CSS_VA_BASELINE;
@@ -712,6 +714,7 @@ static style_t *compute_style(lay_t *L, const dom_node *e, const style_t *ps, bo
         st->float_side = cs.float_side;
     if (cs.has & CSS_CLEAR)
         st->clear = cs.clear;
+    st->clear_after = cs.clear_after;
     if (cs.box_sizing)
         st->box_sizing = cs.box_sizing;
     if (cs.overflow)
@@ -1062,6 +1065,16 @@ static void note_text(lay_t *L, lbox_t *parent, const dom_node *e, style_t *st, 
     own_text(L, parent, e, muted, text);
 }
 
+/* So breit wird ein Knopf: seine Beschriftung (in der Rasterschrift oder der der Seite) und Rand */
+static int button_width(const lay_t *L, const style_t *st, const char *label)
+{
+    if (!label)
+        label = "";
+    int plain = count_chars(label) * 8;
+    int styled = st->background_set ? text_width(L, st, label, strlen(label)) : 0;
+    return max_int(plain, styled) + (st->background_set ? 8 : 32);
+}
+
 /* <input>: je nach Art ein Feld, ein Knopf, ein Kästchen - oder nichts */
 static void build_input(lay_t *L, lbox_t *parent, const dom_node *e, style_t *st)
 {
@@ -1099,7 +1112,7 @@ static void build_input(lay_t *L, lbox_t *parent, const dom_node *e, style_t *st
         widget_t *w = &L->page->widgets[index];
         set_label(w, w->value && w->value[0] ? w->value : sends ? "Senden"
                      : same(type, "reset") ? "Zurücksetzen" : "Knopf");
-        replaced_box(L, parent, e, st, (count_chars(w->label ? w->label : "") + 4) * 8, 24)->widget = (int16_t)index;
+        replaced_box(L, parent, e, st, button_width(L, st, w->label), 24)->widget = (int16_t)index;
     } else if (same(type, "file")) {
         note_text(L, parent, e, st, "[Datei auswählen: hier nicht möglich]");
     } else {
@@ -1151,7 +1164,7 @@ static void build_button(lay_t *L, lbox_t *parent, const dom_node *e, style_t *s
     char *label = flat_text(e, 120);
     set_label(w, label && label[0] ? label : w->value && w->value[0] ? w->value : sends ? "Senden" : "Knopf");
     kfree(label);
-    replaced_box(L, parent, e, st, (count_chars(w->label ? w->label : "") + 4) * 8, 24)->widget = (int16_t)index;
+    replaced_box(L, parent, e, st, button_width(L, st, w->label), 24)->widget = (int16_t)index;
 }
 
 /* --- Bilder und was sich hier nicht zeigen lässt --------------------------------------------- */
@@ -1741,6 +1754,8 @@ static void replaced_size(lbox_t *b, int base, int *out_w, int *out_h)
             w = max_int(w, len_px(st->min_width, base) + (border_box ? 0 : extra_w));
         if (base >= 0)
             w = min_int(w, base);
+        if (len_fixed(st->min_height))
+            h = max_int(h, st->min_height.px + (border_box ? 0 : extra_h));
         w = max_int(w, 22);
         h = clamp(h, 17, 400);
         for (int i = 0; i < 4; i++) {
@@ -1937,6 +1952,7 @@ typedef struct {
     deco_t *decos;
     bool any;                           /* die Zeile hat Inhalt */
     bool space;                         /* vor dem nächsten Stück steht ein Leerraum */
+    bool space_glued;                   /* ... an dem die Zeile nicht umbrechen darf (nowrap) */
     bool first_line;
     const style_t *space_style;
     const dom_node *space_node;
@@ -2349,6 +2365,7 @@ static void inline_text(inl_t *I, const lbox_t *t)
                     p++;
                 if (I->any) {
                     I->space = true;
+                    I->space_glued = !wraps;
                     I->space_style = st;
                     I->space_node = t->node;
                 }
@@ -2384,7 +2401,7 @@ static void inline_text(inl_t *I, const lbox_t *t)
         while (p < end && ((uint8_t)*p & 0xC0) == 0x80 && n + 1 < sizeof(buf))
             buf[n++] = *p++;
         bool hyphen = n > 2 && buf[n - 1] == '-';
-        put_text(I, st, t->node, buf, n, wraps && (I->space || after_space));
+        put_text(I, st, t->node, buf, n, wraps && ((I->space && !I->space_glued) || after_space));
         after_space = hyphen;           /* ... das nächste Stück darf dann auf die nächste Zeile */
     }
 }
@@ -2447,8 +2464,10 @@ static void inline_float(inl_t *I, lbox_t *b)
         return;
     }
     /* neben der laufenden Zeile, wenn sie noch leer ist - sonst darunter */
-    int top = I->y + (I->any ? line_height_of(L, I->block->st) : 0);
-    float_place(I->fc, b, I->fx, I->fx + I->width, I->fy + top, &x, &y);
+    int top = I->fy + I->y + (I->any ? line_height_of(L, I->block->st) : 0);
+    if (b->st->clear != CSS_SIDE_NONE)
+        top = float_clear(I->fc, top, b->st->clear);
+    float_place(I->fc, b, I->fx, I->fx + I->width, top, &x, &y);
     b->x = I->ox + x - I->fx;
     b->y = I->oy + y - I->fy;
     if (!I->any) {
@@ -2710,8 +2729,10 @@ static int layout_flow(lay_t *L, lbox_t *b, int cw, floats_t *fc, int fx, int fy
         if (c->flags & F_FLOAT) {
             int w = fit_width(L, c, cw - c->margin[1] - c->margin[3], cw), x, y;
             layout_block(L, c, w, NULL, 0, 0);
-            int top = cursor + (at_start ? 0 : max_int(pending, 0));
-            float_place(fc, c, fx + cx, fx + cx + cw, fy + cy + top, &x, &y);
+            int top = fy + cy + cursor + (at_start ? 0 : max_int(pending, 0));
+            if (c->st->clear != CSS_SIDE_NONE)
+                top = float_clear(fc, top, c->st->clear);   /* unter den früheren Kästen dieser Seite */
+            float_place(fc, c, fx + cx, fx + cx + cw, top, &x, &y);
             c->x = x - fx;
             c->y = y - fy;
             continue;
@@ -2821,6 +2842,15 @@ static void layout_block(lay_t *L, lbox_t *b, int width, floats_t *fc, int fx, i
     else
         ch = layout_flow(L, b, cw, fc, fx, fy);
 
+    /* "clear" am Ende des Kastens (clearfix): Er reicht bis unter die Kästen daneben */
+    if (st->clear_after != CSS_SIDE_NONE && fc && b->inner == IN_FLOW) {
+        int top = fy + b->bor[0] + b->pad[0];
+        int below = float_clear(fc, top + ch, st->clear_after) - top;
+        if (below > ch) {
+            ch = below;
+            b->leak_bottom = 0;
+        }
+    }
     /* ein eigener Abschnitt schließt ein, was in ihm neben dem Text steht */
     if ((b->flags & F_ROOT) && fc) {
         for (int i = 0; i < fc->count; i++)
@@ -3580,6 +3610,25 @@ static int layout_table(lay_t *L, lbox_t *b, int cw)
         x[i] = at;
         at += width[i] + t->gap;
     }
+    int used = 0;
+    for (int i = 0; i < t->columns; i++)
+        used += width[i];
+    if (avail >= high) {
+        /* was beim Verteilen durch Runden übrig blieb, bekommt die letzte Spalte */
+        width[t->columns - 1] += avail - used;
+    } else if (avail > low) {
+        /* ... oder die Spalten, denen noch ein Pixel zur Wunschbreite fehlt */
+        for (int i = 0; i < t->columns && used < avail; i++) {
+            if (width[i] < t->high[i]) {
+                width[i]++;
+                used++;
+            }
+        }
+    }
+    for (int i = 0, at = t->edge; i < t->columns; i++) {
+        x[i] = at;
+        at += width[i] + t->gap;
+    }
 
     int *height = arena(L, (size_t)t->row_count * sizeof(int));
     int *row_y = arena(L, (size_t)t->row_count * sizeof(int));
@@ -3962,6 +4011,15 @@ static void emit_box(lay_t *L, lbox_t *b, int depth)
         w->y = b->ay;
         w->w = b->w;
         w->h = st->invisible ? 0 : b->h;
+        if ((w->kind == W_SUBMIT || w->kind == W_BUTTON) && st->background_set) {
+            /* ein Knopf mit eigenem Aussehen: Farben, Schrift und Ecken der Seite */
+            uint32_t color = text_color(L, st);
+            w->background = HTML_COLOR_SET | st->background;
+            w->color = color ? color : HTML_COLOR_SET | (L->opt->text->text_color & 0xFFFFFF);
+            w->size = st->size;
+            w->radius = st->radius == 255 ? (uint8_t)min_int(b->h / 2, 250) : st->radius;
+            w->bold = (st->text & STYLE_BOLD) != 0;
+        }
         if (w->h > 0)
             page_add_paint(page, PAINT_WIDGET, b->widget);
         return;

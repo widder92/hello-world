@@ -2,9 +2,10 @@
 
 Ein kleines, von Grund auf selbst geschriebenes Betriebssystem für PCs mit
 64-Bit-Prozessor (x86-64) und UEFI – mit grafischer Oberfläche samt Startmenü,
-Netzwerk, einem einfachen Browser, Texteditor, verschlüsselter Dateiübertragung
-(SFTP), signierten Updates und eingebautem Claude. Kein Linux, kein GRUB, keine
-fremde Bibliothek: rund 24 000 Zeilen C und etwas Assembler.
+Netzwerk, einem eigenen Browser (mit eigener JavaScript-Maschine), Texteditor,
+verschlüsselter Dateiübertragung (SFTP), signierten Updates und eingebautem
+Claude. Kein Linux, kein GRUB, keine fremde Bibliothek: rund 69 000 Zeilen C
+und etwas Assembler.
 
 ![HelloOS mit Terminal, Systemmonitor und Malprogramm](docs/screenshot.png)
 
@@ -340,21 +341,19 @@ Was dabei zu wissen ist:
 
 ## Browser
 
-![Der Browser mit der Bearbeitungsseite eines WordPress-Beitrags](docs/screenshot-browser.png)
+![Eine Seite mit Kopfleiste, Karten mit Rahmen und runden Ecken, einem Kasten neben dem Text und drei Karten nebeneinander](docs/screenshot-kastenmodell.png)
 
-Startmenü → „Browser", F8 oder `browse adresse` im Terminal. Es ist ein
-**einfacher Browser**: Er holt eine Seite samt ihren Stylesheets und setzt
-sie selbst, in echter Schrift: Überschriften, fett, kursiv, Listen, Tabellen
-mit Spalten, Links, Formulare und Bilder, mit den Farben, Hintergründen und
-Schriftgrößen der Seite. Bilder und Kästen, die laut Seite neben dem Text
-stehen sollen, stehen dort. Die Skripte der Seite (JavaScript) führt er aus,
-wenn du das einschaltest – siehe [JavaScript](#javascript).
+Startmenü → „Browser", F8 oder `browse adresse` im Terminal. Der Browser
+holt eine Seite samt ihren Stylesheets und setzt sie selbst – seit 0.24 so,
+wie ihre Gestaltung es verlangt: Jedes Element ist ein Kasten mit Außen- und
+Innenabstand, Rahmen und Hintergrund; Kästen stehen untereinander,
+nebeneinander oder frei platziert, und der Text läuft in Zeilen eigener Höhe
+in echter Schrift. Die Skripte der Seite (JavaScript) führt er aus, wenn du
+das einschaltest – siehe [JavaScript](#javascript).
 
 ![Bilder neben dem Text: Der Text fließt an den Kästen vorbei](docs/screenshot-daneben.png)
 
 ![Eine gestaltete Seite: dunkler Kopf mit Menü, Seitenhintergrund, farbige Überschriften, hinterlegter Kasten](docs/screenshot-gestaltung.png)
-
-![Eine Seite in echter Schrift: Überschriften, Fließtext, Listen](docs/screenshot-schrift.png)
 
 ![Eine Seite mit Bildern: Logo mit durchsichtigem Rand und ein großes Foto](docs/screenshot-bilder.png)
 
@@ -388,63 +387,58 @@ Was er kann:
   verlinktes Bild folgt dem Link. Was nicht geladen werden kann, erscheint
   als Ersatztext („[Bild: …]").
 - Das Mausrad blättert.
-- **Tabellen** stehen in Spalten: Der Browser misst jede Zelle aus, verteilt
-  die Breite (schmale Spalten wie Nummern und Preise zuerst, damit sie nicht
-  umbrechen) und setzt die Zellen einer Zeile nebeneinander; langer Text
-  bricht in seiner Zelle um. Er kennt Zellen über mehrere Spalten oder
-  Zeilen, Tabellenüberschriften, farbige Zellen und Zeilen sowie Tabellen in
-  Tabellen (bis drei Stufen); Links, Bilder und Formularfelder in Zellen
-  funktionieren. Rahmen und Linien zeichnet er nicht. Tabellen mit mehr als
-  40 Spalten oder 6000 Zellen erscheinen zeilenweise.
+- **Gestaltung der Seite (CSS):** Der Browser lädt die Stylesheets der
+  Seite (höchstens zwölf Dateien) und setzt sie nach dem **Kastenmodell**:
+  - **Abstände, Rahmen, Hintergründe:** `margin` (auch `auto` zum
+    Zentrieren; aneinanderstoßende Abstände verschmelzen wie üblich),
+    `padding`, `border` (durchgezogen, gestrichelt, gepunktet; je Seite
+    eigene Breite und Farbe), `border-radius`, Hintergrundfarben – auch für
+    Elemente mitten im Text.
+  - **Maße:** `width`, `height`, `min-`/`max-width`, `min-height`,
+    `box-sizing`; Längen in `px`, `em`, `rem`, `%`, `vw`/`vh`, `pt` und
+    Verwandten, mit `calc()`, `min()`, `max()`, `clamp()`.
+  - **Text:** Schriftgröße, fett, kursiv, Schreibmaschinenschrift,
+    `line-height`, `text-align`, `text-indent`, `text-transform`,
+    `white-space` (auch `nowrap` und `pre`), hoch- und tiefgestellt.
+    Geschützte Leerzeichen halten zusammen, was zusammengehört; überlange
+    Wörter werden zerteilt statt aus dem Fenster zu ragen.
+  - **Nebeneinander:** `float` und `clear` (der Text fließt an Kästen
+    vorbei), `display: flex` (Richtung, Umbruch, `gap`, `justify-content`,
+    `align-items`, `flex: 1`, `order`, `margin: auto`), `display: grid`
+    (feste Spalten, Anteile mit `fr`, `minmax`, `repeat`, „so viele, wie
+    passen", Kinder über mehrere Spalten oder Zeilen, benannte Flächen mit
+    `grid-template-areas`), `inline-block`.
+  - **Frei platziert:** `position: relative`, `absolute`, `fixed` (steht am
+    Seitenanfang bzw. -ende statt am Fenster), `z-index` für die Reihenfolge
+    übereinander.
+  - **Tabellen:** Spalten so breit wie nötig und so breit wie möglich,
+    Zellen über mehrere Spalten oder Zeilen, Rahmen (auch gemeinsame mit
+    `border-collapse`), Abstände, Beschriftung, Ausrichtung in der Zelle –
+    und die alten Attribute (`border`, `cellpadding`, `width`, `bgcolor`,
+    `align`).
+  - **Auswahl und Rangfolge:** Element, Klasse, Kennung, Verschachtelung,
+    Attribute (`a[href^="http"]`), `!important`, Variablen (`var(--name)`),
+    `@media` nach Fensterbreite, `@supports`. Jede Seite beginnt mit den
+    Grundregeln, die alle Browser mitbringen (Absätze haben Abstand,
+    Überschriften sind groß, Listen eingerückt). Regeln, die sich hier nicht
+    prüfen lassen (`:hover`, Nachbarn), bleiben aus.
+  - Knöpfe bekommen Farbe, Schrift und runde Ecken von der Seite;
+    Eingabefelder ihre Größe.
+  - Wäre Text auf seinem Hintergrund kaum zu lesen – etwa helle Schrift auf
+    einem Hintergrundbild, das nicht gezeigt wird –, nimmt der Browser eine
+    lesbare Farbe.
 
   ![Eine Tabelle mit Kopfzeile, rechtsbündigen Zahlen und Summenzeile](docs/screenshot-tabelle.png)
-- **Gestaltung der Seite (CSS), in Auszügen:** Der Browser lädt die
-  Stylesheets der Seite (höchstens zwölf Dateien) und wendet an, was er
-  kann: Textfarbe, Hintergrundfarbe von Seite, Abschnitten und Textstücken,
-  fett/kursiv, Schriftgröße (10 bis 28 Pixel), Ausrichtung links/Mitte/rechts,
-  Unterstreichung, ausgeblendete Elemente (`display: none`), Listen ohne
-  Punkte und Einträge nebeneinander. Er versteht Auswahlen nach Element,
-  Klasse und Kennung samt Verschachtelung, Rangfolge und `!important`,
-  Bedingungen an Attribute (`a[href^="http"]`, `figure[typeof~="x"]`),
-  Variablen (`var(--name)`) und `@media` nach Fensterbreite. Regeln, die er
-  nicht prüfen kann (`:hover`, Nachbarn), lässt er aus. Wäre Text auf seinem
-  Hintergrund kaum zu lesen – etwa helle Schrift auf einem Hintergrundbild,
-  das nicht gezeigt wird –, nimmt er die übliche Farbe.
-- **Kästen neben dem Text** (`float`, auch `align=` bei Bildern und
-  Tabellen): Der Browser setzt so ein Element für sich und stellt es an den
-  linken oder rechten Rand; der Text fließt daran vorbei und wird darunter
-  wieder breit. Platziert wird wie in anderen Browsern – in der laufenden
-  Zeile, wenn daneben Platz ist (mehrere Kästen einer Seite stehen dann
-  nebeneinander), sonst in der ersten Zeile darunter, in der es passt;
-  `clear` beginnt unter den Kästen. Die Breite kommt aus dem Stylesheet
-  (`width` in Pixeln oder Prozent), sonst vom Bild oder vom Inhalt. Kästen
-  dürfen selbst Kästen enthalten (zwei Stufen), schmale Tabellen stehen
-  neben einem Kasten, breite beginnen darunter. So stehen bei Wikipedia der
-  Infokasten und die Fotos rechts neben dem Artikel, und die
-  WordPress-Verwaltung zeigt ihr Menü links und den Inhalt rechts daneben.
-  Weil es Außenabstände hier nicht gibt, wird ein Kasten, dem nur wenig
-  Platz fehlt, schmaler gemacht statt nach unten geschoben. Ein Kasten in
-  voller Breite ohne Nachbarn ist ein gewöhnlicher Block. Schrift in Kästen
-  ist höchstens 18 Pixel groß; in Fenstern unter 280 Pixeln Breite steht
-  alles untereinander.
-- **Spalten und Raster** (`display: flex` und `grid`): Kinder eines solchen
-  Elements stehen nebeneinander – die Kopfzeile mit dem Namen links und dem
-  Menü rechts, der Inhalt neben der Seitenleiste, Karten in Dreierreihen.
-  Der Browser misst jedes Kind aus und verteilt die Breite: nach den
-  Wünschen der Seite (`width`, `flex-basis`, `flex: 1`), sonst nach dem
-  Inhalt; freier Platz geht dorthin, wo die Seite ihn haben will
-  (`justify-content`). Passt nicht alles in eine Reihe, entstehen mehrere
-  Reihen mit gleichen Spalten (`flex-wrap`, `grid-template-columns` mit
-  fester Zahl oder „so viele, wie passen"). `flex-direction: column` und
-  schmale Fenster (laut `@media`) bleiben untereinander. Große Überschriften
-  in Spalten behalten ihre Größe.
 
-  ![Spalten: Kopfzeile mit Menü, Inhalt neben der Seitenleiste, Kartenraster; dazu die Suche auf der Seite](docs/screenshot-spalten.png)
+  ![Spalten: Kopfzeile mit Menü, Inhalt neben der Seitenleiste, Kartenraster](docs/screenshot-spalten.png)
+- **Einfache Darstellung** (Strg+E): Zeigt eine Seite wie die Fassungen bis
+  0.23 – nur Text, Links, Bilder und Formulare im Zeilenraster, ohne
+  Abstände und Rahmen. Gedacht für Seiten, die mit ihrer Gestaltung hier
+  nicht zu lesen sind; noch einmal Strg+E schaltet zurück. Die Einstellung
+  bleibt gespeichert.
 - Was eine Seite nur für Vorleseprogramme bereithält (auf nichts beschnitten
-  oder weit nach oben aus dem Bild geschoben, etwa „Zum Inhalt springen"
-  oder zugeklappte Untermenüs), zeigt der Browser nicht. Nach links
-  Weggeschobenes bleibt sichtbar: So verstecken Seiten Bedienelemente, die
-  erst unter dem Mauszeiger erscheinen – hier wären sie sonst unerreichbar.
+  oder weit aus dem Bild geschoben, etwa „Zum Inhalt springen"), zeigt der
+  Browser nicht.
 
 - **HTML5:** Abschnitte (`header`, `nav`, `main`, `article`, `section`,
   `aside`, `footer`, `figure`), hervorgehobener Text (`mark`),
@@ -461,20 +455,26 @@ Was er **nicht** kann – und das ist bei heutigen Webseiten viel:
 
 - **JavaScript nur zum Teil** und nur, wenn eingeschaltet – was geht und was
   nicht, steht [unten](#javascript). Große Web-Anwendungen laufen nicht.
-- nur einen Teil der Anordnung: Kästen neben dem Text und Spalten ja (siehe
-  oben), aber keine frei platzierten Elemente, Abstände, Rahmen oder
-  Hintergrundbilder, keine Raster mit benannten Flächen und keine Spalten,
-  die über mehrere Reihen reichen. Was so angeordnet wäre, steht
-  untereinander. Gesetzt wird in der eingebauten Schrift (die
-  Schriftarten der Seite werden nicht geladen). Sie kennt lateinische, griechische und kyrillische Zeichen;
-  andere (etwa chinesische) erscheinen als leeres Kästchen. Schrift von
-  rechts nach links wird nicht gesetzt.
+- von der Gestaltung fehlt noch einiges: Hintergrundbilder und
+  Farbverläufe (ein Verlauf erscheint in seiner ersten Farbe), Schatten,
+  Durchsichtigkeit, Drehen und Bewegen (`transform`, Animationen),
+  Abschneiden von Überstehendem (`overflow`: Kästen werden stattdessen so
+  groß wie ihr Inhalt; es gibt keine eigenen Rollbereiche in der Seite),
+  Scheinelemente (`::before`, `::after` – außer dem üblichen Kniff zum
+  Einschließen von Kästen), Zustände wie `:hover`, mehrspaltiger Text.
+  Was am Fenster haften soll (`position: fixed`, `sticky`), steht fest in
+  der Seite. Eingabefelder sehen immer gleich aus. Gesetzt wird in der
+  eingebauten Schrift (die Schriftarten der Seite werden nicht geladen);
+  Schreibmaschinenschrift gibt es nur in einer Größe. Die Schrift kennt
+  lateinische, griechische und kyrillische Zeichen; andere (etwa
+  chinesische) erscheinen als leeres Kästchen. Schrift von rechts nach links
+  wird nicht gesetzt.
 - keine Bilder in den Formaten WebP, AVIF und SVG, keine Hintergrundbilder
   (die legt die Gestaltung fest), keine bewegten GIFs, keine Videos
 - kein Hochladen von Dateien, keine Tabs (mehrere Browserfenster gehen), kein
   Passwortspeicher; Cookies gelten nur, solange das Fenster offen ist
-- Lange Menüs einer Seite stehen als Liste am Seitenanfang. Der Browser
-  springt deshalb beim Laden zur Hauptüberschrift; mit Pos1 geht es nach oben.
+- Menüs, die erst unter dem Mauszeiger aufklappen, bleiben zu – oder stehen,
+  je nach Seite, offen da.
 
 ### JavaScript
 
@@ -644,6 +644,11 @@ weitere Plugins):
 
 Den klassischen Editor bekommt eine WordPress-Seite über das Plugin „Classic
 Editor" – das muss einmal von einem normalen Browser aus installiert werden.
+Seit 0.24 sieht die Verwaltung auch so aus, wie man sie kennt: dunkle Leiste
+oben, Menü links, Kästen mit Rahmen, die Anmeldeseite mit ihrem weißen Kasten
+in der Mitte (geprüft an der Anmeldeseite und einem gespeicherten Dashboard;
+die Symbole fehlen, weil sie aus einer Schriftdatei der Seite kämen).
+
 Unterm Strich: Nachsehen, Texte korrigieren, einfache Einstellungen – ja,
 mit eingeschaltetem JavaScript auch die kleinen Helfer der Verwaltung. Das
 WordPress, wie man es aus Chrome oder Firefox kennt – nein: Ein Browser, der
@@ -1013,8 +1018,9 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `kernel/crypto_*.c` | SHA-2, HMAC/HKDF, ChaCha20-Poly1305, AES-CTR, X25519, Ed25519, RSA, ECDSA, ECDH |
 | `kernel/x509.c`, `kernel/tls_roots.*` | Zertifikate lesen und prüfen, eingebaute Wurzelzertifikate |
 | `kernel/tls.c`, `kernel/http.c`, `kernel/url.c` | TLS 1.3, HTTP-Client, Web-Adressen |
-| `kernel/html.c`, `kernel/browser.c` | HTML zerlegen und als Text setzen; das Browser-Fenster |
-| `kernel/css.c` | Stylesheets lesen und auf Elemente anwenden |
+| `kernel/layout.c` | der Seitenaufbau mit Kastenmodell: aus dem Abbild der Seite und ihren Stylesheets werden Kästen, Zeilen, Bilder und Felder mit ihrer Lage |
+| `kernel/html.c`, `kernel/browser.c` | die einfache Darstellung im Zeilenraster (und was beide Seitenaufbauten teilen); das Browser-Fenster |
+| `kernel/css.c` | Stylesheets lesen und auf Elemente anwenden; die Grundregeln des Browsers |
 | `kernel/js_*.c`, `kernel/js.h`, `kernel/jslib.js` | die JavaScript-Maschine: Quelltext lesen (`js_parse.c`), ausführen (`js_run.c`), Werte und Speicherbereinigung (`js_core.c`), Zahlen (`js_num.c`), eingebaute Objekte (`js_lib*.c` und – in JavaScript selbst geschrieben – `jslib.js`), Symbole und Iteratoren (`js_sym.c`), `Map`/`Set` (`js_coll.c`), Generatoren und `async` (`js_co.c`), `Proxy`/`Reflect` (`js_proxy.c`), Module (`js_module.c`), reguläre Ausdrücke (`js_regex.c`), typisierte Felder (`js_typed.c`) |
 | `kernel/dom.c` | das veränderbare Abbild einer Seite (DOM): Baum lesen, umbauen, wieder zu Quelltext machen |
 | `kernel/dom_js.c`, `kernel/domlib.js`, `kernel/script.h` | Skripte einer Seite: Verbindung von Abbild und JavaScript-Maschine; `window`, `document` und die Elemente, zum großen Teil selbst in JavaScript geschrieben |
@@ -1045,7 +1051,10 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `tests/script_test.c` | Skripte von Webseiten prüfen: Abbild, Ereignisse, Laden, Zeitgeber, Nachladen, Grenzen, beschädigte Seiten |
 | `tests/hid_test.c` | Auswertung der HID-Berichte prüfen (Mäuse, Tastaturen, Funkempfänger) |
 | `tests/image_test.c`, `tests/image_test.py` | Bild-Dekoder gegen eine Referenz prüfen, auch mit beschädigten Dateien |
-| `tests/css_test.c` | Stylesheets prüfen: Auswahlen (auch nach Attributen), Rangfolge, Farben, Variablen, `@media`, Breiten, beschädigte Eingaben |
+| `tests/css_test.c` | Stylesheets prüfen: Auswahlen (auch nach Attributen), Rangfolge, Farben, Variablen, `@media`, Breiten, Abstände, Rahmen, Raster, Längen mit `calc()`, beschädigte Eingaben |
+| `tests/layout_test.c` | den Seitenaufbau mit Kastenmodell prüfen: kleine Seiten setzen und nachmessen, wo Kästen und Zeilen stehen; dazu tausende beschädigte Seiten |
+| `tests/layout_view.c` | Werkzeug: setzt eine HTML-Datei auf dem Entwicklungsrechner und schreibt sie als Bild |
+| `tests/http_test.c` | den HTTP-Client prüfen, mit einem ausgedachten Netz: Anfragen, Antworten, Weiterleitungen, die Sperre fürs Heimnetz |
 | `tests/font_test.c`, `tests/font_test.py` | Schriftrenderer Zeichen für Zeichen gegen FreeType prüfen, auch mit beschädigten Schriftdateien |
 
 ## Grenzen und Ideen zum Weiterbauen
@@ -1063,7 +1072,7 @@ gehalten. Naheliegende nächste Schritte:
 - User-Modus (Ring 3) mit Systemaufrufen und getrennten Adressräumen
 - Programme aus Dateien laden (ELF), mehrere Prozessorkerne
 - Symbole auf dem Desktop, ein Dateimanager, Fenster an den Kanten ziehen und minimieren
-- im Browser: Abstände und Rahmen (auch Tabellenlinien), frei platzierte Elemente, Raster mit benannten Flächen, WebP- und SVG-Bilder, Hintergrundbilder, Tabs
+- im Browser: Hintergrundbilder und Farbverläufe, Abschneiden und Rollbereiche (`overflow`), Scheinelemente (`::before`, `::after`), Zustände (`:hover`), Schatten; WebP- und SVG-Bilder; Tabs
 - JavaScript: Zeichenflächen (Canvas); Maße und Positionen der Elemente; eine Schutzwand zwischen Skripten und System (dafür braucht es den User-Modus)
 - echte Schrift auch in Terminal, Editor und Eingabefeldern; Hinting für schärfere kleine Schrift
 

@@ -40,7 +40,7 @@ enum { L_DISPLAY, L_POSITION, L_BOX_SIZING, L_WHITE_SPACE, L_VALIGN, L_TRANSFORM
        L_HEIGHT, L_MIN_WIDTH, L_MAX_WIDTH, L_MIN_HEIGHT, L_MAX_HEIGHT, L_FONT_SIZE, L_LINE_HEIGHT,
        L_INDENT, L_RADIUS, L_GAP_ROW, L_GAP_COLUMN, L_BASIS, L_SPACING, L_GROW, L_SHRINK, L_ZINDEX,
        L_ORDER, L_GRID, L_GRID_ITEM, L_BREAK, L_OPACITY, L_BG_IMAGE, L_AREAS, L_GRID_AREA,
-       L_GRID_ROW, L_MASK, L_CAPTION, L_COUNT };
+       L_GRID_ROW, L_MASK, L_CAPTION, L_CLEAR_AFTER, L_COUNT };
 
 static const struct {
     const char *name;
@@ -129,6 +129,7 @@ typedef struct {
     uint32_t first_decl, decl_count;
     int32_t next;                       /* nächste Regel im selben Fach */
     bool ua;                            /* eine Grundregel des Browsers, keine der Seite */
+    bool after;                         /* gilt dem nachgestellten Scheinelement (::after) */
 } rule_t;
 
 typedef struct {
@@ -2497,13 +2498,24 @@ static void match_bucket(const css_sheet_t *sheet, uint32_t bucket, const css_no
 {
     for (int32_t index = sheet->buckets[bucket]; index >= 0; index = sheet->rules[index].next) {
         const rule_t *rule = &sheet->rules[index];
-        if ((rule->ua && !c->boxes) || !selector_matches(rule, rule->compound_count - 1, node))
+        if (((rule->ua || rule->after) && !c->boxes) || !selector_matches(rule, rule->compound_count - 1, node))
             continue;
         for (uint32_t d = 0; d < rule->decl_count; d++) {
             const decl_t *decl = &sheet->decls[rule->first_decl + d];
             /* Regeln der Seite gehen den Grundregeln des Browsers immer vor */
             uint64_t priority = ((uint64_t)decl->important << 50) | ((uint64_t)!rule->ua << 48) |
                                 ((uint64_t)rule->specificity << 24) | (uint32_t)index;
+            if (rule->after) {
+                /* Regeln für "::after": nur "clear" wird festgehalten */
+                if (decl->property == P_CLEAR && priority + 1 >= c->box_priority[L_CLEAR_AFTER]) {
+                    const char *v = decl->value;
+                    size_t n = decl->length;
+                    c->box_priority[L_CLEAR_AFTER] = priority + 1;
+                    c->style->clear_after = word_is(v, n, "both") ? CSS_SIDE_BOTH : word_is(v, n, "left") ? CSS_SIDE_LEFT
+                                          : word_is(v, n, "right") ? CSS_SIDE_RIGHT : CSS_SIDE_NONE;
+                }
+                continue;
+            }
             apply(sheet, c, decl->property, decl->value, decl->length, priority + 1);
         }
     }
@@ -2757,7 +2769,7 @@ static bool parse_attribute(const char *text, size_t length, size_t *at, simple_
  * vorkommt, das wir nicht prüfen können - die Regel entfällt dann.
  */
 static bool parse_selector(const char *text, size_t length, compound_t *out, int *count,
-                           uint32_t *specificity)
+                           uint32_t *specificity, bool *after)
 {
     int ids = 0, classes = 0, tags = 0;
     bool child = false;
@@ -2806,8 +2818,16 @@ static bool parse_selector(const char *text, size_t length, compound_t *out, int
             } else if (text[i] == ':') {
                 /* nur ":root" lässt sich ohne Wissen über Zustände prüfen */
                 size_t start = ++i;
+                if (i < length && text[i] == ':')
+                    start = ++i;        /* "::after" */
                 while (i < length && name_char(text[i]))
                     i++;
+                if (after && word_is(text + start, i - start, "after") && i == length) {
+                    /* das nachgestellte Scheinelement: Von seinen Regeln zählt hier nur "clear" */
+                    *after = true;
+                    any = true;
+                    continue;
+                }
                 if (word_is(text + start, i - start, "not") && i < length && text[i] == '(') {
                     /*
                      * ":not(:focus)" und Ähnliches trifft immer zu: Hier hat
@@ -2981,7 +3001,8 @@ static void add_rule(css_sheet_t *sheet, const char *selectors, size_t selectors
         compound_t compounds[COMPOUNDS_MAX];
         int count;
         uint32_t specificity;
-        if (!n || !parse_selector(one, n, compounds, &count, &specificity))
+        bool after = false;
+        if (!n || !parse_selector(one, n, compounds, &count, &specificity, &after))
             continue;
         rule_t *rules = grow(sheet->rules, sheet->rule_count, &sheet->rule_capacity,
                              sizeof(rule_t), RULES_MAX);
@@ -2999,6 +3020,7 @@ static void add_rule(css_sheet_t *sheet, const char *selectors, size_t selectors
         rule->first_decl = first;
         rule->decl_count = (uint32_t)ctx.count;
         rule->ua = sheet->adding_ua;
+        rule->after = after;
 
         /* Ins Fach des aussagekräftigsten Merkmals des letzten Glieds */
         const compound_t *subject = &copy[count - 1];
@@ -3350,7 +3372,7 @@ css_selector_t *css_selector_parse(const char *text, size_t length)
         compound_t compounds[COMPOUNDS_MAX];
         int count;
         uint32_t specificity;
-        if (!n || sel->count >= 16 || !parse_selector(one, n, compounds, &count, &specificity)) {
+        if (!n || sel->count >= 16 || !parse_selector(one, n, compounds, &count, &specificity, NULL)) {
             css_selector_free(sel);
             return NULL;
         }

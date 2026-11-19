@@ -74,6 +74,13 @@ typedef struct {
     int width;                          /* Breite auf dem Bildschirm, in Zeichen */
     int line, column;                   /* Platz auf der Seite; line -1: unsichtbar */
     int x, y, w, h;                     /* Lage in Pixeln; h 0: unsichtbar */
+    /*
+     * Knöpfe, denen die Seite ein Aussehen gibt: Hintergrund und Schriftfarbe
+     * (HTML_COLOR_SET plus Farbe; 0: das übliche Aussehen), Schriftgröße, runde Ecken
+     */
+    uint32_t background, color;
+    uint8_t size, radius;
+    bool bold;
     uint32_t node;                      /* Nummer des Elements laut data-hx, oder 0 */
 } widget_t;
 

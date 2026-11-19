@@ -614,16 +614,19 @@ static void marks_list(strbuf_t *out, bool removable)
 
 /* --- Seiten holen (Helfer-Task) ---------------------------------------------------------------- */
 
+/* Der Rahmen der eingebauten Seiten: eine Spalte in der Mitte, etwas Luft zwischen den Zeilen */
+#define PAGE_BODY "<body style=\"max-width:860px;margin:14px auto;padding:0 22px;line-height:1.45\">"
+
 static const char start_page[] =
-    "<title>Startseite</title>"
+    "<title>Startseite</title>" PAGE_BODY
     "<h1>HelloOS-Browser</h1>"
     "<p>Gib oben eine Adresse ein (Strg+L) und drücke Enter - oder suche hier:</p>"
     "<form action=\"https://html.duckduckgo.com/html/\" method=\"get\">"
     "<input name=\"q\" size=\"44\"> <input type=\"submit\" value=\"Im Web suchen\"></form>"
     "<p>Die Suche geht an DuckDuckGo.</p>"
     "<h2>Was dieser Browser kann</h2>"
-    "<ul><li>Seiten mit Schriften, Farben, Bildern, Tabellen, Spalten und Kästen neben dem "
-    "Text anzeigen</li>"
+    "<ul><li>Seiten so zeigen, wie sie gestaltet sind: mit Abständen, Rahmen, Hintergründen, "
+    "Spalten, Rastern, Tabellen und Bildern</li>"
     "<li>Formulare ausfüllen und absenden, auch Anmeldungen (Cookies bleiben, "
     "solange das Fenster offen ist)</li>"
     "<li>Verschlüsselte Verbindungen (https) mit Prüfung des Servers</li>"
@@ -634,7 +637,7 @@ static const char start_page[] =
     "<h2>Was er nicht kann</h2>"
     "<ul><li>Videos, Ton und gezeichnete Flächen (Canvas)</li>"
     "<li>Große Web-Anwendungen (Karten, Videoportale)</li>"
-    "<li>Abstände, Rahmen und frei platzierte Elemente einer Seite</li>"
+    "<li>Hintergrundbilder, Schatten, Bewegung und Schriften, die eine Seite mitbringt</li>"
     "<li>Dateien hochladen</li></ul>"
     "<h2>Bedienung</h2>"
     "<ul><li>Pfeiltasten, Bild auf/ab, Pos1/Ende: blättern</li>"
@@ -642,7 +645,9 @@ static const char start_page[] =
     "<li>Rücktaste oder Alt+Pfeil links: zurück; Alt+Pfeil rechts: vor; Strg+R: neu laden</li>"
     "<li>Strg+F: auf der Seite suchen; Strg+D: Lesezeichen setzen oder entfernen; "
     "Strg+B: Lesezeichen zeigen</li>"
-    "<li>Strg und +, - oder 0: Schrift größer, kleiner, wie üblich; Strg+U: Quelltext der Seite</li></ul>";
+    "<li>Strg und +, - oder 0: Schrift größer, kleiner, wie üblich; Strg+U: Quelltext der Seite</li>"
+    "<li>Strg+E: einfache Darstellung - nur Text, Links, Bilder und Formulare, falls eine Seite "
+    "sonst nicht zu lesen ist (noch einmal Strg+E schaltet zurück)</li></ul>";
 
 /*
  * Eingebaute Seiten: Start, Lesezeichen, Verlauf. Liefert ihren Quelltext
@@ -666,12 +671,12 @@ static char *internal_page(browser_t *b, const char *url, size_t *len)
             marks_save();
             marks_unlock();
         }
-        sb_append(&out, "<title>Lesezeichen</title><h1>Lesezeichen</h1>");
+        sb_append(&out, "<title>Lesezeichen</title>" PAGE_BODY "<h1>Lesezeichen</h1>");
         marks_list(&out, true);
         sb_append(&out, "<p><a href=\"" START_PAGE "\">Startseite</a> &ndash; "
                         "<a href=\"" HISTORY_PAGE "\">Verlauf dieses Fensters</a></p>");
     } else if (strcmp(url, HISTORY_PAGE) == 0) {
-        sb_append(&out, "<title>Verlauf</title><h1>Verlauf dieses Fensters</h1>");
+        sb_append(&out, "<title>Verlauf</title>" PAGE_BODY "<h1>Verlauf dieses Fensters</h1>");
         if (b->history_count == 0)
             sb_append(&out, "<p>Noch nichts besucht.</p>");
         else
@@ -2008,7 +2013,11 @@ static void take_incoming(browser_t *b)
     set_address(b, strcmp(b->url, START_PAGE) == 0 ? "" : b->url);
 
     /* Steht die Hauptüberschrift weit unten (lange Menüs davor), dort beginnen. */
-    int heading = b->page->heading_y;
+    /*
+     * Die einfache Darstellung beginnt bei der Hauptüberschrift: Davor stehen
+     * dort oft lange Menüs. Mit Kastenmodell beginnt die Seite oben, wie überall.
+     */
+    int heading = b->page->rows ? b->page->heading_y : -1;
     b->scroll = heading > CONTENT_H / 2 ? heading - ROW_H : 0;
     if (b->scroll > 0 && !b->status[0])
         set_status(b, false, "Zum Seitenanfang mit Pos1 - dort stehen Menüs und Links");
@@ -2444,6 +2453,8 @@ static void draw_clipped(surface_t *s, int x, int y, const char *text, int colum
     gfx_text(s, x, y, shown, color, false);
 }
 
+static void draw_box(surface_t *s, const box_t *box, int x, int y);
+
 static void draw_widget(const browser_t *b, surface_t *s, int index, int x, int y)
 {
     const page_t *page = b->page;
@@ -2501,6 +2512,29 @@ static void draw_widget(const browser_t *b, surface_t *s, int index, int x, int 
             gfx_fill(s, x + 7, y + 5, 7, 7, w->kind == W_RADIO ? C_FOCUS : C_TEXT);
         break;
     case W_SUBMIT: case W_BUTTON:
+        if (w->background && font_available()) {
+            /* ein Knopf, dem die Seite sein Aussehen gibt */
+            box_t box;
+            const char *label = w->label ? w->label : "";
+            int size = w->size ? w->size : TEXT_SIZE, ascent, descent, line;
+            memset(&box, 0, sizeof(box));
+            box.w = width;
+            box.h = high;
+            box.background = w->background;
+            box.radius = w->radius;
+            if (focused) {
+                for (int i = 0; i < 4; i++) {
+                    box.border[i] = 2;
+                    box.border_color[i] = C_FOCUS;
+                }
+            }
+            draw_box(s, &box, x, box_y);
+            font_metrics(size, &ascent, &descent, &line);
+            int wide = font_width(label, strlen(label), size, w->bold ? FONT_BOLD : 0);
+            font_draw(s, x + (width - wide) / 2, box_y + (high + ascent - descent) / 2, label, strlen(label),
+                      size, w->bold ? FONT_BOLD : 0, w->color & 0xFFFFFF);
+            break;
+        }
         gfx_fill(s, x, box_y, width, high, focused ? C_FOCUS : C_BUTTON);
         draw_clipped(s, x + 2 * FONT_W, y, w->label ? w->label : "", cells - 4,
                      C_BUTTON_TXT, false);

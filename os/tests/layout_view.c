@@ -259,6 +259,13 @@ static void draw_page(const page_t *page)
                     fill(w->x + 7, w->y + 6, 7, 7, 0x222630);
                 continue;
             }
+            if (button && w->background) {
+                fill(w->x, w->y, w->w, w->h, w->background & 0xFFFFFF);
+                int wide = text_width(NULL, text ? text : "", strlen(text ? text : ""), w->bold ? STYLE_BOLD : 0, w->size);
+                draw_text(w->x + (w->w - wide) / 2, w->y + (w->h + w->size * 7 / 10) / 2, text ? text : "",
+                          strlen(text ? text : ""), w->bold ? STYLE_BOLD : 0, w->size, w->color & 0xFFFFFF);
+                continue;
+            }
             fill(w->x, w->y, w->w, w->h, button ? 0x3C465C : 0xA0A4AC);
             if (!button)
                 fill(w->x + 1, w->y + 1, w->w - 2, w->h - 2, 0xFFFFFF);

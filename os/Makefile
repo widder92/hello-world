@@ -179,6 +179,10 @@ check: | $(BUILD)
 	cc -O1 -g -fsanitize=address,undefined -Wall -Wextra -o $(BUILD)/dom_test \
 	    tests/dom_test.c kernel/dom.c kernel/html.c kernel/css.c kernel/url.c
 	$(BUILD)/dom_test
+	cc -O1 -g -fsanitize=address,undefined -fno-math-errno -Wall -Wextra -Wno-builtin-declaration-mismatch \
+	    -o $(BUILD)/layout_test tests/layout_test.c kernel/layout.c kernel/dom.c kernel/html.c \
+	    kernel/css.c kernel/url.c
+	$(BUILD)/layout_test
 	$(PYTHON) tools/embed.py kernel/domlib.js domlib_js $(BUILD)/domlib.inc
 	cc -O1 -g -fsanitize=address,undefined -fno-math-errno -Wall -Wextra -I$(BUILD) \
 	    -o $(BUILD)/script_test tests/script_test.c kernel/dom_js.c kernel/dom.c \

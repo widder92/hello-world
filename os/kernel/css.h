@@ -177,6 +177,12 @@ typedef struct {
     uint16_t grid_area;
     uint8_t masked;                     /* CSS_NO/CSS_YES: Der Hintergrund scheint nur durch eine Maske (Symbole) */
     uint8_t caption_below;              /* CSS_NO/CSS_YES: Beschriftung einer Tabelle darunter (caption-side) */
+    /*
+     * "clear" an einem nachgestellten Scheinelement (::after) - der übliche
+     * Kniff, damit ein Kasten einschließt, was in ihm nebeneinander steht:
+     * CSS_SIDE_LEFT/RIGHT/BOTH, oder 0
+     */
+    uint8_t clear_after;
 } css_style_t;
 
 /* viewport_width: Breite der Anzeige in Pixeln, für @media-Bedingungen */
