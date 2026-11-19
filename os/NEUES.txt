@@ -1,3 +1,8 @@
+HelloOS 0.22
+- Browser: Module. Skripte, die als Module geladen werden (script type="module", import/export, import() zur Laufzeit, Übersetzungstabellen), laufen jetzt - so liefern viele aktuelle Seiten ihre Skripte aus.
+- Browser: Nachfordern. Fügt eine Seite nach dem Laden weitere Skriptdateien ein, werden sie geholt und ausgeführt; fügt ein Skript Stylesheets ein oder ändert sie, wird die Gestaltung der Seite neu zusammengesetzt.
+- Noch nicht möglich: Daten von einem anderen Server als dem der Seite nachladen (fetch, XMLHttpRequest über Servergrenzen) - Seiten, die ihre Inhalte so holen, bleiben leer. JavaScript bleibt ausgeliefert ausgeschaltet; die Skripte laufen weiterhin ohne Schutzwand zum System.
+
 HelloOS 0.21
 - Browser: JavaScript auf heutigem Stand. Die eigene JavaScript-Maschine versteht jetzt auch die neueren Sprachmittel: async/await, Generatoren, Symbole und Iteratoren, Klassen mit privaten Feldern (#x) und static-Blöcken, Proxy und Reflect, echte Map/Set/WeakMap, f`...`-Vorlagen, Zahlen wie 1_000, reguläre Ausdrücke mit benannten Gruppen und Rückwärtsblick, Intl (Zahlen und Daten nach Landesart, deutsch und englisch), structuredClone, TextEncoder.
 - Damit laufen deutlich mehr Seiten: Skripte, die bisher als Ganzes ausgelassen wurden, weil sie eines dieser Sprachmittel enthielten, werden jetzt ausgeführt. Getestet unter anderem mit jQuery 3.7, React 18 und den über 60 Skripten der WordPress-Verwaltung.
@@ -16,8 +21,3 @@ HelloOS 0.19
 - Browser: HTML5-Elemente - aufklappbare Abschnitte, Fortschrittsbalken, Hinweistexte in leeren Feldern, markierter Text; für Video, Ton und eingebettete Seiten erscheint ein Hinweis mit Link.
 - Das System verwaltet seinen Arbeitsspeicher schneller: Anfordern und Freigeben dauern nicht mehr länger, je mehr belegt ist.
 - Kleinigkeiten: Links auf eine Stelle derselben Seite springen dorthin, statt die Seite neu zu laden.
-
-HelloOS 0.18
-- Browser: Bilder und Kästen stehen jetzt neben dem Text, wenn die Seite das so vorsieht. Bei Wikipedia sind der Infokasten und die Fotos rechts neben dem Artikel, die WordPress-Verwaltung zeigt ihr Menü links und den Inhalt rechts daneben.
-- Der Browser versteht dafür mehr von der Gestaltung der Seiten: Regeln nach Attributen, Breitenangaben, und was nur für Vorleseprogramme gedacht ist, bleibt weg.
-- Weiterhin nicht möglich: Spalten und Raster moderner Seiten, Rahmen und Abstände, JavaScript.

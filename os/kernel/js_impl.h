@@ -7,6 +7,9 @@ typedef struct js_string js_string;
 typedef struct js_object js_object;
 typedef struct js_node js_node;
 typedef struct js_costate js_costate;
+/* Macht aus der Angabe hinter "from" ein Modul (referrer: Adresse des fragenden Moduls oder NULL) */
+typedef js_object *(*js_module_loader)(js_state *J, void *ctx, js_string *referrer,
+                                       js_string *specifier);
 
 /* --- Werte ------------------------------------------------------------------------------- */
 
@@ -117,7 +120,7 @@ enum {
     N_NUM, N_STR, N_TEMPLATE, N_REGEX, N_IDENT, N_THIS, N_NULL, N_TRUE, N_FALSE, N_ARRAY, N_OBJECT,
     N_PROP, N_FUNC, N_CLASS, N_MEMBER, N_INDEX, N_CALL, N_NEW, N_UNARY, N_UPDATE, N_BINARY,
     N_LOGICAL, N_ASSIGN, N_COND, N_SEQ, N_SPREAD, N_SUPER, N_HOLE, N_CHAIN, N_YIELD, N_AWAIT,
-    N_NEWTARGET, N_TAGGED,
+    N_NEWTARGET, N_TAGGED, N_IMPORT_CALL, N_IMPORT_META,
     /* Muster zum Zerlegen */
     N_ARRAY_PAT, N_OBJECT_PAT, N_DEFAULT, N_REST,
     /* Anweisungen */
@@ -149,6 +152,18 @@ enum {
     NF_PRIVATE = 32768,                 /* der Name ist ein privater einer Klasse (#x) */
 };
 
+/* Eine Zeile "import" oder "export" eines Moduls */
+enum { JS_M_IMPORT, JS_M_EXPORT, JS_M_EXPORT_FROM, JS_M_EXPORT_STAR };
+
+typedef struct js_module_item {
+    uint8_t kind;
+    js_string *specifier;               /* from "...": das andere Modul (sonst NULL) */
+    js_string *imported;                /* der Name dort ("default"; "*": alles zusammen) - bei
+                                           JS_M_EXPORT der eigene Name der Variable */
+    js_string *local;                   /* der Name hier - bei Exporten der Name nach außen */
+    struct js_module_item *next;
+} js_module_item;
+
 typedef struct js_fninfo {
     js_string *name;
     js_node *params;                    /* Liste: N_IDENT, Muster, N_DEFAULT, N_REST */
@@ -159,6 +174,8 @@ typedef struct js_fninfo {
     uint8_t flags;                      /* JS_F_ARROW, JS_F_CLASS, JS_F_DERIVED */
     bool expr_body, uses_arguments, simple_params;
     bool uses_new_target;
+    bool is_module;
+    js_module_item *module_items;       /* Module: ihre Importe und Exporte */
     js_node *fields;                    /* Klassen: Felder, die jedes neue Objekt bekommt */
     const char *source;                 /* Quelltext der Funktion (für toString) */
     uint32_t source_len;
@@ -205,7 +222,7 @@ enum {
  * Objekte (Iteratoren, Generatoren ...) halten darin ihren Zustand; die
  * Speicherbereinigung sieht ihn wie jede andere Eigenschaft.
  */
-enum { H_target, H_index, H_kind, H_data, H_extra, H_newtarget, H_COUNT };
+enum { H_target, H_index, H_kind, H_data, H_extra, H_newtarget, H_module, H_COUNT };
 
 /* Die Symbole, nach denen die Sprache selbst fragt */
 enum {
@@ -267,6 +284,8 @@ struct js_state {
 
     js_costate *co;                     /* Koroutinen (js_co.c); NULL, solange keine lief */
     js_object *new_target;              /* für den nächsten Aufruf mit super(...): wer mit "new" gemeint war */
+    js_module_loader module_loader;     /* woher Module kommen (js_module.c); NULL: es gibt keine */
+    void *module_ctx;
 
     char error[400];
     uint32_t rng;
@@ -406,6 +425,8 @@ js_string *js_number_string(js_state *J, double n);
 
 /* Liest ein Programm; NULL und eine SyntaxError-Ausnahme, wenn es nicht geht. */
 js_fninfo *js_parse(js_state *J, const char *source, size_t len, const char *name);
+/* ... als Modul: import/export sind erlaubt, await auch ganz außen */
+js_fninfo *js_parse_module(js_state *J, const char *source, size_t len, const char *name);
 
 /* --- js_run.c --------------------------------------------------------------------------------- */
 
@@ -443,6 +464,9 @@ bool js_call_mode(js_state *J, int argc, bool construct);
 /* "name in objekt" und "delete objekt.name" für beliebige Objekte (auch Proxys) */
 bool js_has_property(js_state *J, js_object *o, js_string *key, bool *found);
 bool js_delete_property(js_state *J, js_object *o, js_string *key, bool *done);
+
+/* Legt die mit "var" und "function" vereinbarten Namen eines Programms in env an */
+void js_hoist(js_state *J, js_fninfo *info, js_object *env);
 
 /* Vor jedem Einstieg von außen: Grenzen setzen. Danach: Fehler abholen (false: es gab einen). */
 void js_enter(js_state *J, uint32_t budget_ms);
@@ -502,6 +526,17 @@ bool js_proxy_keys(js_state *J, js_object *px, int which, js_object *out);
 bool js_proxy_call(js_state *J, int argc, bool construct);
 bool js_proxy_descriptor(js_state *J, js_object *px, js_string *key);
 bool js_proxy_invoke(js_state *J, js_object *px, const char *name, int extra, bool *handled);
+
+/* --- js_module.c: Module (import/export) --------------------------------------------------------------- */
+
+void js_module_set_loader(js_state *J, js_module_loader loader, void *ctx);
+/* Liest den Quelltext eines Moduls; liefert seinen Eintrag oder NULL (mit Ausnahme) */
+js_object *js_module_create(js_state *J, const char *source, size_t len, js_string *url);
+js_string *js_module_url(const js_object *record);
+/* Verbindet und führt aus - wie js_run() für ein gewöhnliches Skript */
+bool js_module_run(js_state *J, js_object *record, uint32_t budget_ms);
+bool js_module_import(js_state *J, js_object *env);     /* import(...): [angabe] -> [promise] */
+bool js_module_meta(js_state *J, js_object *env);       /* import.meta */
 
 /* --- js_coll.c: Map, Set, WeakMap, WeakSet --------------------------------------------------------- */
 

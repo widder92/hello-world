@@ -250,6 +250,47 @@
     accessor(E, 'style', function () { return this.__s || (hide(this, '__s', dom.style(this)), this.__s); },
              function (v) { dom.setAttr(this, 'style', text(v)); });
     accessor(E, 'dataset', function () { return this.__d || (hide(this, '__d', dom.dataset(this)), this.__d); });
+
+    /*
+     * Stylesheets als Objekte: Was ein Skript mit insertRule() einfügt, wird
+     * dem Text des <style>-Elements angehängt - dort liest der Browser die
+     * Gestaltung der Seite.
+     */
+    function CSSStyleSheet(owner) {
+        hide(this, 'ownerNode', owner);
+        hide(this, '_base', dom.text(owner));
+        hide(this, '_rules', []);
+        hide(this, 'disabled', false);
+    }
+    function syncSheet(sheet) {
+        var out = sheet._base;
+        for (var i = 0; i < sheet._rules.length; i++) out += '\n' + sheet._rules[i].cssText;
+        dom.setText(sheet.ownerNode, out);
+    }
+    CSSStyleSheet.prototype.insertRule = function (rule, index) {
+        index = index === undefined ? 0 : index >>> 0;
+        if (index > this._rules.length) throw new Error('Failed to insert the rule: index out of range');
+        this._rules.splice(index, 0, { cssText: text(rule), type: 1, style: {} });
+        syncSheet(this);
+        return index;
+    };
+    CSSStyleSheet.prototype.deleteRule = function (index) {
+        if (index >>> 0 >= this._rules.length) throw new Error('Failed to delete the rule: index out of range');
+        this._rules.splice(index >>> 0, 1);
+        syncSheet(this);
+    };
+    CSSStyleSheet.prototype.addRule = function (selector, style, index) {
+        return this.insertRule(selector + ' {' + style + '}', index === undefined ? this._rules.length : index);
+    };
+    CSSStyleSheet.prototype.removeRule = CSSStyleSheet.prototype.deleteRule;
+    accessor(CSSStyleSheet.prototype, 'cssRules', function () { return this._rules; });
+    accessor(CSSStyleSheet.prototype, 'rules', function () { return this._rules; });
+    accessor(CSSStyleSheet.prototype, 'href', function () { return this.ownerNode.href || null; });
+    accessor(E, 'sheet', function () {
+        var n = dom.name(this);
+        if (n !== 'style' && !(n === 'link' && /stylesheet/i.test(text(dom.attr(this, 'rel'))))) return null;
+        return this.__sheet || (hide(this, '__sheet', new CSSStyleSheet(this)), this.__sheet);
+    });
     accessor(E, 'classList', function () { return this.__c || (hide(this, '__c', new ClassList(this)), this.__c); },
              function (v) { dom.setAttr(this, 'class', text(v)); });
 
@@ -593,6 +634,9 @@
     accessor(D, 'images', function () { return many(dom.byTag(this, 'img')); });
     accessor(D, 'links', function () { return many(dom.query(this, 'a[href]', true)); });
     accessor(D, 'scripts', function () { return many(dom.byTag(this, 'script')); });
+    accessor(D, 'styleSheets', function () {
+        return many(dom.query(this, 'style, link[rel~=stylesheet]', true)).map(function (el) { return el.sheet; });
+    });
     accessor(D, 'currentScript', function () { return dom.script(); });
     accessor(D, 'defaultView', function () { return window; });
     accessor(D, 'activeElement', function () { return this.body; });

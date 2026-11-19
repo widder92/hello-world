@@ -88,6 +88,8 @@ typedef struct {
     js_string *str;
 
     bool failed, peeking, no_in;
+    bool module;                        /* gelesen wird ein Modul */
+    js_module_item *items, **items_tail;
     int depth;
     fnctx *fn;
     char *buf;                          /* Zwischenspeicher für Zeichenketten */
@@ -660,6 +662,9 @@ static js_node *function(parser *p, js_string *name, int flags, const char *star
 static js_node *class_node(parser *p);
 static js_node *binding(parser *p, bool hoist);
 static js_node *block(parser *p);
+static js_node *import_statement(parser *p);
+static js_node *export_statement(parser *p);
+static js_node *var_statement(parser *p, bool in_for);
 
 /* --- Zeichenketten-Vorlagen und reguläre Ausdrücke -------------------------------------------- */
 
@@ -1147,6 +1152,31 @@ static js_node *primary(parser *p)
         }
         case KW_CLASS:
             return class_node(p);
+        case KW_IMPORT:
+            next(p);
+            if (accept(p, P_DOT)) {
+                /* import.meta: Auskunft über das Modul selbst */
+                if (!p->module || p->tk != TK_NAME || p->str->len != 4 ||
+                    memcmp(p->str->data, "meta", 4) != 0)
+                    return fail(p, "Cannot use 'import.meta' outside a module");
+                next(p);
+                return node(p, N_IMPORT_META);
+            }
+            if (accept(p, P_LPAREN)) {
+                /* import("..."): lädt ein Modul zur Laufzeit; liefert ein Promise */
+                bool no_in = p->no_in;
+                p->no_in = false;
+                n = node(p, N_IMPORT_CALL);
+                n->a = assign(p);
+                if (accept(p, P_COMMA) && !is_punct(p, P_RPAREN)) {
+                    assign(p);          /* Zusatzangaben (with: ...) werden gelesen und übergangen */
+                    accept(p, P_COMMA);
+                }
+                p->no_in = no_in;
+                expect(p, P_RPAREN);
+                return n;
+            }
+            return fail(p, "Cannot use import statement outside a module");
         case KW_ASYNC: {
             /* "async function ..." - alles andere mit "async" ist ein gewöhnlicher Name */
             lex_state s;
@@ -1891,6 +1921,261 @@ static js_node *for_statement(parser *p)
     return n;
 }
 
+/* --- Module: import und export ------------------------------------------------------------------- */
+
+static js_module_item *module_item(parser *p, int kind, js_string *specifier, js_string *imported,
+                                   js_string *local)
+{
+    js_module_item *item = js_arena_alloc(p->J, sizeof(js_module_item));
+    if (!item) {
+        p->failed = true;
+        return NULL;
+    }
+    item->kind = (uint8_t)kind;
+    item->specifier = specifier;
+    item->imported = imported;
+    item->local = local;
+    *p->items_tail = item;
+    p->items_tail = &item->next;
+    return item;
+}
+
+static js_string *pinned_name(parser *p, const char *text)
+{
+    return pin(js_intern_cstr(p->J, text));
+}
+
+/* Ein Name in { a as b }: ein Wort (auch ein reserviertes) oder eine Zeichenkette */
+static js_string *module_name(parser *p)
+{
+    if (p->tk != TK_NAME && p->tk != TK_STR) {
+        fail(p, "Unexpected token");
+        return p->J->empty;
+    }
+    js_string *name = pin(js_intern_string(p->J, p->str));
+    next(p);
+    return name;
+}
+
+static bool is_word(const parser *p, const char *word)
+{
+    return p->tk == TK_NAME && !p->private_name && p->str->len == strlen(word) &&
+           memcmp(p->str->data, word, p->str->len) == 0;
+}
+
+/* from "..." [with { ... }] */
+static js_string *from_clause(parser *p)
+{
+    if (!is_word(p, "from")) {
+        fail(p, "Unexpected token");
+        return p->J->empty;
+    }
+    next(p);
+    if (p->tk != TK_STR) {
+        fail(p, "Unexpected token");
+        return p->J->empty;
+    }
+    js_string *specifier = pin(js_intern_string(p->J, p->str));
+    next(p);
+    if ((is_kw(p, KW_WITH) || is_word(p, "assert")) && !p->nl) {
+        next(p);                        /* Zusatzangaben: gelesen und übergangen */
+        expect(p, P_LBRACE);
+        while (!is_punct(p, P_RBRACE) && p->tk != TK_EOF && !p->failed)
+            next(p);
+        expect(p, P_RBRACE);
+    }
+    return specifier;
+}
+
+static js_node *import_statement(parser *p)
+{
+    next(p);
+    if (p->tk == TK_STR) {
+        /* import "modul": nur ausführen */
+        module_item(p, JS_M_IMPORT, pin(js_intern_string(p->J, p->str)), NULL, NULL);
+        next(p);
+        semicolon(p);
+        return node(p, S_EMPTY);
+    }
+    /* erst die Namen sammeln, dann kommt heraus, woher */
+    js_module_item *first = NULL, **anchor = p->items_tail;
+    if (is_ident(p)) {
+        module_item(p, JS_M_IMPORT, NULL, pinned_name(p, "default"), p->str);
+        next(p);
+        if (!accept(p, P_COMMA))
+            goto from;
+    }
+    if (accept(p, P_STAR)) {
+        if (!is_word(p, "as"))
+            return fail(p, "Unexpected token");
+        next(p);
+        if (!is_ident(p))
+            return fail(p, "Unexpected token");
+        module_item(p, JS_M_IMPORT, NULL, pinned_name(p, "*"), p->str);
+        next(p);
+    } else if (accept(p, P_LBRACE)) {
+        while (!is_punct(p, P_RBRACE) && !p->failed) {
+            bool word = p->tk == TK_NAME && (p->kw == KW_NONE || p->kw > KW_RESERVED_END);
+            js_string *imported = module_name(p), *local = imported;
+            if (is_word(p, "as")) {
+                next(p);
+                if (!is_ident(p))
+                    return fail(p, "Unexpected token");
+                local = p->str;
+                next(p);
+            } else if (!word) {
+                return fail(p, "Unexpected token");
+            }
+            module_item(p, JS_M_IMPORT, NULL, imported, local);
+            if (!is_punct(p, P_RBRACE))
+                expect(p, P_COMMA);
+        }
+        expect(p, P_RBRACE);
+    } else {
+        return fail(p, "Unexpected token");
+    }
+from:
+    if (p->failed)
+        return NULL;
+    first = *anchor;
+    js_string *specifier = from_clause(p);
+    for (js_module_item *item = first; item; item = item->next)
+        item->specifier = specifier;
+    semicolon(p);
+    return node(p, S_EMPTY);
+}
+
+/* Meldet alle Namen eines Musters (const { a, b: [c] } = ...) als Exporte */
+static void export_bound_names(parser *p, js_node *t)
+{
+    if (!t || p->failed)
+        return;
+    switch (t->type) {
+    case N_IDENT:
+        module_item(p, JS_M_EXPORT, NULL, t->u.str, t->u.str);
+        break;
+    case N_ARRAY_PAT: case N_OBJECT_PAT:
+        for (js_node *e = t->a; e; e = e->next)
+            export_bound_names(p, e);
+        break;
+    case N_PROP:
+        export_bound_names(p, t->b);
+        break;
+    case N_DEFAULT: case N_REST:
+        export_bound_names(p, t->a);
+        break;
+    default:
+        break;
+    }
+}
+
+static js_node *statement(parser *p);
+
+static js_node *export_statement(parser *p)
+{
+    next(p);
+    js_string *default_name = pinned_name(p, "default"), *hidden = pinned_name(p, "*default*");
+    if (accept(p, P_STAR)) {
+        /* export * from "m"; export * as name from "m" */
+        js_string *as = NULL;
+        if (is_word(p, "as")) {
+            next(p);
+            as = module_name(p);
+        }
+        js_string *specifier = from_clause(p);
+        if (as)
+            module_item(p, JS_M_EXPORT_FROM, specifier, pinned_name(p, "*"), as);
+        else
+            module_item(p, JS_M_EXPORT_STAR, specifier, NULL, NULL);
+        semicolon(p);
+        return node(p, S_EMPTY);
+    }
+    if (accept(p, P_LBRACE)) {
+        /* export { a, b as c }; export { a as b } from "m" */
+        js_module_item **anchor = p->items_tail;
+        while (!is_punct(p, P_RBRACE) && !p->failed) {
+            js_string *local = module_name(p), *exported = local;
+            if (is_word(p, "as")) {
+                next(p);
+                exported = module_name(p);
+            }
+            module_item(p, JS_M_EXPORT, NULL, local, exported);
+            if (!is_punct(p, P_RBRACE))
+                expect(p, P_COMMA);
+        }
+        expect(p, P_RBRACE);
+        if (is_word(p, "from")) {
+            js_string *specifier = from_clause(p);
+            for (js_module_item *item = *anchor; item; item = item->next) {
+                item->kind = JS_M_EXPORT_FROM;
+                item->specifier = specifier;
+            }
+        }
+        semicolon(p);
+        return node(p, S_EMPTY);
+    }
+    if (is_kw(p, KW_DEFAULT)) {
+        next(p);
+        /* benannte Funktionen und Klassen bleiben Vereinbarungen; alles andere wird ein Wert */
+        lex_state s;
+        save(p, &s);
+        bool named = false;
+        if (is_kw(p, KW_ASYNC)) {
+            next(p);
+            if (p->nl || !is_kw(p, KW_FUNCTION)) {
+                restore(p, &s);
+            }
+        }
+        if (is_kw(p, KW_FUNCTION) || is_kw(p, KW_CLASS)) {
+            bool is_class = p->kw == KW_CLASS;
+            next(p);
+            if (!is_class)
+                accept(p, P_STAR);
+            named = is_ident(p) && !(is_class && p->kw == KW_EXTENDS);
+            if (named)
+                module_item(p, JS_M_EXPORT, NULL, p->str, default_name);
+        }
+        bool body_like = is_kw(p, KW_FUNCTION) || is_kw(p, KW_CLASS);
+        restore(p, &s);
+        if (named)
+            return statement(p);
+        js_node *n = node(p, S_VAR), *d = node(p, S_DECL);
+        n->flags |= NF_CONST;
+        d->a = name_node(p, hidden);
+        d->b = assign(p);
+        n->a = d;
+        module_item(p, JS_M_EXPORT, NULL, hidden, default_name);
+        if (body_like)
+            accept(p, P_SEMI);          /* hinter "}" braucht es keinen Strichpunkt */
+        else
+            semicolon(p);
+        return n;
+    }
+    /* export var/let/const/function/class ...: die Vereinbarung selbst, ihre Namen gelten nach außen */
+    if (is_kw(p, KW_VAR) || is_kw(p, KW_LET) || is_kw(p, KW_CONST)) {
+        js_node *n = var_statement(p, false);
+        for (js_node *d = n ? n->a : NULL; d; d = d->next)
+            export_bound_names(p, d->a);
+        return n;
+    }
+    lex_state s;
+    save(p, &s);
+    if (is_kw(p, KW_ASYNC))
+        next(p);
+    if (is_kw(p, KW_FUNCTION) || is_kw(p, KW_CLASS)) {
+        bool is_class = p->kw == KW_CLASS;
+        next(p);
+        if (!is_class)
+            accept(p, P_STAR);
+        if (!is_ident(p))
+            return fail(p, "Unexpected token");
+        module_item(p, JS_M_EXPORT, NULL, p->str, p->str);
+        restore(p, &s);
+        return statement(p);
+    }
+    return fail(p, "Unexpected token");
+}
+
 static js_node *statement(parser *p)
 {
     if (!enter(p))
@@ -2073,11 +2358,15 @@ static js_node *statement(parser *p)
         case KW_WITH:
             LEAVE(fail(p, "The with statement is not supported"));
         case KW_IMPORT:
-            if (!peek_punct(p, P_LPAREN) && !peek_punct(p, P_DOT))
-                LEAVE(fail(p, "Modules are not supported"));
-            LEAVE(fail(p, "import() is not supported"));
+            if (peek_punct(p, P_LPAREN) || peek_punct(p, P_DOT))
+                break;                  /* import(...) und import.meta sind Ausdrücke */
+            if (!p->module || p->fn->outer)
+                LEAVE(fail(p, "Cannot use import statement outside a module"));
+            LEAVE(import_statement(p));
         case KW_EXPORT:
-            LEAVE(fail(p, "Modules are not supported"));
+            if (!p->module || p->fn->outer)
+                LEAVE(fail(p, "Unexpected token 'export'"));
+            LEAVE(export_statement(p));
         default:
             break;
         }
@@ -2097,9 +2386,8 @@ static js_node *statement(parser *p)
     LEAVE(n);
 }
 
-js_fninfo *js_parse(js_state *J, const char *source, size_t len, const char *name)
+static js_fninfo *parse_program(js_state *J, const char *source, size_t len, bool module)
 {
-    (void)name;
     parser *p = kzalloc(sizeof(parser));
     char *copy = js_arena_alloc(J, len + 1);
     js_fninfo *info = js_arena_alloc(J, sizeof(js_fninfo));
@@ -2117,6 +2405,9 @@ js_fninfo *js_parse(js_state *J, const char *source, size_t len, const char *nam
     p->line = 1;
     p->at_start = true;
     p->fn = &ctx;
+    p->module = module;
+    p->items_tail = &p->items;
+    ctx.is_async = module;              /* in Modulen darf await auch ganz außen stehen */
     /* "#!" in der ersten Zeile */
     if (len >= 2 && copy[0] == '#' && copy[1] == '!')
         skip_line(p);
@@ -2139,6 +2430,10 @@ js_fninfo *js_parse(js_state *J, const char *source, size_t len, const char *nam
     info->simple_params = true;
     info->source = copy;
     info->source_len = (uint32_t)len;
+    info->is_module = module;
+    info->module_items = p->items;
+    if (module)
+        info->flags |= JS_F_ASYNC;
     bool failed = p->failed || J->fatal;
     kfree(p->buf);
     kfree(p);
@@ -2148,4 +2443,16 @@ js_fninfo *js_parse(js_state *J, const char *source, size_t len, const char *nam
         return NULL;
     }
     return info;
+}
+
+js_fninfo *js_parse(js_state *J, const char *source, size_t len, const char *name)
+{
+    (void)name;
+    return parse_program(J, source, len, false);
+}
+
+js_fninfo *js_parse_module(js_state *J, const char *source, size_t len, const char *name)
+{
+    (void)name;
+    return parse_program(J, source, len, true);
 }

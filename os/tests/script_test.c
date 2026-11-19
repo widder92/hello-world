@@ -102,6 +102,42 @@ static char *on_fetch(void *ctx, const char *url, size_t *len)
         code = "document.title += ' +zwei';";
     else if (strcmp(url, "https://a.de/kaputt.js") == 0)
         code = "var x = ;";
+    else if (strcmp(url, "https://a.de/mod/haupt.js") == 0)
+        code = "import gruss, { zahl, erhoehe, Tier as T } from './teile.js';\n"
+               "import * as alles from './teile.js';\n"
+               "import { kreisA } from './kreis-a.js';\n"
+               "import { hilf } from 'werkzeug';\n"
+               "import { tief } from 'paket/unter/tief.js';\n"
+               "const vorher = zahl; erhoehe(); erhoehe();\n"
+               "document.getElementById('m').textContent = [gruss('Welt'), vorher, zahl, new T('Hund').laut(),\n"
+               "  Object.keys(alles).join('+'), alles.default === gruss, kreisA(), hilf(), tief,\n"
+               "  typeof import.meta.url, import.meta.url.split('/').pop(), this === undefined].join(' | ');\n"
+               "export const fertig = true;\n";
+    else if (strcmp(url, "https://a.de/mod/teile.js") == 0)
+        code = "export let zahl = 1;\nexport function erhoehe() { zahl++; }\n"
+               "export class Tier { constructor(n) { this.n = n; } laut() { return this.n + ' macht Krach'; } }\n"
+               "export default function gruss(wem) { return 'Hallo ' + wem; }\n"
+               "window.geladen = (window.geladen || 0) + 1;\n";
+    else if (strcmp(url, "https://a.de/mod/kreis-a.js") == 0)
+        code = "import { kreisB } from './kreis-b.js';\nexport function kreisA() { return 'A' + kreisB(); }\nexport const a = 'a';\n";
+    else if (strcmp(url, "https://a.de/mod/kreis-b.js") == 0)
+        code = "import { a } from './kreis-a.js';\nexport function kreisB() { return 'B' + a; }\n";
+    else if (strcmp(url, "https://a.de/lib/werkzeug.js") == 0)
+        code = "export { hilf as default, hilf };\nfunction hilf() { return 'geholfen'; }\nexport * from '../mod/teile.js';\n";
+    else if (strcmp(url, "https://cdn.de/paket/unter/tief.js") == 0)
+        code = "export const tief = 'aus dem Paket';";
+    else if (strcmp(url, "https://a.de/mod/spaeter.js") == 0)
+        code = "const wert = await Promise.resolve('gewartet');\nexport default wert;\nexport const doppelt = wert + wert;\n";
+    else if (strcmp(url, "https://a.de/mod/falsch.js") == 0)
+        code = "import { gibtsnicht } from './teile.js';";
+    else if (strcmp(url, "https://a.de/mod/wirft.js") == 0)
+        code = "throw new Error('mit Absicht');";
+    else if (strcmp(url, "https://a.de/alt.js") == 0)
+        code = "document.title += ' +alt';";
+    else if (strcmp(url, "https://a.de/spaet.js") == 0)
+        code = "document.getElementById('aus').textContent += ' spaet:' + (window.zaehler = (window.zaehler || 0) + 1);";
+    else if (strncmp(url, "https://cdn.de/jsonp?cb=", 24) == 0)
+        code = "antwort({ wert: 42 });";
     if (!code)
         return NULL;
     *len = strlen(code);
@@ -391,8 +427,9 @@ int main(int argc, char **argv)
     if (s) {
         int ran, failed, skipped;
         script_counts(s, &ran, &failed, &skipped);
-        check(ran == 6 && failed == 2 && skipped == 1, "Dateien geladen; fehlende und kaputte zählen als Fehler, Module als übersprungen");
-        if (!(ran == 6 && failed == 2 && skipped == 1))
+        check(ran == 7 && failed == 3 && skipped == 0,
+              "Dateien geladen; fehlende und kaputte zählen als Fehler - auch das Modul, dessen Import ins Leere geht");
+        if (!(ran == 7 && failed == 3 && skipped == 0))
             printf("  gelaufen %d, Fehler %d, übersprungen %d\n", ran, failed, skipped);
         check(page_has(s, ">T +zwei +fehlt +dynamisch</title>"), "Skripte liefen in der Reihenfolge der Seite; onerror; nachträglich eingefügtes Skript");
         check(page_has(s, ">vor</p><b data-hx=") && page_has(s, ">geschrieben</b><i data-hx=") &&
@@ -649,6 +686,93 @@ int main(int argc, char **argv)
         script_destroy(s);
     }
 
+    /* Skripte, die eine Seite erst später nachfordert, und Stylesheets, die Skripte einfügen */
+    static const char page_late[] =
+        "<html><head><title>S</title><style id=st>p { color: red }</style></head><body><p id=aus>-</p>"
+        "<button id=mehr>mehr</button><button id=farbe>farbe</button><script>\n"
+        "function hole(src, dann) { var s = document.createElement('script'); s.src = src;\n"
+        "  s.onload = function () { dann('ok'); }; s.onerror = function () { dann('fehler'); }; document.head.appendChild(s); }\n"
+        "function antwort(d) { document.getElementById('aus').textContent += ' jsonp:' + d.wert; }\n"
+        "document.getElementById('mehr').onclick = function () {\n"
+        "  hole('/spaet.js', function (wie) { document.getElementById('aus').textContent += ' ' + wie; });\n"
+        "  hole('https://cdn.de/jsonp?cb=antwort', function () {});\n"
+        "  hole('/gibtsnicht.js', function (wie) { document.getElementById('aus').textContent += ' ' + wie; });\n"
+        "};\n"
+        "document.getElementById('farbe').onclick = function () {\n"
+        "  var sheet = document.getElementById('st').sheet; sheet.insertRule('.neu { display: none }', sheet.cssRules.length);\n"
+        "  var st = document.createElement('style'); st.textContent = '#aus { font-weight: bold }'; document.head.appendChild(st);\n"
+        "  document.title = document.styleSheets.length + ' Blaetter, ' + sheet.cssRules.length + ' Regel';\n"
+        "};\n"
+        "setTimeout(function () { hole('/spaet.js', function () {}); }, 30);\n"
+        "</script></body></html>";
+    s = load(page_late, 0);
+    check(s != NULL, "Seite, die Skripte nachfordert, geladen");
+    if (s) {
+        int ran, failed, skipped;
+        run_timers(s, 10);
+        check(page_has(s, ">- spaet:1</p>"), "ein Zeitgeber fordert eine Skriptdatei nach: sie wird geholt und läuft");
+        script_click(s, node_with(s, "id=\"mehr\""));
+        check(page_has(s, " spaet:2 ok jsonp:42 fehler</p>"),
+              "Klick: nachgeforderte Skripte laufen in ihrer Reihenfolge, onload und onerror melden sich");
+        script_counts(s, &ran, &failed, &skipped);
+        check(ran == 4 && failed == 1 && skipped == 0, "gezählt: vier gelaufen, eine Datei fehlte");
+        script_click(s, node_with(s, "id=\"farbe\""));
+        check(page_has(s, ">2 Blaetter, 1 Regel</title>"), "Stylesheets als Objekte: styleSheets, cssRules");
+        check(page_has(s, ".neu { display: none }</style>") && page_has(s, "#aus { font-weight: bold }</style>"),
+              "insertRule() und ein eingefügtes <style> stehen in der Seite, wo der Browser sie liest");
+        script_destroy(s);
+    }
+
+    /* Module: import/export über mehrere Dateien, im Kreis, mit Übersetzungstabelle und import() */
+    static const char page_modules[] =
+        "<html><head><title>T</title>"
+        "<script type=importmap>{ \"imports\": { \"werkzeug\": \"/lib/werkzeug.js\", \"paket/\": \"https://cdn.de/paket/\" } }</script>"
+        "<script type=module src=/mod/haupt.js></script>"
+        "<script nomodule src=/alt.js></script>"
+        "<script defer src=/alt.js></script>"
+        "<script>document.title += ' +zuerst';</script>"
+        "</head><body><p id=m>-</p><p id=d>-</p><p id=e>-</p>"
+        "<script type=module>\n"
+        "import wert, { doppelt } from '/mod/spaeter.js';\n"
+        "import { hilf, zahl } from 'werkzeug';\n"
+        "document.title += ' +modul:' + wert + ':' + doppelt + ':' + hilf() + ':' + zahl + ':' + window.geladen;\n"
+        "const m = await import('/mod/teile.js');\n"
+        "document.getElementById('d').textContent = 'dyn ' + m.default('du') + ' ' + m.zahl;\n"
+        "import('/mod/falsch.js').catch(e => { document.getElementById('e').textContent = 'e1 ' + e.name; return import('/mod/wirft.js'); })\n"
+        "  .catch(e => { document.getElementById('e').textContent += ' e2 ' + e.message; return import('nirgends'); })\n"
+        "  .catch(e => { document.getElementById('e').textContent += ' e3 ' + e.name; });\n"
+        "</script>"
+        "<script>document.title += ' +klassisch'; import('/mod/teile.js').then(m => { document.title += ' +dyn' + m.zahl; });</script>"
+        "</body></html>";
+    reported = 0;
+    s = load(page_modules, 0);
+    check(s != NULL, "Seite mit Modulen geladen");
+    if (s) {
+        int ran, failed, skipped;
+        run_timers(s, 20);
+        script_counts(s, &ran, &failed, &skipped);
+        check(failed == 0 && skipped == 0 && ran == 5, "alle Skripte liefen (das für Browser ohne Module nicht)");
+        if (failed || ran != 5)
+            printf("  gelaufen %d, Fehler %d, ausgelassen %d; letzte Meldung: %s\n", ran, failed, skipped, last_log);
+        check(page_has(s, ">Hallo Welt | 1 | 3 | Hund macht Krach | Tier+default+erhoehe+zahl | true | ABa | "
+                          "geholfen | aus dem Paket | string | haupt.js | true</p>"),
+              "import: Standard-Export, benannte, alles zusammen, lebendige Verbindung, Kreis, Tabelle");
+        /* (das import() im gewöhnlichen Skript ist sofort fertig: +dyn1 kommt vor den aufgeschobenen) */
+        check(page_has(s, ">T +zuerst +klassisch +dyn1 +alt +modul:gewartet:gewartetgewartet:geholfen:3:1</title>"),
+              "Reihenfolge: gewöhnliche Skripte, dann aufgeschobene und Module; jedes Modul läuft nur einmal");
+        if (!page_has(s, ":3:1</title>")) {
+            size_t n = 0;
+            char *html = script_html(s, &n);
+            char *t = html ? strstr(html, "<title") : NULL;
+            printf("  Titel: %.200s\n", t ? t : "?");
+            free(html);
+        }
+        check(page_has(s, ">dyn Hallo du 3</p>"), "await und import() ganz außen im Modul");
+        check(page_has(s, ">e1 SyntaxError e2 mit Absicht e3 TypeError</p>"),
+              "import(): fehlender Export, Fehler im Modul, unbekannte Angabe - jeweils als gescheitertes Promise");
+        script_destroy(s);
+    }
+
     /* Das Fenster wird geschlossen: Laufende Skripte enden sofort */
     real_clock = true;
     uint64_t began = time_ms();
@@ -664,13 +788,14 @@ int main(int argc, char **argv)
     int before = failures, counted = checks;
     unsigned seed = 99;
     size_t total = sizeof(page_dom) + sizeof(page_events) + sizeof(page_load) + sizeof(page_use) +
-                   sizeof(page_modern);
+                   sizeof(page_modern) + sizeof(page_late) + sizeof(page_modules);
     char *broken = malloc(total * 2);
     int rounds = getenv("RUNDEN") ? atoi(getenv("RUNDEN")) : 400;
     real_clock = true;
     for (int r = 0; r < rounds; r++) {
-        const char *source = r % 5 == 0 ? page_dom : r % 5 == 1 ? page_events
-                           : r % 5 == 2 ? page_load : r % 5 == 3 ? page_use : page_modern;
+        const char *source = r % 7 == 0 ? page_dom : r % 7 == 1 ? page_events
+                           : r % 7 == 2 ? page_load : r % 7 == 3 ? page_use
+                           : r % 7 == 4 ? page_modern : r % 7 == 5 ? page_late : page_modules;
         size_t n = strlen(source);
         memcpy(broken, source, n);
         for (int k = 0; k < 1 + r % 9; k++) {

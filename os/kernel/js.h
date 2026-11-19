@@ -8,8 +8,8 @@
  * Pfeilfunktionen, Klassen (auch mit privaten Mitgliedern),
  * Vorlagen-Zeichenketten, Zerlegung (destructuring), Spread, Symbole und
  * Iteratoren (js_sym.c), Map/Set (js_coll.c), Generatoren und async/await
- * (js_co.c), Proxy und Reflect (js_proxy.c). Es fehlen Module (import/export)
- * und "with"; große Ganzzahlen (10n) sind gewöhnliche Zahlen.
+ * (js_co.c), Proxy und Reflect (js_proxy.c), Module (js_module.c). Es fehlt
+ * "with"; große Ganzzahlen (10n) sind gewöhnliche Zahlen.
  *
  * Weil die Skripte von fremden Seiten kommen, hat alles Grenzen: Speicher,
  * Rechenschritte, Zeit, Verschachtelung. Wer eine davon überschreitet, wird

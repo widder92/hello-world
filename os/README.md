@@ -27,8 +27,9 @@ fremde Bibliothek: rund 24 000 Zeilen C und etwas Assembler.
   https den Server
 - **JavaScript** mit einer eigenen Maschine (abschaltbar, ausgeliefert: aus):
   die Sprache auf heutigem Stand (`async`/`await`, Generatoren, Klassen mit
-  privaten Feldern, `Proxy`, `Map`/`Set`, `Intl` …) – genug für jQuery, React
-  und die WordPress-Verwaltung; Module und große Web-Anwendungen noch nicht
+  privaten Feldern, `Proxy`, `Map`/`Set`, `Intl`, Module mit `import`/`export`
+  …) – genug für jQuery, React und die WordPress-Verwaltung; große
+  Web-Anwendungen noch nicht
 - **Echte Schriften**: ein eigener TrueType-Renderer zeichnet Text in jeder
   Größe aus den eingebauten Schriftdateien (DejaVu Sans) – in Fenstertiteln,
   Menüs, Dialogen und im Browser
@@ -512,6 +513,17 @@ Abbild steht; ändern Skripte es, setzt der Browser die Seite neu.
   - reguläre Ausdrücke mit benannten Gruppen, Rückwärtsblick und
     `\p{…}`; `Intl` für Zahlen, Daten, Listen und Sortieren (deutsch und
     englisch), `structuredClone`, `TextEncoder`/`TextDecoder`.
+- **Module** (seit 0.22): `<script type="module">`, `import` und `export` in
+  allen Formen (auch im Kreis und mit `export * from`), `import()` zur
+  Laufzeit, `import.meta.url`, `await` ganz außen, Übersetzungstabellen
+  (`<script type="importmap">`). Die Dateien eines Moduls holt der Browser
+  der Reihe nach; jedes läuft einmal. Skripte mit `nomodule` – die
+  Ersatzfassung für alte Browser – bleiben dann aus.
+- **Nachfordern** (seit 0.22): Fügt ein Skript später ein `<script src=…>`
+  ein (auch von einem anderen Server, etwa „JSONP"), wird es geholt und
+  ausgeführt; `onload`/`onerror` melden sich. Fügt es ein Stylesheet ein
+  oder ändert eines (`<style>`, `<link>`, `sheet.insertRule()`), wird die
+  Gestaltung der Seite neu zusammengesetzt.
 - Die Seite lesen und umbauen: `getElementById`, `querySelector(All)`,
   `createElement`, `appendChild`, `innerHTML`, `textContent`, `classList`,
   `style`, `dataset`, Attribute, `document.write`.
@@ -537,10 +549,6 @@ Abbild steht; ändern Skripte es, setzt der Browser die Seite neu.
 
 **Was nicht geht**
 
-- **Module** (`import`/`export`, `<script type="module">`, `import()`): Ein
-  Skript, das so etwas enthält, wird als Ganzes ausgelassen; die Statuszeile
-  nennt die Zahl. Viele aktuelle Seiten liefern ihre Skripte so aus – sie
-  bleiben vorerst ohne Wirkung.
 - Kleine Abweichungen von der Sprache: Zeichenketten zählen ganze Zeichen
   (ein Emoji hat die Länge 1, nicht 2); große Ganzzahlen (`10n`) sind
   gewöhnliche Zahlen und über 2^53 hinaus ungenau; `with` gibt es nicht;
@@ -551,9 +559,11 @@ Abbild steht; ändern Skripte es, setzt der Browser die Seite neu.
 - Maße und Positionen: Wo ein Element steht und wie groß es ist, erfahren
   Skripte nicht (sichtbare Elemente melden eine angenommene Größe). Menüs,
   die unter dem Mauszeiger aufklappen, und alles mit Ziehen gehen nicht.
-- Skriptdateien lädt der Browser nur beim Laden der Seite; was ein Skript
-  später nachfordert, bleibt aus. Nachladen von fremden Servern ist gesperrt.
-- Stylesheets, die ein Skript nach dem Laden einfügt, wirken nicht.
+- **Daten** von fremden Servern nachladen (`fetch`, `XMLHttpRequest` zu einer
+  anderen Adresse als der der Seite) ist gesperrt – viele Seiten holen ihre
+  Inhalte so von einem zweiten Server und bleiben deshalb leer. Auch andere
+  Verfahren als GET und POST gibt es dabei nicht. Skriptdateien und Module
+  werden nacheinander geholt; solange wartet das Fenster.
 - Tempo: Die Maschine deutet den Quelltext Schritt für Schritt, statt ihn zu
   übersetzen – grob hundertmal langsamer als ein großer Browser. Ein Skript
   darf zehn Sekunden rechnen, alle Skripte einer Seite beim Laden zusammen
@@ -561,13 +571,13 @@ Abbild steht; ändern Skripte es, setzt der Browser die Seite neu.
   angehalten (die Seite bleibt, wie sie bis dahin war, und die Statuszeile
   sagt es).
 
-Unterm Strich: Seiten, deren Skripte als gewöhnliche Dateien oder im
-Quelltext der Seite stehen – Menüs zum Aufklappen, Formularprüfung, „Mehr
-anzeigen", jQuery- und React-Seiten, die WordPress-Verwaltung –
-funktionieren, auch wenn sie die neuesten Sprachmittel benutzen. Seiten, die
-ihre Skripte als Module laden oder erst nach dem Laden nachfordern, und
-große Web-Anwendungen (Google Maps, YouTube, der Block-Editor von WordPress)
-noch nicht.
+Unterm Strich: Menüs zum Aufklappen, Formularprüfung, „Mehr anzeigen",
+jQuery- und React-Seiten, die WordPress-Verwaltung funktionieren, auch wenn
+sie die neuesten Sprachmittel benutzen, ihre Skripte als Module laden oder
+erst später nachfordern. Seiten, die ihre Inhalte von einem zweiten Server
+holen oder Zeichenflächen, Maße und Positionen brauchen, und große
+Web-Anwendungen (Google Maps, YouTube, der Block-Editor von WordPress) noch
+nicht.
 
 **Wie Generatoren und `async` hier funktionieren.** Die Maschine führt den
 Programmbaum direkt aus; wo eine Funktion gerade steht, steckt also im
@@ -975,7 +985,7 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `kernel/tls.c`, `kernel/http.c`, `kernel/url.c` | TLS 1.3, HTTP-Client, Web-Adressen |
 | `kernel/html.c`, `kernel/browser.c` | HTML zerlegen und als Text setzen; das Browser-Fenster |
 | `kernel/css.c` | Stylesheets lesen und auf Elemente anwenden |
-| `kernel/js_*.c`, `kernel/js.h`, `kernel/jslib.js` | die JavaScript-Maschine: Quelltext lesen (`js_parse.c`), ausführen (`js_run.c`), Werte und Speicherbereinigung (`js_core.c`), Zahlen (`js_num.c`), eingebaute Objekte (`js_lib*.c` und – in JavaScript selbst geschrieben – `jslib.js`), Symbole und Iteratoren (`js_sym.c`), `Map`/`Set` (`js_coll.c`), Generatoren und `async` (`js_co.c`), `Proxy`/`Reflect` (`js_proxy.c`), reguläre Ausdrücke (`js_regex.c`), typisierte Felder (`js_typed.c`) |
+| `kernel/js_*.c`, `kernel/js.h`, `kernel/jslib.js` | die JavaScript-Maschine: Quelltext lesen (`js_parse.c`), ausführen (`js_run.c`), Werte und Speicherbereinigung (`js_core.c`), Zahlen (`js_num.c`), eingebaute Objekte (`js_lib*.c` und – in JavaScript selbst geschrieben – `jslib.js`), Symbole und Iteratoren (`js_sym.c`), `Map`/`Set` (`js_coll.c`), Generatoren und `async` (`js_co.c`), `Proxy`/`Reflect` (`js_proxy.c`), Module (`js_module.c`), reguläre Ausdrücke (`js_regex.c`), typisierte Felder (`js_typed.c`) |
 | `kernel/dom.c` | das veränderbare Abbild einer Seite (DOM): Baum lesen, umbauen, wieder zu Quelltext machen |
 | `kernel/dom_js.c`, `kernel/domlib.js`, `kernel/script.h` | Skripte einer Seite: Verbindung von Abbild und JavaScript-Maschine; `window`, `document` und die Elemente, zum großen Teil selbst in JavaScript geschrieben |
 | `kernel/image*.c`, `kernel/inflate.c` | Bilder entschlüsseln (PNG, JPEG, GIF) und verkleinern |
@@ -1024,7 +1034,7 @@ gehalten. Naheliegende nächste Schritte:
 - Programme aus Dateien laden (ELF), mehrere Prozessorkerne
 - Symbole auf dem Desktop, ein Dateimanager, Fenster an den Kanten ziehen und minimieren
 - im Browser: Abstände und Rahmen (auch Tabellenlinien), frei platzierte Elemente, Raster mit benannten Flächen, WebP- und SVG-Bilder, Hintergrundbilder, Tabs
-- JavaScript: Module (`import`/`export`), Skripte und Stylesheets, die eine Seite nach dem Laden nachfordert, Nachladen von fremden Servern (mit den üblichen Regeln dafür); Zeichenflächen (Canvas); Maße und Positionen der Elemente; eine Schutzwand zwischen Skripten und System (dafür braucht es den User-Modus)
+- JavaScript: Daten von fremden Servern nachladen (mit den üblichen Schutzregeln dafür), weitere HTTP-Verfahren (PUT, DELETE); Zeichenflächen (Canvas); Maße und Positionen der Elemente; eine Schutzwand zwischen Skripten und System (dafür braucht es den User-Modus)
 - echte Schrift auch in Terminal, Editor und Eingabefeldern; Hinting für schärfere kleine Schrift
 
 ## Die ältere 32-Bit-Version

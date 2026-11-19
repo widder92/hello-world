@@ -18,10 +18,13 @@ void call_on_stack(void (*fn)(void *arg), void *arg, void *stack_top);     /* ta
 #define BOOT_MS       30000             /* Rechenzeit für alle Skripte beim Laden zusammen */
 #define SCRIPT_MS     10000             /* ... und für ein einzelnes */
 #define FETCH_MS      60000             /* so lange wird beim Laden insgesamt auf Skriptdateien gewartet */
+#define LATE_FETCH_MS 20000             /* ... und später je Ereignis, wenn eine Seite Skripte nachfordert */
+#define LATE_SCRIPTS  2000              /* so viele Skripte führt eine Seite insgesamt höchstens aus */
 #define EVENT_MS      2000
 #define SCRIPT_BYTES  (4u * 1024 * 1024)
 #define REQUEST_BYTES (1024 * 1024)     /* so viel sendet ein Skript höchstens */
 #define WISHES        4
+#define DEFERRED_MAX  64
 
 #define ARGI(i) (J->bot + 2 + (i))
 #define MAGIC (js_callee(J)->u.n.magic)
@@ -47,6 +50,13 @@ struct script {
     int ran, failed, skipped;
     uint64_t boot_until;
     uint64_t fetch_ms;                  /* bisher mit dem Holen von Skriptdateien verbracht */
+    uint64_t fetch_limit;
+    /* Skripte, die erst nach allen gewöhnlichen laufen: Module und solche mit "defer" */
+    struct {
+        uint32_t node;
+        bool module;
+    } deferred[DEFERRED_MAX];
+    int deferred_count;
 };
 
 enum { PROTO_ELEMENT, PROTO_TEXT, PROTO_COMMENT, PROTO_FRAGMENT, PROTO_DOCUMENT };
@@ -1195,6 +1205,8 @@ static void host_print(void *ctx, const char *text)
         s->host.log(s->host.ctx, text);
 }
 
+static js_object *module_load(js_state *J, void *ctx, js_string *referrer, js_string *specifier);
+
 static void setup(void *arg)
 {
     script_t *s = arg;
@@ -1216,6 +1228,7 @@ static void setup(void *arg)
     js_def_native(J, s->style_proto, "setProperty", style_method, 2, 1);
     js_def_native(J, s->style_proto, "removeProperty", style_method, 1, 2);
     s->J = J;
+    js_module_set_loader(J, module_load, s);
     if (!js_run(J, domlib_js, sizeof(domlib_js) - 1, "domlib", 0) || !s->dispatcher || !s->protos[0]) {
         js_destroy(J);
         s->J = NULL;
@@ -1299,12 +1312,263 @@ static bool javascript_type(const char *type)
     return false;
 }
 
-/* Führt alle Skripte der Seite aus, die noch nicht dran waren - auch solche, die dabei entstehen. */
-static void run_scripts(script_t *s, bool may_fetch)
+/* Holt eine Skriptdatei (oder NULL). Das Warten aufs Netz zählt nicht als Rechenzeit - hat aber seine eigene Grenze. */
+static char *fetch_script(script_t *s, const char *address, size_t *len)
+{
+    if (!s->host.fetch || s->fetch_ms >= s->fetch_limit)
+        return NULL;
+    uint64_t before = time_ms();
+    char *code = s->host.fetch(s->host.ctx, address, len);
+    uint64_t waited = time_ms() - before;
+    s->fetch_ms += waited;
+    if (s->boot_until)
+        s->boot_until += waited;
+    if (code && *len > SCRIPT_BYTES) {
+        kfree(code);
+        code = NULL;
+    }
+    return code;
+}
+
+static uint32_t script_budget(const script_t *s)
+{
+    uint32_t budget = s->host.budget_ms ? s->host.budget_ms : SCRIPT_MS;
+    if (s->boot_until) {
+        uint64_t now = time_ms();
+        uint64_t left = s->boot_until > now ? s->boot_until - now : 1;
+        if (left < budget)
+            budget = (uint32_t)left;
+    }
+    return budget;
+}
+
+/* --- Module ---------------------------------------------------------------------------------------- */
+
+static js_object *registry_object(js_state *J, const char *name)
+{
+    js_string *key = js_intern_cstr(J, name);
+    js_prop *p = js_own(J->registry, key);
+    if (p && p->v.t == JS_T_OBJ)
+        return p->v.u.o;
+    js_object *o = js_object_new(J, JS_C_OBJECT, NULL);
+    js_define(J, J->registry, key, js_obj(o), JS_P_ALL);
+    return o;
+}
+
+/*
+ * Die Übersetzungstabelle der Seite (<script type="importmap">): Steht die
+ * Angabe dort - ganz oder mit einem Anfang, der auf "/" endet -, kommt die
+ * hinterlegte Adresse heraus.
+ */
+static bool import_map(js_state *J, const char *spec, char *out, size_t size)
+{
+    js_prop *map = js_own(J->registry, js_intern_cstr(J, "importmap"));
+    js_prop *list = map && map->v.t == JS_T_OBJ ? js_own(map->v.u.o, js_intern_cstr(J, "imports")) : NULL;
+    if (!list || list->v.t != JS_T_OBJ)
+        return false;
+    js_object *imports = list->v.u.o;
+    size_t n = strlen(spec), best = 0;
+    const js_string *target = NULL;
+    for (uint32_t i = 0; i < imports->count; i++) {
+        const js_prop *p = &imports->props[i];
+        if (!p->key || p->key->symbol || p->v.t != JS_T_STR || p->key->len == 0)
+            continue;
+        const js_string *k = p->key;
+        bool whole = k->len == n && memcmp(k->data, spec, n) == 0;
+        bool prefix = k->data[k->len - 1] == '/' && k->len < n && memcmp(k->data, spec, k->len) == 0;
+        if ((whole || prefix) && k->len > best) {
+            best = k->len;
+            target = p->v.u.s;
+        }
+    }
+    if (!target || target->len + (n - best) + 1 > size)
+        return false;
+    memcpy(out, target->data, target->len);
+    memcpy(out + target->len, spec + best, n - best + 1);
+    return true;
+}
+
+/* Für die Maschine: macht aus der Angabe hinter "from" (oder in import(...)) ein Modul. */
+static js_object *module_load(js_state *J, void *ctx, js_string *referrer, js_string *specifier)
+{
+    script_t *s = ctx;
+    char *address = kmalloc(URL_SIZE), *mapped = kmalloc(URL_SIZE);
+    js_object *record = NULL;
+    const char *spec = specifier->data;
+    if (!address || !mapped) {
+        js_fatal(J, "Nicht genug Speicher für das Skript");
+        goto out;
+    }
+    bool translated = import_map(J, spec, mapped, URL_SIZE);
+    if (translated)
+        spec = mapped;
+    bool local = spec[0] == '/' || (spec[0] == '.' && (spec[1] == '/' || (spec[1] == '.' && spec[2] == '/')));
+    size_t spec_len = strlen(spec);
+    bool full = (spec_len > 7 && memcmp(spec, "http://", 7) == 0) ||
+                (spec_len > 8 && memcmp(spec, "https://", 8) == 0);
+    if (!local && !full) {
+        js_throw(J, JS_E_TYPE, "Failed to resolve module specifier \"%s\"", specifier->data);
+        goto out;
+    }
+    /* Angaben aus der Tabelle gelten von der Seite aus, alle anderen vom fragenden Modul aus */
+    if (!url_resolve(referrer && !translated ? referrer->data : s->url, spec, address, URL_SIZE)) {
+        js_throw(J, JS_E_TYPE, "Failed to resolve module specifier \"%s\"", specifier->data);
+        goto out;
+    }
+    js_object *map = registry_object(J, "modules");
+    js_string *key = js_intern_cstr(J, address);
+    js_prop *known = js_own(map, key);
+    if (known && known->v.t == JS_T_OBJ) {
+        record = known->v.u.o;
+        goto out;
+    }
+    size_t len = 0;
+    char *code = fetch_script(s, address, &len);
+    if (!code) {
+        js_throw(J, JS_E_TYPE, "Failed to fetch module %s", address);
+        goto out;
+    }
+    js_push(J, js_str(key));
+    record = js_module_create(J, code, len, key);
+    kfree(code);
+    if (record)
+        js_define(J, map, key, js_obj(record), JS_P_ALL);
+    js_pop(J, 1);
+out:
+    kfree(address);
+    kfree(mapped);
+    return record;
+}
+
+/* <script type="importmap">: als JSON lesen und hinterlegen (nur die erste zählt) */
+static void read_import_map(script_t *s, dom_node *script)
+{
+    js_state *J = s->J;
+    js_string *name = js_intern_cstr(J, "importmap");
+    size_t len = 0;
+    char *text = js_own(J->registry, name) ? NULL : dom_text_content(script, &len);
+    if (!text)
+        return;
+    int base = J->top;
+    js_enter(J, EVENT_MS);
+    js_push(J, js_obj(J->global));
+    bool ok = js_get_cstr(J, J->top - 1, "JSON") && js_get_cstr(J, J->top - 1, "parse");
+    if (ok) {
+        js_push(J, js_undef());
+        js_push_lstr(J, text, len);
+        ok = js_call(J, 1);
+    }
+    if (ok && js_top(J, 0)->t == JS_T_OBJ)
+        js_define(J, J->registry, name, *js_top(J, 0), JS_P_ALL);
+    J->top = base;
+    js_leave(J, ok);
+    kfree(text);
+}
+
+/* --- Skripte der Seite ausführen ---------------------------------------------------------------------- */
+
+/* Führt ein <script> aus: als gewöhnliches Skript oder als Modul. */
+static void run_one(script_t *s, dom_node *script, bool module)
+{
+    js_state *J = s->J;
+    const char *src = dom_attr_get(script, "src");
+    char *code = NULL, *address = NULL;
+    size_t len = 0;
+    if (s->ran >= (s->booting ? BOOT_SCRIPTS : LATE_SCRIPTS) ||
+        (s->boot_until && time_ms() > s->boot_until)) {
+        s->skipped++;
+        return;
+    }
+    if (src) {
+        address = kmalloc(URL_SIZE);
+        if (!address || !url_resolve(s->url, src, address, URL_SIZE)) {
+            kfree(address);
+            s->failed++;
+            return;
+        }
+    }
+    if (module) {
+        /* ein Modul: Es holt sich, was es braucht, selbst (module_load) */
+        js_object *record = NULL;
+        int base = J->top;
+        js_enter(J, script_budget(s));
+        if (src) {
+            record = module_load(J, s, NULL, js_intern_cstr(J, address));
+        } else {
+            code = dom_text_content(script, &len);
+            if (code && len <= SCRIPT_BYTES)
+                record = js_module_create(J, code, len, js_intern_cstr(J, s->url));
+            kfree(code);
+        }
+        if (record)
+            js_push(J, js_obj(record));
+        else
+            js_leave(J, false);         /* die Fehlermeldung ausgeben */
+        bool ok = record && js_module_run(J, record, script_budget(s));
+        J->top = base;
+        s->ran++;
+        if (!ok)
+            s->failed++;
+        if (src && !js_dead(J))
+            fire(s, script, ok ? "load" : "error", NULL, NULL);
+        kfree(address);
+        return;
+    }
+    if (src) {
+        code = fetch_script(s, address, &len);
+        if (!code) {
+            s->failed++;
+            kfree(address);
+            s->current = script;
+            fire(s, script, "error", NULL, NULL);
+            s->current = NULL;
+            return;
+        }
+    } else {
+        code = dom_text_content(script, &len);
+        if (!code)
+            return;
+        if (len > SCRIPT_BYTES) {
+            s->skipped++;
+            kfree(code);
+            return;
+        }
+    }
+    s->current = script;
+    s->write_after = script;
+    bool ok = js_run(J, code, len, address ? address : "inline", script_budget(s));
+    s->ran++;
+    if (!ok)
+        s->failed++;
+    kfree(code);
+    kfree(address);
+    if (src && !js_dead(J))
+        fire(s, script, ok ? "load" : "error", NULL, NULL);
+    s->current = NULL;
+    s->write_after = NULL;
+}
+
+static bool same_word(const char *a, const char *b)
+{
+    while (*a == ' ')
+        a++;
+    for (; *b; a++, b++) {
+        if ((*a >= 'A' && *a <= 'Z' ? *a + 32 : *a) != *b)
+            return false;
+    }
+    return *a == '\0' || *a == ' ' || *a == ';';
+}
+
+/*
+ * Führt alle Skripte der Seite aus, die noch nicht dran waren - auch solche,
+ * die dabei entstehen: erst die gewöhnlichen in der Reihenfolge der Seite,
+ * dann die aufgeschobenen (Module, "defer").
+ */
+static void run_scripts(script_t *s)
 {
     js_state *J = s->J;
     static const char *const never[] = { "noscript", "template", "textarea", NULL };
-    for (int guard = 0; guard < 400 && !js_dead(J); guard++) {
+    for (int guard = 0; guard < 600 && !js_dead(J); guard++) {
         dom_node *script = NULL;
         for (dom_node *n = dom_next(s->doc->root, s->doc->root); n; n = dom_next(s->doc->root, n)) {
             if (dom_is(n, "script") && !is_done(s, n)) {
@@ -1312,8 +1576,18 @@ static void run_scripts(script_t *s, bool may_fetch)
                 break;
             }
         }
-        if (!script)
-            return;
+        if (!script) {
+            if (s->deferred_count == 0)
+                return;
+            uint32_t id = s->deferred[0].node;
+            bool module = s->deferred[0].module;
+            s->deferred_count--;
+            memmove(s->deferred, s->deferred + 1, (size_t)s->deferred_count * sizeof(s->deferred[0]));
+            dom_node *waiting = dom_node_by_id(s->doc, id);
+            if (waiting)
+                run_one(s, waiting, module);
+            continue;
+        }
         mark_done(s, script, true);
         bool inert = false;
         for (dom_node *p = script->parent; p && !inert; p = p->parent) {
@@ -1323,73 +1597,24 @@ static void run_scripts(script_t *s, bool may_fetch)
         const char *type = dom_attr_get(script, "type"), *src = dom_attr_get(script, "src");
         if (inert)
             continue;
-        if (type && !javascript_type(type)) {
-            if (strcmp(type, "module") == 0)
-                s->skipped++;           /* Module: gibt es hier noch nicht */
+        bool module = type && same_word(type, "module");
+        if (type && same_word(type, "importmap")) {
+            read_import_map(s, script);
+            continue;
+        }
+        if (type && !module && !javascript_type(type))
             continue;                   /* Daten und Vorlagen in <script>: nichts zum Ausführen */
-        }
-        if (s->ran >= BOOT_SCRIPTS || (s->boot_until && time_ms() > s->boot_until)) {
-            s->skipped++;
+        if (!module && dom_attr_get(script, "nomodule"))
+            continue;                   /* die Ersatzfassung für Browser ohne Module */
+        bool later = module || (s->booting && src && dom_attr_get(script, "defer") &&
+                                !dom_attr_get(script, "async"));
+        if (later && s->deferred_count < DEFERRED_MAX) {
+            s->deferred[s->deferred_count].node = script->id;
+            s->deferred[s->deferred_count].module = module;
+            s->deferred_count++;
             continue;
         }
-        char *code = NULL;
-        size_t len = 0;
-        char *address = NULL;
-        if (src) {
-            address = kmalloc(URL_SIZE);
-            if (may_fetch && s->host.fetch && address && s->fetch_ms < FETCH_MS &&
-                url_resolve(s->url, src, address, URL_SIZE)) {
-                uint64_t before = time_ms();
-                code = s->host.fetch(s->host.ctx, address, &len);
-                /* das Warten aufs Netz zählt nicht als Rechenzeit - hat aber seine eigene Grenze */
-                uint64_t waited = time_ms() - before;
-                s->fetch_ms += waited;
-                if (s->boot_until)
-                    s->boot_until += waited;
-            }
-            if (!code) {
-                if (may_fetch)
-                    s->failed++;
-                else
-                    s->skipped++;
-                kfree(address);
-                if (may_fetch) {
-                    s->current = script;
-                    fire(s, script, "error", NULL, NULL);
-                    s->current = NULL;
-                }
-                continue;
-            }
-        } else {
-            code = dom_text_content(script, &len);
-            if (!code)
-                continue;
-        }
-        if (len > SCRIPT_BYTES) {
-            s->skipped++;
-            kfree(code);
-            kfree(address);
-            continue;
-        }
-        s->current = script;
-        s->write_after = script;
-        uint32_t budget = s->host.budget_ms ? s->host.budget_ms : SCRIPT_MS;
-        if (s->boot_until) {
-            uint64_t now = time_ms();
-            uint64_t left = s->boot_until > now ? s->boot_until - now : 1;
-            if (left < budget)
-                budget = (uint32_t)left;
-        }
-        bool ok = js_run(J, code, len, address ? address : "inline", budget);
-        s->ran++;
-        if (!ok)
-            s->failed++;
-        kfree(code);
-        kfree(address);
-        if (src && !js_dead(J))
-            fire(s, script, ok ? "load" : "error", NULL, NULL);
-        s->current = NULL;
-        s->write_after = NULL;
+        run_one(s, script, module);
     }
 }
 
@@ -1411,30 +1636,37 @@ static void entry(void *arg)
     script_t *s = c->s;
     js_state *J = s->J;
     dom_node *n = dom_node_by_id(s->doc, c->node);
+    if (c->op != OP_BOOT) {
+        /* nach dem Laden: Fordert die Seite Skriptdateien nach, hat jedes Ereignis seine eigene Geduld */
+        s->fetch_ms = 0;
+        s->fetch_limit = LATE_FETCH_MS;
+    }
     switch (c->op) {
     case OP_BOOT:
         s->booting = true;
         s->boot_until = time_ms() + BOOT_MS;
-        run_scripts(s, true);
+        s->fetch_limit = FETCH_MS;
+        run_scripts(s);
         s->booting = false;
         s->boot_until = 0;
         if (!js_dead(J)) {
+            /* (auch was Skripte jetzt noch an Skriptdateien nachfordern, wird geholt) */
             fire(s, s->doc->root, "DOMContentLoaded", NULL, NULL);
-            run_scripts(s, false);
+            run_scripts(s);
             fire(s, NULL, "load", NULL, NULL);
-            run_scripts(s, false);
+            run_scripts(s);
             /* was sich Skripte für "sofort" vorgenommen haben, gehört noch zum Laden */
             js_timers_run(J, EVENT_MS);
-            run_scripts(s, false);
+            run_scripts(s);
         }
         break;
     case OP_CLICK:
         c->result = !n || fire(s, n, "click", NULL, NULL);
-        run_scripts(s, false);
+        run_scripts(s);
         break;
     case OP_SUBMIT:
         c->result = !n || fire(s, n, "submit", dom_node_by_id(s->doc, c->button), NULL);
-        run_scripts(s, false);
+        run_scripts(s);
         break;
     case OP_FIELD: {
         if (!n || n->type != DOM_ELEMENT)
@@ -1453,22 +1685,22 @@ static void entry(void *arg)
             fire(s, n, "input", NULL, NULL);
         if (c->finished)
             fire(s, n, "change", NULL, NULL);
-        run_scripts(s, false);
+        run_scripts(s);
         break;
     }
     case OP_EVENT:
         c->result = !n || fire(s, n, c->type, NULL, c->value);
-        run_scripts(s, false);
+        run_scripts(s);
         break;
     case OP_EVAL:
         if (c->value)
             js_run(J, c->value, strlen(c->value), "javascript:", s->host.budget_ms ? s->host.budget_ms : EVENT_MS);
-        run_scripts(s, false);
+        run_scripts(s);
         break;
     case OP_TICK:
         c->result = js_timers_run(J, EVENT_MS);
         if (c->result)
-            run_scripts(s, false);
+            run_scripts(s);
         c->wait = js_timers_due(J);
         break;
     default:

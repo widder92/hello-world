@@ -798,6 +798,11 @@ bool js_call(js_state *J, int argc)
     return do_call(J, argc, CALL);
 }
 
+void js_hoist(js_state *J, js_fninfo *info, js_object *env)
+{
+    hoist(J, info, env);
+}
+
 bool js_call_mode(js_state *J, int argc, bool construct)
 {
     return do_call(J, argc, construct ? CONSTRUCT : CALL);
@@ -1849,6 +1854,12 @@ static bool eval(js_state *J, js_node *n, js_object *env)
     }
     case N_TAGGED:
         ok = eval_tagged(J, n, env);
+        break;
+    case N_IMPORT_CALL:
+        ok = eval(J, n->a, env) && js_module_import(J, env);
+        break;
+    case N_IMPORT_META:
+        ok = js_module_meta(J, env);
         break;
     case N_LOGICAL:
         ok = eval(J, n->a, env);

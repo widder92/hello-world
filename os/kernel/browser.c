@@ -160,6 +160,8 @@ typedef struct {
     char incoming_url[URL_SIZE];
     char *incoming_source;
     css_sheet_t *incoming_css;
+    struct style_cache *style_cache, *incoming_style_cache;     /* die geladenen Stylesheet-Dateien */
+    uint64_t style_mark, incoming_style_mark;                   /* Kennzahl der Stylesheets der Seite */
     size_t incoming_len;
     bool incoming_html;
     int incoming_columns;
@@ -623,10 +625,10 @@ static const char start_page[] =
     "<li>Verschlüsselte Verbindungen (https) mit Prüfung des Servers</li>"
     "<li>Dateien, die keine Webseiten sind, bei den eigenen Dateien speichern</li>"
     "<li>JavaScript ausführen, wenn du es einschaltest (Knopf oben rechts) - auch "
-    "Skripte mit den neueren Sprachmitteln (async/await, Klassen, Proxy)</li></ul>"
+    "Skripte mit den neueren Sprachmitteln (async/await, Klassen, Module)</li></ul>"
     "<h2>Was er nicht kann</h2>"
     "<ul><li>Videos, Ton und gezeichnete Flächen (Canvas)</li>"
-    "<li>Skripte, die als Module geladen oder erst später nachgefordert werden, und große "
+    "<li>Seiten, deren Skripte ihre Inhalte von einem anderen Server holen, und große "
     "Web-Anwendungen</li><li>Abstände, Rahmen und frei platzierte Elemente einer Seite</li>"
     "<li>Dateien hochladen</li></ul>"
     "<h2>Bedienung</h2>"
@@ -1020,9 +1022,32 @@ static script_host_t script_host(browser_t *b)
 
 /* --- Stylesheets der Seite laden -------------------------------------------------------------- */
 
+/*
+ * Die Stylesheet-Dateien einer Seite, wie sie geladen wurden. Fügt ein Skript
+ * später ein Stylesheet ein oder ändert eines, wird die Gestaltung neu
+ * zusammengesetzt - die schon geholten Dateien kommen dann von hier.
+ */
+typedef struct style_cache {
+    struct {
+        char *url, *text;               /* text NULL: ließ sich nicht laden */
+        size_t len;
+    } files[STYLES_MAX];
+    int count;
+} style_cache_t;
+
+static void style_cache_free(style_cache_t *cache)
+{
+    for (int i = 0; cache && i < cache->count; i++) {
+        kfree(cache->files[i].url);
+        kfree(cache->files[i].text);
+    }
+    kfree(cache);
+}
+
 typedef struct {
     browser_t *b;
     css_sheet_t *css;
+    style_cache_t *cache;
     int files;
     uint64_t deadline;
 } styles_ctx_t;
@@ -1034,6 +1059,13 @@ static void style_found(void *ctx, bool linked, const char *text, size_t len)
         css_add(c->css, text, len);
         return;
     }
+    for (int i = 0; c->cache && i < c->cache->count; i++) {
+        if (strcmp(c->cache->files[i].url, text) == 0) {
+            if (c->cache->files[i].text)
+                css_add(c->css, c->cache->files[i].text, c->cache->files[i].len);
+            return;
+        }
+    }
     if (c->files >= STYLES_MAX || time_ms() >= c->deadline || c->b->closing)
         return;
     c->files++;
@@ -1044,10 +1076,24 @@ static void style_found(void *ctx, bool linked, const char *text, size_t len)
         .max_body = STYLE_FILE_MAX,
         .timeout_ms = 10000,
     };
-    if (!http_request(text, &options, &response))
-        return;
-    if (response.status == 200 && response.body)
+    bool ok = http_request(text, &options, &response) && response.status == 200 && response.body;
+    if (ok)
         css_add(c->css, response.body, response.length);
+    else
+        response.body = NULL;
+    /* merken - auch den Fehlschlag, damit er sich nicht bei jeder Änderung der Seite wiederholt */
+    if (c->cache && c->cache->count < STYLES_MAX) {
+        int at = c->cache->count;
+        size_t n = strlen(text) + 1;
+        c->cache->files[at].url = kmalloc(n);
+        if (c->cache->files[at].url) {
+            memcpy(c->cache->files[at].url, text, n);
+            c->cache->files[at].text = response.body;
+            c->cache->files[at].len = ok ? response.length : 0;
+            c->cache->count++;
+            return;
+        }
+    }
     kfree(response.body);
 }
 
@@ -1071,12 +1117,13 @@ static uint64_t styles_mark(const char *html, size_t len, const char *url)
 }
 
 /* Sammelt die Stylesheets einer Seite ein; NULL bei Speichermangel. */
-static css_sheet_t *load_styles(browser_t *b, const char *html, size_t len, const char *url)
+static css_sheet_t *load_styles(browser_t *b, style_cache_t *cache, const char *html, size_t len,
+                                const char *url)
 {
     css_sheet_t *css = css_create(LAYOUT_W);
     if (!css)
         return NULL;
-    styles_ctx_t ctx = { b, css, 0, time_ms() + STYLE_TIME_MS };
+    styles_ctx_t ctx = { b, css, cache, 0, time_ms() + STYLE_TIME_MS };
     html_find_styles(html, len, url, style_found, &ctx);
     return css;
 }
@@ -1272,14 +1319,18 @@ static int pictures_pending(browser_t *b, bool start)
     return waiting + loading;
 }
 
-static void deliver(browser_t *b, page_t *page, const char *url, char *source,
-                    size_t len, bool html, int columns, css_sheet_t *css, script_t *script)
+static void deliver_styled(browser_t *b, page_t *page, const char *url, char *source,
+                           size_t len, bool html, int columns, css_sheet_t *css, script_t *script,
+                           style_cache_t *styles, uint64_t mark)
 {
     while (b->incoming_ready && !b->closing)
         task_sleep(20);
     kfree(b->incoming_source);
     css_free(b->incoming_css);
     script_destroy(b->incoming_script);
+    style_cache_free(b->incoming_style_cache);
+    b->incoming_style_cache = styles;
+    b->incoming_style_mark = mark;
     b->incoming_script = script;
     b->incoming_css = css;
     b->incoming_source = source;
@@ -1289,6 +1340,12 @@ static void deliver(browser_t *b, page_t *page, const char *url, char *source,
     b->incoming = page;
     strlcpy(b->incoming_url, url, sizeof(b->incoming_url));
     b->incoming_ready = true;
+}
+
+static void deliver(browser_t *b, page_t *page, const char *url, char *source,
+                    size_t len, bool html, int columns, css_sheet_t *css, script_t *script)
+{
+    deliver_styled(b, page, url, source, len, html, columns, css, script, NULL, 0);
 }
 
 /* Speichert etwas, das keine Webseite ist, bei den eigenen Dateien. */
@@ -1445,6 +1502,7 @@ static void worker(void *arg)
         int columns = LAYOUT_W;
         css_sheet_t *css = NULL;
         script_t *script = NULL;
+        style_cache_t *styles = html ? kzalloc(sizeof(style_cache_t)) : NULL;
         bool wanted = html && b->javascript, away = false;
         if (wanted) {
             /*
@@ -1466,7 +1524,7 @@ static void worker(void *arg)
             uint64_t mark = 0;
             if (early) {
                 set_status(b, false, "Lade Gestaltung von %s ...", host);
-                css = load_styles(b, early, early_len, url);
+                css = load_styles(b, styles, early, early_len, url);
                 mark = styles_mark(early, early_len, url);
                 kfree(early);
             }
@@ -1509,19 +1567,22 @@ static void worker(void *arg)
         }
         if (away) {
             kfree(content);
+            style_cache_free(styles);
             post = false;
             strlcpy(url, next, URL_SIZE);
             continue;
         }
         if (html && !css) {
             set_status(b, false, "Lade Gestaltung von %s ...", host);
-            css = load_styles(b, content, length, url);
+            css = load_styles(b, styles, content, length, url);
             script_set_styles(script, css);
         }
+        uint64_t style_state = html ? styles_mark(content, length, url) : 0;
         page_t *page = layout_page(b, content, length, url, html, css, script != NULL);
         if (!page) {
             kfree(content);
             css_free(css);
+            style_cache_free(styles);
             script_destroy(script);
             set_status(b, true, "Nicht genug Speicher für diese Seite");
             break;
@@ -1544,7 +1605,7 @@ static void worker(void *arg)
                        failed, skipped);
         else
             set_status(b, false, "");
-        deliver(b, page, url, content, length, html, columns, css, script);
+        deliver_styled(b, page, url, content, length, html, columns, css, script, styles, style_state);
         break;
     }
 
@@ -1737,6 +1798,22 @@ static void script_show(browser_t *b)
     uint64_t start = time_ms();
     size_t len = 0;
     char *source = script_html(b->script, &len);
+    if (source && b->style_cache) {
+        /*
+         * Haben die Skripte ein Stylesheet eingefügt, entfernt oder geändert?
+         * Dann die Gestaltung neu zusammensetzen (neue Dateien werden geholt).
+         */
+        uint64_t mark = styles_mark(source, len, b->url);
+        if (mark != b->style_mark) {
+            css_sheet_t *css = load_styles(b, b->style_cache, source, len, b->url);
+            if (css) {
+                script_set_styles(b->script, css);
+                css_free(b->css);
+                b->css = css;
+            }
+            b->style_mark = mark;
+        }
+    }
     page_t *fresh = source ? layout_page(b, source, len, b->url, true, b->css, true) : NULL;
     if (!fresh) {
         kfree(source);
@@ -1859,6 +1936,10 @@ static void take_incoming(browser_t *b)
     b->page = b->incoming;
     b->css = b->incoming_css;
     b->incoming_css = NULL;
+    style_cache_free(b->style_cache);
+    b->style_cache = b->incoming_style_cache;
+    b->incoming_style_cache = NULL;
+    b->style_mark = b->incoming_style_mark;
     b->source = b->incoming_source;
     b->source_len = b->incoming_len;
     b->source_html = b->incoming_html;
@@ -3538,6 +3619,8 @@ void browser_app(void *arg)
     kfree(b->incoming_source);
     css_free(b->css);
     css_free(b->incoming_css);
+    style_cache_free(b->style_cache);
+    style_cache_free(b->incoming_style_cache);
     for (int i = 0; i < b->history_count; i++)
         kfree(b->history[i]);
     for (int i = 0; i < b->forward_count; i++)

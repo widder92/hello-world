@@ -167,6 +167,12 @@
     return g;
   });
 
+  /* import("..."): das Ergebnis als Promise - fertig, sobald das Modul durchgelaufen ist */
+  register('importResult', function (promise, ns) {
+    return Promise.resolve(promise).then(function () { return ns; });
+  });
+  register('importFailed', function (reason) { return Promise.reject(reason); });
+
   /* --- Ergänzungen zu Array, Math, Object, Set ----------------------------------------------- */
 
   var AP = Array.prototype;
