@@ -1,3 +1,9 @@
+HelloOS 0.27
+- Browser: Die Maus zählt. Menüs klappen auf, wenn der Zeiger darüber steht, Links und Schaltflächen reagieren beim Überfahren, und die Statuszeile zeigt, wohin ein Link führt. Skripte erfahren, worüber der Zeiger steht.
+- Browser: Was eine Seite ans Fenster hängt, bleibt dort - Kopfleisten und Tabellenköpfe beim Rollen oben, Hinweise am unteren Rand, "nach oben"-Knöpfe. Halbdurchsichtige Flächen scheinen durch.
+- Browser: Skripte bemerken, wenn sich die Seite ändert (MutationObserver) - viele Seiten warten damit auf Inhalte, die erst später entstehen.
+- Noch nicht möglich: Ziehen mit der Maus, Bereiche zum Rollen innerhalb einer Seite, Schatten, Bewegung, Schriften der Seite; Zeichenflächen, Video und Ton; Tabs. Hängt eine Seite etwas fest ins Fenster, das sich ohne JavaScript nicht schließen lässt, hilft Strg+E. JavaScript bleibt ausgeliefert ausgeschaltet.
+
 HelloOS 0.26
 - Browser: Skripte erfahren, wo etwas auf der Seite steht und wie groß es ist. Bilder und Inhalte, die eine Seite erst lädt, wenn man zu ihnen hinrollt, erscheinen jetzt; Skripte können die Seite rollen ("nach oben", "zum Abschnitt") und merken, wenn du rollst oder das Fenster größer ziehst.
 - Browser: Wikipedia und ähnliche Seiten starten ihre Skripte jetzt wirklich (bisher gaben sie nach einer Eignungsprobe auf). Mit eingeschaltetem JavaScript steht bei Wikipedia das Inhaltsverzeichnis links und lässt sich einklappen.
@@ -14,8 +20,3 @@ HelloOS 0.24
 - Browser: Seiten sehen jetzt aus, wie sie gestaltet sind. Ein neuer Seitenaufbau setzt jedes Element als Kasten mit Abstand, Rahmen (auch runde Ecken) und Hintergrund; Kästen stehen untereinander, nebeneinander, im Raster oder frei platziert, Tabellen haben Linien, Knöpfe ihre Farben. Wikipedia, die WordPress-Verwaltung und viele andere Seiten sehen damit aus wie in den großen Browsern.
 - Strg+E schaltet auf die bisherige einfache Darstellung (nur Text, Links, Bilder, Formulare) - falls eine Seite mit ihrer Gestaltung nicht zu lesen ist. Noch einmal Strg+E schaltet zurück.
 - Noch nicht möglich: Hintergrundbilder und Farbverläufe, Schatten, Bewegung, Schriften der Seite, Bereiche zum Rollen innerhalb einer Seite; Zeichenflächen, Video und Ton; Tabs. JavaScript bleibt ausgeliefert ausgeschaltet.
-
-HelloOS 0.23
-- Browser: Daten von anderen Servern. Skripte dürfen jetzt auch von einem zweiten Server nachladen (fetch, XMLHttpRequest) - mit den Schutzregeln der großen Browser: Die Antwort sieht ein Skript nur, wenn der fremde Server es dieser Seite erlaubt; deine Cookies gehen dorthin nur mit dessen ausdrücklicher Erlaubnis; vor Ungewöhnlichem (PUT, DELETE, eigene Kopfzeilen) wird der Server erst gefragt. Viele Seiten, die bisher leer blieben, zeigen damit ihre Inhalte.
-- Schutz fürs Heimnetz: Die Skripte einer Seite aus dem Internet erreichen nur öffentliche Adressen - nicht deinen Router, Drucker oder andere Geräte zu Hause.
-- Noch nicht möglich: Abstände, Rahmen und frei platzierte Elemente; Zeichenflächen, Video und Ton; Tabs. JavaScript bleibt ausgeliefert ausgeschaltet; die Skripte laufen weiterhin ohne Schutzwand zum System.

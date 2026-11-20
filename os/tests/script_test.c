@@ -1151,6 +1151,49 @@ int main(int argc, char **argv)
         css_free(css);
     }
 
+    /* 4b4. Änderungen am Abbild beobachten (MutationObserver) */
+    reported = 0;
+    s = load("<html><body>" PRE "<ul id=liste class=alt><li id=eins>eins</li><li id=zwei>zwei</li></ul>"
+             "<p id=text>Text</p><div id=fremd></div><script>\n"
+             "function g(i) { return document.getElementById(i); }\n"
+             "function name(n) { return n ? n.id || n.nodeName : '-'; }\n"
+             "var log = [], andere = [], nurKlasse = [];\n"
+             "var mo = new MutationObserver(function (records, wer) {\n"
+             "  check(wer === mo && this === mo, 'der Beobachter kommt mit');\n"
+             "  records.forEach(function (r) { log.push(r.type === 'childList' ? name(r.target) + (r.addedNodes.length ? '+' + name(r.addedNodes[0]) : '-' + name(r.removedNodes[0])) + '(' + name(r.previousSibling) + ',' + name(r.nextSibling) + ')'\n"
+             "    : r.type === 'attributes' ? name(r.target) + '@' + r.attributeName + '=' + r.oldValue : name(r.target) + '~' + r.oldValue); }); });\n"
+             "mo.observe(g('liste'), { childList: true, subtree: true, attributes: true, attributeOldValue: true, characterData: true, characterDataOldValue: true });\n"
+             "new MutationObserver(function (r) { r.forEach(function (x) { andere.push(x.type + ':' + name(x.target)); }); }).observe(g('liste'), { childList: true });\n"
+             "var filter = new MutationObserver(function (r) { r.forEach(function (x) { nurKlasse.push(x.attributeName + '=' + x.oldValue); }); });\n"
+             "filter.observe(document, { attributeFilter: ['class'], subtree: true });\n"
+             "var neu = document.createElement('li'); neu.id = 'drei'; neu.textContent = 'drei';\n"
+             "eq(log.length, 0, 'noch nicht in der Seite: nichts zu melden');\n"
+             "g('liste').appendChild(neu);\n"
+             "g('liste').setAttribute('class', 'neu'); g('eins').className = 'a'; g('eins').title = 't';\n"
+             "g('zwei').firstChild.data = 'ZWEI';\n"
+             "g('liste').removeChild(g('eins'));\n"
+             "g('fremd').textContent = 'woanders'; g('text').setAttribute('class', 'p');\n"
+             "eq(log.length, 0, 'gemeldet wird erst, wenn das Skript fertig ist');\n"
+             "Promise.resolve().then(function () {\n"
+             "  eq(log.join(' '), 'liste+drei(zwei,-) liste@class=alt eins@class=null eins@title=null #text~zwei liste-eins(-,zwei)', 'Kinder, Attribute, Text - mit dem Wert von vorher');\n"
+             "  eq(andere.join(' '), 'childList:liste childList:liste', 'ohne subtree und attributes: nur die Kinder des Elements');\n"
+             "  eq(nurKlasse.join(' '), 'class=null class=null class=null', 'attributeFilter über das ganze Dokument (ohne alten Wert, wenn keiner verlangt ist)');\n"
+             "  log = [];\n"
+             "  g('zwei').innerHTML = '<b id=fett>x</b><i id=schraeg>y</i>';\n"
+             "  eq(mo.takeRecords().map(function (r) { return r.type + (r.addedNodes.length ? '+' + name(r.addedNodes[0]) : '-' + name(r.removedNodes[0])); }).join(' '), 'childList-#text childList+fett childList+schraeg', 'innerHTML: der alte Inhalt geht, der neue kommt; takeRecords holt es sofort');\n"
+             "  mo.disconnect(); g('liste').appendChild(document.createElement('li'));\n"
+             "  var fehler = ''; try { new MutationObserver(function () {}).observe(g('liste'), {}); } catch (e) { fehler = e.name; }\n"
+             "  eq(fehler, 'TypeError', 'ohne Angabe, was beobachtet wird');\n"
+             "  setTimeout(function () { eq(log.length, 0, 'abgemeldet: nichts mehr'); eq(andere.length, 3, 'der andere Beobachter läuft weiter'); fertig(); }, 0);\n"
+             "});\n"
+             "</script></body></html>", 0);
+    if (s)
+        run_timers(s, 3);
+    check(s != NULL && reported == 1, "Änderungen am Abbild werden beobachtet (MutationObserver)");
+    if (s && reported != 1)
+        printf("  letzte Meldung: %s\n", last_log);
+    script_destroy(s);
+
     /* 4c. Maße und Lage der Elemente, Rollen, "ist es im Bild?" */
     static const char page_measure[] =
         "<html><head><style>body{margin:0} #kopf{height:50px;padding:10px 20px;border:3px solid #000}"

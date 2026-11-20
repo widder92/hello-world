@@ -238,11 +238,26 @@ bool dom_contains(const dom_node *ancestor, const dom_node *node)
     return false;
 }
 
+/* Meldet eine Änderung, wenn jemand zuhört - und nur für das, was in der Seite hängt. */
+static void notify(int kind, dom_node *target, dom_node *node, dom_node *prev, dom_node *next,
+                   const char *name, const char *old)
+{
+    dom_doc *doc = target->doc;
+    if (!doc->changed)
+        return;
+    const dom_node *top = target;
+    for (int depth = 0; top->parent && depth < 100000; depth++)
+        top = top->parent;
+    if (top == doc->root)
+        doc->changed(doc->changed_ctx, kind, target, node, prev, next, name, old);
+}
+
 void dom_remove(dom_node *child)
 {
     dom_node *parent = child->parent;
     if (!parent)
         return;
+    notify(DOM_CHILD_REMOVED, parent, child, child->prev, child->next, NULL, NULL);
     if (child->prev)
         child->prev->next = child->next;
     else
@@ -270,6 +285,7 @@ static void link_before(dom_node *parent, dom_node *child, dom_node *ref)
     else
         parent->last = child;
     refresh_css(child);
+    notify(DOM_CHILD_ADDED, parent, child, child->prev, child->next, NULL, NULL);
 }
 
 bool dom_insert(dom_node *parent, dom_node *child, dom_node *ref)
@@ -376,6 +392,8 @@ bool dom_attr_set(dom_node *node, const char *name, const char *value, size_t va
     for (size_t i = 0; i <= n; i++)
         folded[i] = lower(name[i]);
     dom_attr *a = find_attr(node, folded);
+    notify(DOM_ATTRIBUTE, node, NULL, NULL, NULL, folded, a ? a->value : NULL);
+    a = find_attr(node, folded);        /* (wer zuhört, kann nichts verändert haben - sicher ist sicher) */
     if (a) {
         char *v = copy_text(doc, value, value_len);
         if (!v)
@@ -401,6 +419,10 @@ void dom_attr_remove(dom_node *node, const char *name)
     for (size_t i = 0; i <= n; i++)
         folded[i] = lower(name[i]);
     dom_attr *a = find_attr(node, folded);
+    if (!a)
+        return;
+    notify(DOM_ATTRIBUTE, node, NULL, NULL, NULL, folded, a->value);
+    a = find_attr(node, folded);
     if (!a)
         return;
     give(node->doc, a->name, strlen(a->name) + 1);
@@ -1207,8 +1229,14 @@ bool dom_set_inner_html(dom_node *node, const char *html, size_t len)
         touch(doc);
         return true;
     }
+    /* beim Einlesen entsteht vieles auf einmal: gemeldet werden am Ende nur die neuen Kinder des Elements */
+    void (*listener)(void *, int, dom_node *, dom_node *, dom_node *, dom_node *, const char *, const char *) = doc->changed;
+    doc->changed = NULL;
     builder b = { doc, node, node, NULL, NULL, NULL, true, depth_of(node) };
     build(&b, html, len);
+    doc->changed = listener;
+    for (dom_node *c = node->first; c && listener; c = c->next)
+        notify(DOM_CHILD_ADDED, node, c, c->prev, c->next, NULL, NULL);
     touch(doc);
     return !doc->failed;
 }
@@ -1222,6 +1250,7 @@ bool dom_set_text(dom_node *node, const char *text, size_t len)
         char *copy = copy_text(doc, text, len);
         if (!copy)
             return false;
+        notify(DOM_TEXT_CHANGED, node, NULL, NULL, NULL, NULL, node->text);
         give(doc, node->text, (size_t)node->text_len + 1);
         node->text = copy;
         node->text_len = (uint32_t)len;

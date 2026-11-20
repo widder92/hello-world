@@ -73,6 +73,8 @@ struct script {
     int scroll_y;                       /* diese Höhe der Seite steht oben in der Anzeige */
     bool watching;                      /* ein Skript beobachtet, was ins Bild kommt */
     bool moves_wanted;                  /* ein Skript will wissen, wenn sich der Mauszeiger bewegt */
+    js_object *sink;                    /* nimmt Änderungen am Abbild entgegen (MutationObserver), oder NULL */
+    bool sinking, running;
     uint32_t seen_version;              /* Stand des Abbilds, als die Beobachter zuletzt prüften */
     bool seen_any;
 };
@@ -747,7 +749,7 @@ enum {
     D_VALUE, D_SETVALUE, D_CHECKED, D_SETCHECKED, D_SELECTED, D_SETSELECTED, D_STYLE, D_DATASET,
     D_URL, D_RESOLVE, D_WISH, D_ALERT, D_CONFIRM, D_WRITE, D_SCRIPT, D_SIZE, D_PROTOS, D_DISPATCHER,
     D_SHOWN, D_COMPUTED, D_REQUEST, D_RECT, D_PAGE, D_SCROLL, D_WATCH, D_VERSION, D_ANCHOR, D_AT,
-    D_WANTS, D_FOCUSED,
+    D_WANTS, D_FOCUSED, D_MUTATIONS,
 };
 
 static bool lower_name(js_state *J, int i, char *out, size_t size)
@@ -1387,6 +1389,32 @@ static bool request(js_state *J, script_t *s)
     return ok ? !J->fatal : js_push(J, js_null());
 }
 
+/*
+ * Das Abbild meldet eine Änderung: an die Funktion der Skripte weiterreichen,
+ * die sie den Beobachtern zuordnet. Sie läuft mitten in der Änderung und
+ * merkt sich nur etwas - zugestellt wird, wenn das laufende Skript fertig ist.
+ */
+static void on_change(void *ctx, int kind, dom_node *target, dom_node *node, dom_node *prev, dom_node *next,
+                      const char *name, const char *old)
+{
+    script_t *s = ctx;
+    js_state *J = s->J;
+    if (!s->sink || !s->running || s->sinking || js_dead(J))
+        return;
+    s->sinking = true;
+    int base = J->top;
+    bool ok = js_push(J, js_obj(s->sink)) && js_push(J, js_undef()) && js_push(J, js_num(kind)) &&
+              push_node(J, target) && (node ? push_node(J, node) : js_push(J, js_null())) &&
+              (prev ? push_node(J, prev) : js_push(J, js_null())) &&
+              (next ? push_node(J, next) : js_push(J, js_null())) &&
+              (name ? js_push_cstr(J, name) : js_push(J, js_null())) &&
+              (old ? js_push_cstr(J, old) : js_push(J, js_null()));
+    if (ok)
+        js_call(J, 7);
+    J->top = base;
+    s->sinking = false;
+}
+
 static bool dom_fn(js_state *J, int argc)
 {
     script_t *s = script_of(J);
@@ -1402,7 +1430,7 @@ static bool dom_fn(js_state *J, int argc)
     case D_DOC: case D_EL: case D_TEXTNODE: case D_COMMENT: case D_FRAG: case D_PARSE: case D_URL:
     case D_RESOLVE: case D_WISH: case D_ALERT: case D_CONFIRM: case D_WRITE: case D_SCRIPT:
     case D_SIZE: case D_PROTOS: case D_DISPATCHER: case D_REQUEST: case D_PAGE: case D_SCROLL:
-    case D_WATCH: case D_VERSION: case D_AT: case D_WANTS: case D_FOCUSED:
+    case D_WATCH: case D_VERSION: case D_AT: case D_WANTS: case D_FOCUSED: case D_MUTATIONS:
         break;
     default:
         n = need_node(J, 0);
@@ -1757,6 +1785,18 @@ static bool dom_fn(js_state *J, int argc)
         }
         return best ? push_node(J, best) : js_push(J, js_null());
     }
+    case D_MUTATIONS:
+        /* wer Änderungen am Abbild beobachtet, gibt hier die Funktion an, die sie entgegennimmt (oder null) */
+        if (js_is_callable(js_arg(J, 0))) {
+            s->sink = js_arg(J, 0)->u.o;
+            js_define(J, J->registry, js_intern_cstr(J, "mutations"), *js_arg(J, 0), JS_P_ALL);
+            doc->changed = on_change;
+            doc->changed_ctx = s;
+        } else {
+            s->sink = NULL;
+            doc->changed = NULL;
+        }
+        return js_push(J, js_undef());
     case D_WANTS:                       /* ein Skript hört auf Bewegungen des Mauszeigers */
         s->moves_wanted = true;
         return js_push(J, js_undef());
@@ -1896,6 +1936,7 @@ static const struct {
     { "computed", 1, D_COMPUTED }, { "request", 6, D_REQUEST }, { "rect", 1, D_RECT },
     { "page", 0, D_PAGE }, { "scroll", 1, D_SCROLL }, { "watch", 1, D_WATCH }, { "version", 0, D_VERSION },
     { "anchor", 1, D_ANCHOR }, { "at", 2, D_AT }, { "wants", 1, D_WANTS }, { "focused", 0, D_FOCUSED },
+    { "mutations", 1, D_MUTATIONS },
 };
 
 /* --- Anlegen ------------------------------------------------------------------------------------- */
@@ -2455,8 +2496,11 @@ static void entry(void *arg)
 static void run(script_t *s, call_t *c)
 {
     c->s = s;
-    if (s && s->J && !js_dead(s->J))
+    if (s && s->J && !js_dead(s->J)) {
+        s->running = true;
         call_on_stack(entry, c, (char *)s->stack + STACK_BYTES);
+        s->running = false;
+    }
 }
 
 void script_boot(script_t *s)

@@ -731,6 +731,35 @@ static void test_frames(void)
     CHECK(page->frame_count == 1 && page->frames[0].limit >= 300 && frame_of_box(0x444444) == 0);
     CHECK(frame_shift(page->frames, 1, 1, 150) == 150 && frame_shift(page->frames, 1, 1, 900) == page->frames[0].limit - page->frames[0].h);
 
+    /*
+     * Reihenfolge übereinander: Ein Kasten mit z-index liegt samt allem darin über dem, was nach ihm
+     * kommt - ohne z-index zählt die Reihenfolge in der Seite (das Spätere liegt oben).
+     */
+    static const char stack[] =
+        "<body style='margin:0'><div style='position:sticky;top:0;height:20px;%sbackground:#101010'>"
+        "<div style='position:absolute;top:20px;left:0;width:50px;height:50px;background:#202020'></div></div>"
+        "<div style='position:sticky;top:20px;height:20px;background:#303030'></div><div style='height:900px'></div>";
+    char page_text[600];
+    for (int with_z = 0; with_z < 2; with_z++) {
+        snprintf(page_text, sizeof(page_text), stack, with_z ? "z-index:5;" : "");
+        lay(page_text, 400, false);
+        int bar = -1, menu = -1, later = -1;
+        for (int i = 0; i < page->paint_count; i++) {
+            uint32_t color = page->paint[i].kind == PAINT_BOX ? page->boxes[page->paint[i].index].background & 0xFFFFFF : 0;
+            bar = color == 0x101010 ? i : bar;
+            menu = color == 0x202020 ? i : menu;
+            later = color == 0x303030 ? i : later;
+        }
+        CHECK(bar >= 0 && menu > bar && later >= 0 && (with_z ? later < bar : later > menu));
+    }
+
+    /* ein Schleier über der Seite: halb durchsichtig, am Fenster befestigt */
+    lay("<body style='margin:0'><div style='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5)'>"
+        "<p style='margin:0;background:#ffffff80'>Dialog</p></div><div style='height:900px;background:#00ff00ff'></div>", 400, false);
+    const box_t *veil = colored(0x000000), *half = colored(0xFFFFFF), *solid = colored(0x00FF00);
+    CHECK(veil && veil->alpha == 127 && veil->w == 400 && veil->h == 600 && half && half->alpha == 128 &&
+          solid && (solid->alpha == 0 || solid->alpha == 255));
+
     /* ein Ausschnitt im Befestigten bewegt sich mit ihm */
     lay("<body style='margin:0'><div style='position:fixed;top:20px;left:0;width:100px;height:30px;overflow:hidden'>"
         "<div style='height:90px;background:#555555'>lang</div></div><div style='height:900px'></div>", 400, false);

@@ -648,6 +648,8 @@ static const char start_page[] =
     "<h2>Was dieser Browser kann</h2>"
     "<ul><li>Seiten so zeigen, wie sie gestaltet sind: mit Abständen, Rahmen, Hintergründen "
     "(auch Bildern und Verläufen), Spalten, Rastern, Tabellen und Bildern</li>"
+    "<li>Menüs, die unter dem Mauszeiger aufklappen; Leisten, die beim Rollen am Fenster "
+    "stehen bleiben; über einem Link zeigt die Statuszeile sein Ziel</li>"
     "<li>Formulare ausfüllen und absenden, auch Anmeldungen (Cookies bleiben, "
     "solange das Fenster offen ist)</li>"
     "<li>Verschlüsselte Verbindungen (https) mit Prüfung des Servers</li>"
@@ -1840,6 +1842,9 @@ static void relayout(browser_t *b, bool force)
     page_t *old = b->page;
     if (!old || !b->source || (b->page_columns == LAYOUT_W && !force))
         return;
+    if (!b->script && !b->doc && b->source_html && !simple_wanted)
+        b->doc = dom_parse(b->source, b->source_len);       /* (in der einfachen Darstellung geladen: jetzt nachholen) */
+    b->hover_scroll = -1;               /* neu gesetzt: Unter dem Zeiger kann etwas anderes liegen */
     if (b->page_columns != LAYOUT_W && b->source_html && b->style_cache) {
         /*
          * Andere Fensterbreite: Was die Stylesheets davon abhängig machen
@@ -2088,6 +2093,7 @@ static void script_show(browser_t *b)
     b->page_columns = LAYOUT_W;
     page_free(old);
     clamp_scroll(b);
+    b->hover_scroll = -1;               /* unter dem Zeiger kann jetzt etwas anderes liegen */
     pictures_sync(b, true);
     pictures_pending(b, true);
     /* Seiten, die sich ständig ändern, sollen den Rechner nicht mit Neusetzen auslasten. */
@@ -2146,6 +2152,7 @@ static void take_incoming(browser_t *b)
     b->incoming_doc = NULL;
     b->hover_node = b->hover_wanted = 0;        /* (die Nummern meinten Elemente der alten Seite) */
     b->hover_link = -1;
+    b->hover_scroll = -1;                       /* ... und unter dem Zeiger liegt jetzt etwas anderes */
     b->restyle = false;
     b->script_next = 0;
     b->script_show_after = 0;

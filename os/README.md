@@ -375,6 +375,8 @@ Was er kann:
   Auswahllisten, mehrzeilige Textfelder (öffnen einen kleinen Editor)
 - sich anmelden: Cookies bleiben erhalten, solange das Fenster offen ist –
   danach sind sie weg, gespeichert wird nichts
+- Steht der Mauszeiger über einem Link, zeigt die Statuszeile, wohin er
+  führt.
 - https mit Prüfung des Servers; die Statuszeile zeigt, ob die Verbindung
   verschlüsselt ist. Soll ein Passwort unverschlüsselt (http) gesendet werden,
   fragt der Browser vorher nach.
@@ -421,9 +423,23 @@ Was er kann:
     wenn es eng wird –, `repeat`, „so viele, wie
     passen", Kinder über mehrere Spalten oder Zeilen, benannte Flächen mit
     `grid-template-areas`), `inline-block`.
-  - **Frei platziert:** `position: relative`, `absolute`, `fixed` (steht am
-    Seitenanfang bzw. -ende statt am Fenster), `z-index` für die Reihenfolge
-    übereinander.
+  - **Frei platziert:** `position: relative`, `absolute`, `z-index` für die
+    Reihenfolge übereinander.
+  - **Am Fenster haftend** (seit 0.27): `position: fixed` steht fest im
+    Fenster, wie weit die Seite auch rollt (Kopfleisten, Hinweise am unteren
+    Rand, „nach oben"-Knöpfe); `position: sticky` mit `top` rollt mit und
+    bleibt dann oben haften, bis sein umgebender Kasten aus dem Bild ist –
+    auch Kopfzeilen von Tabellen.
+  - **Unter dem Mauszeiger** (seit 0.27): Regeln mit `:hover` gelten – Menüs
+    klappen auf, wenn die Maus darüber steht, Links und Karten wechseln die
+    Farbe. Ebenso `:focus`, `:focus-visible` und `:focus-within` für das
+    Feld, in das gerade getippt wird. Neu gesetzt wird die Seite nur, wenn
+    eine Regel beim betroffenen Element überhaupt danach fragt; auf
+    Seiten, deren Aufbau lange dauert, nur für Auf- und Zuklappen, nicht
+    für bloße Farbwechsel.
+  - **Durchscheinende Hintergründe** (seit 0.27): Farben mit Deckkraft
+    (`rgba(0, 0, 0, 0.5)`, `#rrggbbaa`) lassen durchschimmern, was dahinter
+    liegt – etwa der Schleier hinter einem Dialog.
   - **Tabellen:** Spalten so breit wie nötig und so breit wie möglich,
     Zellen über mehrere Spalten oder Zeilen, Rahmen (auch gemeinsame mit
     `border-collapse`), Abstände, Beschriftung, Ausrichtung in der Zelle –
@@ -441,7 +457,7 @@ Was er kann:
     Fenster breiter oder schmaler, gelten die Bedingungen neu. Jede Seite
     beginnt mit den Grundregeln, die alle Browser mitbringen (Absätze haben
     Abstand, Überschriften sind groß, Listen eingerückt). Regeln, die sich
-    hier nicht prüfen lassen (`:hover`, `:focus`, `:has(…)`), bleiben aus.
+    hier nicht prüfen lassen (`:active`, `:target`, `:has(…)`), bleiben aus.
   - **Knöpfe** (`<button>`, seit 0.26) sind Kästen wie alle anderen: mit
     ihrem Inhalt (Text, Symbole, Bilder) und dem Aussehen, das die Seite
     ihnen gibt. Schaltflächen von Formularen (`<input type="submit">`)
@@ -456,6 +472,8 @@ Was er kann:
   ![Spalten: Kopfzeile mit Menü, Inhalt neben der Seitenleiste, Kartenraster](docs/screenshot-spalten.png)
 
   ![Verlauf in der Kopfleiste, ein Foto als Hintergrund, Anführungszeichen und Haken als Zusätze, eine Markierung am Link](docs/screenshot-zierde.png)
+
+  ![Nach dem Rollen: Die Leiste haftet oben, ihr Untermenü ist unter dem Mauszeiger aufgeklappt, darunter die haftende Kopfzeile einer Tabelle; unten hängen ein Hinweis und ein Knopf am Fenster, und die Statuszeile zeigt das Ziel des Links](docs/screenshot-maus.png)
 - **Einfache Darstellung** (Strg+E): Zeigt eine Seite wie die Fassungen bis
   0.23 – nur Text, Links, Bilder und Formulare im Zeilenraster, ohne
   Abstände und Rahmen. Gedacht für Seiten, die mit ihrer Gestaltung hier
@@ -485,10 +503,11 @@ Was er **nicht** kann – und das ist bei heutigen Webseiten viel:
   Seite (`overflow: auto`/`scroll`: Solche Kästen werden so groß wie ihr
   Inhalt), kreisförmige und schräge Verläufe (sie erscheinen einfarbig bzw.
   gerade), mehrere Hintergrundbilder übereinander, Zähler in Zusätzen,
-  Symbole aus Symbolschriften und aus Masken (sie bleiben leer), Zustände
-  wie `:hover` und `:focus`, mehrspaltiger Text.
-  Was am Fenster haften soll (`position: fixed`, `sticky`), steht fest in
-  der Seite. Eingabefelder sehen immer gleich aus. Gesetzt wird in der
+  Symbole aus Symbolschriften und aus Masken (sie bleiben leer),
+  mehrspaltiger Text, Durchsichtigkeit ganzer Elemente (`opacity` zwischen 0
+  und 1). Haften gibt es nur am oberen Rand (`sticky` mit `bottom` oder zur
+  Seite hin bleibt, wo es steht); der Mauszeiger behält seine Form, auch
+  über Links. Eingabefelder sehen immer gleich aus. Gesetzt wird in der
   eingebauten Schrift (die Schriftarten der Seite werden nicht geladen);
   Schreibmaschinenschrift gibt es nur in einer Größe. Die Schrift kennt
   lateinische, griechische und kyrillische Zeichen; andere (etwa
@@ -498,8 +517,9 @@ Was er **nicht** kann – und das ist bei heutigen Webseiten viel:
   keine Videos
 - kein Hochladen von Dateien, keine Tabs (mehrere Browserfenster gehen), kein
   Passwortspeicher; Cookies gelten nur, solange das Fenster offen ist
-- Menüs, die erst unter dem Mauszeiger aufklappen, bleiben zu – oder stehen,
-  je nach Seite, offen da.
+- Ohne Skripte lässt sich nicht wegklicken, was eine Seite fest ins Fenster
+  hängt (Hinweisleisten, Schleier): Dort hilft die einfache Darstellung
+  (Strg+E).
 
 ### JavaScript
 
@@ -604,6 +624,15 @@ Abbild steht; ändern Skripte es, setzt der Browser die Seite neu.
 - **Fenstergröße** (seit 0.26): Wird das Fenster größer oder kleiner,
   erfahren es die Skripte (`resize`, `innerWidth`, `matchMedia(…)` samt
   `change`).
+- **Maus** (seit 0.27): Skripte erfahren, worüber der Mauszeiger steht –
+  `mouseover`, `mouseout`, `mouseenter`, `mouseleave` und (wenn jemand
+  zuhört) `mousemove`, jeweils mit der Lage des Zeigers; auch Klicks tragen
+  sie. `document.activeElement` nennt das Feld, das gerade bedient wird.
+- **Änderungen beobachten** (seit 0.27): `MutationObserver` meldet, was
+  Skripte am Abbild der Seite ändern – neue und entfernte Kinder, Attribute
+  (auf Wunsch mit altem Wert und Filter), Text; für ein Element oder alles
+  darunter (`subtree`). Viele Bibliotheken warten damit auf Elemente, die
+  erst später entstehen.
 
   ![Eine Testseite misst ihre Kästen nach – Breite, Höhe, Lage und Abstände stimmen – und zeigt oben, wie weit gerollt ist und was gerade im Bild liegt](docs/screenshot-masse.png)
 - **jQuery** (getestet mit 3.7) läuft samt Selektoren, Ein-/Ausblenden,
@@ -622,17 +651,16 @@ Abbild steht; ändern Skripte es, setzt der Browser die Seite neu.
 - Alles, was zeichnet oder abspielt: Canvas, WebGL, Video, Ton. Kein
   `localStorage` über das Fenster hinaus, keine Web Worker, kein WebSocket.
 - Bei Maßen und beim Rollen: Rollen lässt sich nur die ganze Seite, nicht
-  ein Bereich darin (`overflow: auto`); was am Fenster haften soll
-  (`position: fixed`, `sticky`), steht fest in der Seite – Skripte, die
-  damit rechnen, liegen daneben. Ein Skript, das abwechselnd ändert und
+  ein Bereich darin (`overflow: auto`). Ein Skript, das abwechselnd ändert und
   misst, lässt die Seite jedes Mal neu setzen; damit das nicht ausufert,
   bekommt es je Ereignis nach zwölf Mal oder 0,8 Sekunden (beim Laden: nach
   sechzig Mal oder vier Sekunden) die Maße vom letzten Stand. In der einfachen Darstellung
   (Strg+E) gibt es keine Maße – dort gilt weiter die alte Annahme (alles
   Sichtbare steht am Seitenanfang und ist „im Bild").
-- Maus: Menüs, die unter dem Mauszeiger aufklappen (`mouseover`, `:hover`),
-  und alles mit Ziehen gehen nicht. `MutationObserver` gibt es nur als
-  Hülle: Wer darüber Änderungen der Seite mitbekommen will, erfährt nichts.
+- Maus: Ziehen geht nicht – `mousedown` und `mouseup` kommen erst zusammen
+  mit dem Klick, und Schieberegler, Sortieren durch Ziehen oder Zeichnen mit
+  gedrückter Taste funktionieren deshalb nicht. Rechtsklick, Doppelklick und
+  das Mausrad melden sich den Skripten nicht.
 - Beim Nachladen: Antworten kommen als Ganzes, nicht als Strom
   (`response.body`), und als Text (`text()`, `json()`) – Binärdaten wie
   Bilder (`blob()`) gehen nicht. Skriptdateien, Module und Daten werden
@@ -659,9 +687,11 @@ dann wie ohne JavaScript. Seit 0.26 besteht HelloOS diese Probe; mit
 eingeschaltetem JavaScript laufen die Skripte der Seite (in QEMU geprüft):
 Das Inhaltsverzeichnis steht links und lässt sich mit „Verbergen" einklappen,
 rechts die Leiste „Erscheinungsbild", und im schmalen Fenster wandert das
-Inhaltsverzeichnis hinter einen Knopf – wie in den großen Browsern. Nicht
-zu sehen sind die Symbole der Knöpfe (sie kommen aus einer Technik, die es
-hier nicht gibt), und was am Fenster haften soll, rollt mit der Seite weg.
+Inhaltsverzeichnis hinter einen Knopf – wie in den großen Browsern. Seit
+0.27 bleiben Inhaltsverzeichnis und „Erscheinungsbild" beim Rollen oben
+stehen. Nicht zu sehen sind die Symbole der Knöpfe (sie kommen aus einer
+Technik, die es hier nicht gibt); und weil das Setzen eines so langen
+Artikels dauert, wechseln Links dort beim Überfahren nicht die Farbe.
 
 **Wie Generatoren und `async` hier funktionieren.** Die Maschine führt den
 Programmbaum direkt aus; wo eine Funktion gerade steht, steckt also im
@@ -1113,11 +1143,11 @@ Bildspeicher. Er verteilt außerdem Tastatur und Maus an die Fenster.
 | `tests/heap_test.c` | Kernel-Heap prüfen: zufälliges Anfordern und Freigeben, Verkettungen, voller Speicher |
 | `tests/js_test.c`, `tests/js/*.js`, `tests/js_oracle.js` | JavaScript-Maschine prüfen (auch mit ständiger Speicherbereinigung und mit verstümmelten Skripten); die Erwartungen prüft Node.js gegen, wenn es installiert ist |
 | `tests/dom_test.c` | Seitenabbild prüfen: lesen, umbauen, Quelltext erzeugen, beschädigte Seiten |
-| `tests/script_test.c` | Skripte von Webseiten prüfen: Abbild, Ereignisse, Laden, Zeitgeber, Nachladen, Maße und Lage (mit dem echten Seitenaufbau), Rollen, Beobachter, Fenstergröße, Grenzen, beschädigte Seiten |
+| `tests/script_test.c` | Skripte von Webseiten prüfen: Abbild, Ereignisse, Laden, Zeitgeber, Nachladen, Maße und Lage (mit dem echten Seitenaufbau), Rollen, Beobachter, Fenstergröße, Maus und Fokus, beobachtete Änderungen (MutationObserver), Grenzen, beschädigte Seiten |
 | `tests/hid_test.c` | Auswertung der HID-Berichte prüfen (Mäuse, Tastaturen, Funkempfänger) |
 | `tests/image_test.c`, `tests/image_test.py` | Bild-Dekoder gegen eine Referenz prüfen, auch mit beschädigten Dateien |
-| `tests/css_test.c` | Stylesheets prüfen: Auswahlen (nach Attributen, Geschwistern, Stellung und Zuständen; `:not`, `:is`), Rangfolge, Farben, Variablen, `@media`, Breiten, Abstände, Rahmen, Raster, Längen mit `calc()`, beschädigte Eingaben |
-| `tests/layout_test.c` | den Seitenaufbau mit Kastenmodell prüfen: kleine Seiten setzen und nachmessen, wo Kästen und Zeilen stehen (auch die Lage der Elemente, wie Skripte sie erfahren); dazu tausende beschädigte Seiten |
+| `tests/css_test.c` | Stylesheets prüfen: Auswahlen (nach Attributen, Geschwistern, Stellung und Zuständen - auch Maus und Fokus; `:not`, `:is`), Rangfolge, Farben, Variablen, `@media`, Breiten, Abstände, Rahmen, Raster, Längen mit `calc()`, beschädigte Eingaben |
+| `tests/layout_test.c` | den Seitenaufbau mit Kastenmodell prüfen: kleine Seiten setzen und nachmessen, wo Kästen und Zeilen stehen (auch die Lage der Elemente, wie Skripte sie erfahren, und was am Fenster haftet); dazu tausende beschädigte Seiten |
 | `tests/layout_view.c` | Werkzeug: setzt eine HTML-Datei auf dem Entwicklungsrechner und schreibt sie als Bild |
 | `tests/http_test.c` | den HTTP-Client prüfen, mit einem ausgedachten Netz: Anfragen, Antworten, Weiterleitungen, die Sperre fürs Heimnetz |
 | `tests/font_test.c`, `tests/font_test.py` | Schriftrenderer Zeichen für Zeichen gegen FreeType prüfen, auch mit beschädigten Schriftdateien |
@@ -1137,8 +1167,8 @@ gehalten. Naheliegende nächste Schritte:
 - User-Modus (Ring 3) mit Systemaufrufen und getrennten Adressräumen
 - Programme aus Dateien laden (ELF), mehrere Prozessorkerne
 - Symbole auf dem Desktop, ein Dateimanager, Fenster an den Kanten ziehen und minimieren
-- im Browser: Rollbereiche in der Seite (`overflow: auto`), Zustände (`:hover`), was am Fenster haftet (`position: sticky`), Schatten, Durchsichtigkeit; WebP- und SVG-Bilder; Tabs
-- JavaScript: Zeichenflächen (Canvas); Ereignisse der Maus (`mouseover`), `MutationObserver`; eine Schutzwand zwischen Skripten und System (dafür braucht es den User-Modus)
+- im Browser: Rollbereiche in der Seite (`overflow: auto`), Schatten, Durchsichtigkeit ganzer Elemente, Bewegung; WebP- und SVG-Bilder; Tabs
+- JavaScript: Zeichenflächen (Canvas); Ziehen mit der Maus; eine Schutzwand zwischen Skripten und System (dafür braucht es den User-Modus)
 - echte Schrift auch in Terminal, Editor und Eingabefeldern; Hinting für schärfere kleine Schrift
 
 ## Die ältere 32-Bit-Version

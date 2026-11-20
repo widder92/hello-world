@@ -60,8 +60,20 @@ struct dom_doc {
      * welches Feld gerade bedient wird; danach fragen Regeln mit :hover und :focus.
      */
     struct dom_node *hover, *focus;
+    /*
+     * Wer wissen will, was sich am Baum ändert (MutationObserver der Skripte),
+     * trägt sich hier ein. Gemeldet wird, was in der Seite hängt: ein Kind
+     * kam dazu oder ging (target ist das Elternteil, node das Kind, prev und
+     * next seine Nachbarn), ein Attribut (name, bisheriger Wert old) oder der
+     * Text eines Textknotens (old) wird geändert.
+     */
+    void (*changed)(void *ctx, int kind, struct dom_node *target, struct dom_node *node,
+                    struct dom_node *prev, struct dom_node *next, const char *name, const char *old);
+    void *changed_ctx;
     bool failed;                        /* eine Grenze wurde erreicht */
 };
+
+enum { DOM_CHILD_ADDED = 1, DOM_CHILD_REMOVED, DOM_ATTRIBUTE, DOM_TEXT_CHANGED };
 
 dom_doc *dom_parse(const char *html, size_t len);
 void dom_free(dom_doc *doc);

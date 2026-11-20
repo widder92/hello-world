@@ -920,7 +920,74 @@
         C.prototype.takeRecords = function () { return []; };
         window[name] = C;
     }
-    observer('MutationObserver'); observer('PerformanceObserver');
+    observer('PerformanceObserver');
+    /*
+     * MutationObserver: Das Abbild der Seite meldet jede Änderung (dom.mutations) - hier
+     * wird sie den Beobachtern zugeordnet. Sie erfahren davon gesammelt, sobald das laufende
+     * Skript fertig ist.
+     */
+    var mutationWatchers = [], mutationsQueued = false;
+    function MutationObserver(callback) {
+        if (typeof callback !== 'function') throw new TypeError('MutationObserver: callback is not a function');
+        hide(this, '_cb', callback); hide(this, '_t', []); hide(this, '_q', []);
+    }
+    MutationObserver.prototype.observe = function (target, options) {
+        if (!(target instanceof Node)) throw new TypeError('MutationObserver.observe: Argument 1 is not a Node');
+        options = options || {};
+        var entry = {
+            node: target, subtree: !!options.subtree, childList: !!options.childList,
+            attributes: options.attributes === undefined
+                ? options.attributeFilter !== undefined || options.attributeOldValue !== undefined : !!options.attributes,
+            characterData: options.characterData === undefined
+                ? options.characterDataOldValue !== undefined : !!options.characterData,
+            attributeOldValue: !!options.attributeOldValue, characterDataOldValue: !!options.characterDataOldValue,
+            filter: options.attributeFilter ? [].map.call(options.attributeFilter, function (n) { return String(n).toLowerCase(); }) : null
+        };
+        if (!entry.childList && !entry.attributes && !entry.characterData)
+            throw new TypeError('MutationObserver.observe: one of childList, attributes, characterData must be true');
+        hide(this, '_t', this._t.filter(function (t) { return t.node !== target; }).concat([entry]));
+        if (mutationWatchers.indexOf(this) < 0) mutationWatchers.push(this);
+        dom.mutations(mutationSeen);
+    };
+    MutationObserver.prototype.disconnect = function () {
+        var self = this;
+        hide(this, '_t', []); this._q.length = 0;
+        mutationWatchers = mutationWatchers.filter(function (o) { return o !== self; });
+        if (!mutationWatchers.length) dom.mutations(null);
+    };
+    MutationObserver.prototype.takeRecords = function () { return this._q.splice(0); };
+    window.MutationObserver = window.WebKitMutationObserver = MutationObserver;
+    window.MutationRecord = function MutationRecord() {};
+    /* kind: 1 Kind dazu, 2 Kind entfernt, 3 Attribut, 4 Text */
+    function mutationSeen(kind, target, node, prev, next, name, old) {
+        try {
+            for (var i = 0; i < mutationWatchers.length; i++) {
+                var o = mutationWatchers[i];
+                for (var k = 0; k < o._t.length; k++) {
+                    var t = o._t[k];
+                    if (t.node !== target && !(t.subtree && dom.contains(t.node, target))) continue;
+                    if (kind <= 2 ? !t.childList : kind === 3 ? !t.attributes || (t.filter && t.filter.indexOf(name) < 0) : !t.characterData) continue;
+                    o._q.push({
+                        type: kind <= 2 ? 'childList' : kind === 3 ? 'attributes' : 'characterData', target: target,
+                        addedNodes: kind === 1 ? [node] : [], removedNodes: kind === 2 ? [node] : [],
+                        previousSibling: prev, nextSibling: next, attributeName: kind === 3 ? name : null,
+                        attributeNamespace: null,
+                        oldValue: (kind === 3 && t.attributeOldValue) || (kind === 4 && t.characterDataOldValue) ? old : null
+                    });
+                    if (!mutationsQueued) { mutationsQueued = true; queueMicrotask(mutationsDeliver); }
+                    break;              /* je Beobachter ein Eintrag, auch wenn er mehrfach zuständig ist */
+                }
+            }
+        } catch (e) {}
+    }
+    function mutationsDeliver() {
+        mutationsQueued = false;
+        mutationWatchers.slice().forEach(function (o) {
+            var records = o._q.splice(0);
+            if (!records.length) return;
+            try { o._cb.call(o, records, o); } catch (e) { report(e); }
+        });
+    }
     /*
      * "Ist das Element im Bild?" (IntersectionObserver) - gefragt wird meist, um Bilder und
      * Inhalte erst zu laden, wenn sie zu sehen sind. Geprüft wird, wenn der Benutzer rollt

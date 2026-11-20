@@ -4607,31 +4607,60 @@ static void emit_inside(lay_t *L, lbox_t *b, int depth)
 }
 
 /* Frei platzierte Kästen: nach ihrer Ebene (z-index) geordnet; behind: die hinter dem Inhalt */
+/*
+ * Wo ein frei platzierter Kasten in der Reihenfolge übereinander steht: Ein
+ * Kasten mit z-index bildet mit allem darin eine Gruppe - sie liegt als
+ * Ganzes vor oder hinter anderen (so bleibt ein Untermenü über dem, was nach
+ * seiner Leiste kommt). Ohne z-index zählt die Reihenfolge in der Seite.
+ */
+typedef struct {
+    lbox_t *box;
+    int group_z, own_z;
+    uint32_t group_seq, own_seq;
+} layer_t;
+
+static bool layer_before(const layer_t *a, const layer_t *b)
+{
+    if (a->group_z != b->group_z)
+        return a->group_z < b->group_z;
+    if (a->group_seq != b->group_seq)
+        return a->group_seq < b->group_seq;
+    if (a->own_z != b->own_z)
+        return a->own_z < b->own_z;
+    return a->own_seq < b->own_seq;
+}
+
 static void emit_layers(lay_t *L, bool behind)
 {
     int count = 0;
     for (lbox_t *a = L->layers; a; a = a->layer_next)
         count++;
-    if (count == 0 || count > 4000)
-        count = min_int(count, 4000);
+    count = min_int(count, 4000);
     if (count == 0)
         return;
-    lbox_t **order = arena(L, (size_t)count * sizeof(lbox_t *));
-    if (!order || (size_t)count * sizeof(lbox_t *) > SPARE_BYTES)
+    /* (reicht der Speicher nicht, gibt es Ausweichplatz nur für kleine Mengen - sonst nichts) */
+    layer_t *order = arena(L, (size_t)count * sizeof(layer_t));
+    if (!order)
         return;
     int n = 0;
     for (lbox_t *a = L->layers; a && n < count; a = a->layer_next) {
-        bool back = a->st->z_set && a->st->z < 0;
-        if (back != behind)
+        /* die äußerste Gruppe, in der der Kasten steckt (oder er selbst) */
+        const lbox_t *group = NULL;
+        for (const lbox_t *p = a; p; p = p->parent) {
+            if (p->st->z_set && p->st->position != CSS_POS_STATIC)
+                group = p;
+        }
+        layer_t one = { a, group ? group->st->z : 0, group == a ? -100000 : a->st->z_set ? a->st->z : 0,
+                        group ? group->seq : a->seq, a->seq };
+        if ((one.group_z < 0) != behind)
             continue;
         int k = n++;
-        for (; k > 0 && (order[k - 1]->st->z > a->st->z ||
-                         (order[k - 1]->st->z == a->st->z && order[k - 1]->seq > a->seq)); k--)
+        for (; k > 0 && layer_before(&one, &order[k - 1]); k--)
             order[k] = order[k - 1];
-        order[k] = a;
+        order[k] = one;
     }
     for (int i = 0; i < n; i++)
-        emit_box(L, order[i], 0);
+        emit_box(L, order[i].box, 0);
 }
 
 /* --- Einstieg ---------------------------------------------------------------------------------- */
