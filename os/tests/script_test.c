@@ -323,7 +323,11 @@ static bool lay_out(const struct dom_doc *doc, const struct css_sheet *css, scri
     out->count = page->rect_count;
     out->width = page->width;
     out->height = page->height;
+    out->frames = page->frames;         /* was am Fenster haftet, gehört jetzt den Skripten */
+    out->frame_count = page->frame_count;
     page->rects = NULL;
+    page->frames = NULL;
+    page->frame_count = 0;
     page_free(page);
     return out->rects != NULL;
 }
@@ -425,7 +429,8 @@ static const char page_dom[] =
     "eq(liste.getElementsByTagName('LI').length, 3, 'getElementsByTagName'); eq(document.getElementsByClassName('x y').length, 1, 'getElementsByClassName');\n"
     "eq(document.querySelector('input[type=checkbox]').name, 'c', 'Attribut-Auswahl'); eq(document.querySelector('.fehlt'), null, 'nichts gefunden');\n"
     "check(punkte[0].matches('li.x') && !punkte[0].matches('p'), 'matches'); check(punkte[0].closest('ul') === liste && punkte[0].closest('table') === null, 'closest');\n"
-    "try { document.querySelector('li:hover'); check(false, 'ungültige Auswahl'); } catch (e) { check(e instanceof SyntaxError, 'SyntaxError bei ungültiger Auswahl'); }\n"
+    "try { document.querySelector('li:nicht-bekannt'); check(false, 'ungültige Auswahl'); } catch (e) { check(e instanceof SyntaxError, 'SyntaxError bei ungültiger Auswahl'); }\n"
+    "eq(document.querySelector('li:hover'), null, 'niemand steht unter der Maus');\n"
     "var neu = document.createElement('li'); neu.textContent = 'vier & <fünf>'; neu.className = 'neu'; liste.appendChild(neu);\n"
     "eq(liste.children.length, 4, 'appendChild'); eq(liste.lastElementChild.innerHTML, 'vier &amp; &lt;fünf&gt;', 'Text wird maskiert');\n"
     "liste.insertBefore(neu, liste.firstChild); eq(liste.firstElementChild.className, 'neu', 'insertBefore verschiebt'); eq(liste.children.length, 4, 'nicht verdoppelt');\n"
@@ -1085,6 +1090,67 @@ int main(int argc, char **argv)
         css_free(css);
     }
 
+    /* 4b3. Der Mauszeiger: Zustand :hover, Ereignisse beim Wechsel; das Feld, das bedient wird */
+    {
+        css_sheet_t *css = NULL;
+        reported = 0;
+        s = load_styled("<html><head><style>#unter { display: none } #menue:hover > #unter { display: block }"
+                        " input:focus { color: #f00 }</style></head><body>" PRE
+                        "<div id=aussen><ul id=menue><li id=punkt><a id=link href=/x>Menü</a></li>"
+                        "<li id=unter onmousemove=\"bewegt++\">Unterpunkt</li></ul><p id=text>Text</p></div>"
+                        "<input id=feld><p id=aus></p><script>\n"
+                        "function g(i) { return document.getElementById(i); }\n"
+                        "var log = [], bewegt = 0, zuletzt = null;\n"
+                        "['mouseover', 'mouseout'].forEach(function (t) { document.addEventListener(t, function (e) {\n"
+                        "  log.push(t.slice(5) + ':' + e.target.id + (e.relatedTarget ? '^' + e.relatedTarget.id : '')); zuletzt = e; }); });\n"
+                        "['menue', 'punkt', 'text', 'aussen'].forEach(function (id) {\n"
+                        "  g(id).addEventListener('mouseenter', function (e) { log.push('enter:' + id + (e.target === g(id) ? '' : '?')); });\n"
+                        "  g(id).addEventListener('mouseleave', function () { log.push('leave:' + id); }); });\n"
+                        "function stand() { g('aus').textContent = log.join(' ') + ' | ' + getComputedStyle(g('unter')).display + ' | ' +\n"
+                        "  [].map.call(document.querySelectorAll(':hover'), function (e) { return e.id || e.tagName; }).join(','); log = []; }\n"
+                        "eq(getComputedStyle(g('unter')).display + document.querySelectorAll(':hover').length, 'none0', 'ohne Maus: zugeklappt');\n"
+                        "eq(document.activeElement, document.body, 'kein Feld bedient');\n"
+                        "fertig();</script></body></html>", &css, 0);
+        check(s != NULL && reported == 1, "Seite für die Maus geladen");
+        if (s) {
+            uint32_t link = node_with(s, "id=\"link\""), text = node_with(s, "id=\"text\""), unter = node_with(s, "id=\"unter\"");
+            script_pointer(s, link, 30, 40);
+            script_eval(s, "eq([zuletzt.clientX, zuletzt.clientY, zuletzt.pageY, zuletzt.bubbles, zuletzt.isTrusted].join(), '30,40,40,true,true', 'Lage des Zeigers im Ereignis'); stand()");
+            check(page_has(s, ">over:link enter:aussen enter:menue enter:punkt | block | HTML,BODY,aussen,menue,punkt,link</p>"),
+                  "Zeiger auf dem Menü: mouseover steigt auf, mouseenter je betretenes Element, :hover gilt");
+            script_pointer(s, unter, 30, 60);
+            script_eval(s, "stand()");
+            check(page_has(s, ">out:link^unter leave:punkt over:unter^link | block | HTML,BODY,aussen,menue,unter</p>"),
+                  "Wechsel innerhalb des Menüs: Es bleibt offen und wird nicht verlassen");
+            check(script_pointer_move(s, 35, 62) == true, "Bewegung über einem Element mit onmousemove wird gemeldet");
+            script_pointer(s, text, 30, 90);
+            script_eval(s, "stand()");
+            check(page_has(s, ">out:unter^text leave:menue over:text^unter enter:text | none | HTML,BODY,aussen,text</p>"),
+                  "Menü verlassen: mouseleave, und es klappt zu");
+            check(script_pointer_move(s, 31, 91) == false, "niemand hört auf Bewegungen: kein Aufruf");
+            script_eval(s, "document.addEventListener('mousemove', function (e) { bewegt += 10; g('aus').textContent = 'bei ' + e.clientX + ',' + e.clientY + ' ' + e.target.id; })");
+            check(script_pointer_move(s, 44, 95) == true && page_has(s, ">bei 44,95 text</p>"), "mousemove mit Lage");
+            script_pointer(s, 0, 0, 0);
+            script_eval(s, "stand(); g('aus').textContent += ' ' + bewegt");
+            check(page_has(s, ">out:text leave:text leave:aussen | none |  11</p>"), "Zeiger weg: alles verlassen");
+            /* ein Klick trägt die Lage des Zeigers */
+            script_pointer(s, text, 12, 34);
+            script_eval(s, "g('text').addEventListener('click', function (e) { g('aus').textContent = 'klick ' + e.clientX + ',' + e.clientY; })");
+            script_click(s, text);
+            check(page_has(s, ">klick 12,34</p>"), "Klick mit Lage");
+            /* das bediente Feld */
+            uint32_t feld = node_with(s, "id=\"feld\"");
+            script_focus(s, feld);
+            script_eval(s, "g('aus').textContent = [document.activeElement.id, g('feld').matches(':focus'), g('aussen').matches(':focus-within'), document.querySelectorAll(':focus').length].join()");
+            check(page_has(s, ">feld,true,false,1</p>"), ":focus und document.activeElement");
+            script_focus(s, 0);
+            script_eval(s, "g('aus').textContent = [document.activeElement === document.body, g('feld').matches(':focus')].join()");
+            check(page_has(s, ">true,false</p>"), "Fokus weg");
+            script_destroy(s);
+        }
+        css_free(css);
+    }
+
     /* 4c. Maße und Lage der Elemente, Rollen, "ist es im Bild?" */
     static const char page_measure[] =
         "<html><head><style>body{margin:0} #kopf{height:50px;padding:10px 20px;border:3px solid #000}"
@@ -1094,7 +1160,8 @@ int main(int argc, char **argv)
         "padding:10px;border:5px solid #000;height:80px}</style></head><body>" PRE
         "<div id=kopf>Kopf <b id=fett>fett</b></div><div id=links></div>"
         "<div id=rechts><div id=frei></div><p id=absatz style='margin:0'>Text im Absatz</p></div>"
-        "<div id=weg><span id=drin>nie</span></div><div id=rand></div><div class=hoch id=hoch></div>"
+        "<div id=weg><span id=drin>nie</span></div><div id=rand></div><div class=hoch id=hoch><div id=haft style='position:sticky;top:5px;height:20px'></div></div>"
+        "<div id=fest style='position:fixed;bottom:0;left:400px;width:100px;height:40px'></div>"
         "<div id=unten></div><div id=ende></div><p id=aus></p>"
         "<script>function g(i) { return document.getElementById(i); }\n"
         "var r = g('kopf').getBoundingClientRect();\n"
@@ -1137,6 +1204,12 @@ int main(int argc, char **argv)
         "g('rand').scrollIntoView({ block: 'nearest' }); eq(window.scrollY, 376, 'nearest: schon im Bild - nichts tun');\n"
         "g('rand').scrollIntoView({ block: 'center' }); eq(window.scrollY, 116, 'center');\n"
         "html.scrollTop = 0; eq(window.scrollY, 0, 'scrollTop setzen');\n"
+        /* was am Fenster haftet: fest im Ausschnitt bzw. oben hängen geblieben */
+        "window.scrollTo(0, 700);\n"
+        "eq([g('fest').getBoundingClientRect().top, g('fest').offsetHeight, g('haft').getBoundingClientRect().top, g('hoch').getBoundingClientRect().top].join(), '560,40,5,-244', 'gerollt: fixed steht, sticky haftet');\n"
+        "eq(document.elementFromPoint(450, 570), g('fest'), 'elementFromPoint trifft das Befestigte');\n"
+        "window.scrollTo(0, 0);\n"
+        "eq([g('fest').getBoundingClientRect().top, g('haft').getBoundingClientRect().top].join(), '560,456', 'oben: fixed steht, sticky an seinem Platz');\n"
         "eq([document.elementFromPoint(250, 120) === g('frei'), document.elementFromPoint(70, 20) === g('fett'), document.elementFromPoint(100, 200) === g('links'), document.elementFromPoint(-1, 5), document.elementFromPoint(5, 9999)].join(), 'true,true,true,,', 'elementFromPoint');\n"
         "var breit = 0; window.addEventListener('resize', function () { breit = window.innerWidth + 'x' + window.innerHeight; });\n"
         "var schmal = window.matchMedia('(max-width: 800px)'), wechsel = [];\n"

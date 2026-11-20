@@ -82,6 +82,7 @@ typedef struct {
     uint8_t size, radius;
     bool bold;
     bool boxed;                         /* <button>: ein Kasten mit eigenem Inhalt - die Seite zeichnet ihn selbst */
+    uint8_t frame;                      /* liegt in diesem Rahmen (plus 1), oder 0 */
     uint32_t node;                      /* Nummer des Elements laut data-hx, oder 0 */
 } widget_t;
 
@@ -124,6 +125,7 @@ typedef struct {
 typedef struct {
     int32_t x, y, w, h;                 /* Außenkante des Rahmens */
     uint32_t background;                /* HTML_COLOR_SET plus Farbe, oder 0: keiner */
+    uint8_t alpha;                      /* Deckkraft des Hintergrunds 1 ... 254; 0 und 255: deckend */
     uint8_t border[4];                  /* Breite des Rahmens oben, rechts, unten, links */
     uint32_t border_color[4];           /* je 0xRRGGBB */
     uint8_t radius;                     /* runde Ecken: Halbmesser in Pixeln */
@@ -151,7 +153,34 @@ enum { PICTURE_AS_IS, PICTURE_COVER, PICTURE_CONTAIN, PICTURE_GIVEN };
 /* Ein Ausschnitt: Was ein Kasten abschneidet (overflow: hidden), ist nur darin zu sehen. */
 typedef struct {
     int32_t x, y, w, h;
+    uint8_t frame;                      /* der Rahmen, mit dem sich der Ausschnitt bewegt (plus 1), oder 0 */
 } clip_t;
+
+/*
+ * Ein Rahmen: ein Teil der Seite, der sich beim Rollen anders bewegt als sie.
+ * FRAME_FIXED ist am Fenster befestigt (position: fixed) - seine Teile tragen
+ * ihre Lage im Fenster, nicht auf der Seite. FRAME_STICKY rollt mit, bleibt
+ * aber am oberen Fensterrand haften, solange sein umgebender Kasten zu sehen
+ * ist (position: sticky).
+ */
+enum { FRAME_FIXED = 1, FRAME_STICKY };
+
+#define FRAMES_MAX 250
+
+typedef struct frame {
+    uint8_t kind;
+    uint8_t parent;                     /* der Rahmen, in dem dieser liegt (plus 1), oder 0 */
+    uint32_t node;
+    int32_t y, h;                       /* FRAME_STICKY: wo der Kasten ohne Haften steht, und seine Höhe */
+    int32_t top;                        /* ... so weit unter dem Fensterrand bleibt er haften */
+    int32_t limit;                      /* ... und tiefer als bis hier reicht er nie (Unterkante des umgebenden Kastens) */
+} frame_t;
+
+/*
+ * Um wie viel ein Teil im Rahmen frame (Nummer plus 1, oder 0) tiefer
+ * erscheint, als seine Lage sagt - wenn die Seite um scroll_y gerollt ist.
+ */
+int frame_shift(const frame_t *frames, int count, unsigned frame, int scroll_y);
 
 /*
  * Wo ein Element auf der Seite steht: die Außenkante seines Rahmens in Pixeln.
@@ -163,6 +192,7 @@ typedef struct node_rect {
     int16_t pad[4];                     /* Innenabstand: oben, rechts, unten, links */
     uint8_t border[4];                  /* Breite des Rahmens, ebenso */
     bool in_text;                       /* steht im Text und hat keinen eigenen Kasten */
+    uint8_t frame;                      /* liegt in diesem Rahmen (plus 1), oder 0 */
 } node_rect_t;
 
 /* Die Teile der Seite in der Reihenfolge, in der sie gezeichnet werden */
@@ -170,6 +200,7 @@ enum { PAINT_BOX, PAINT_LINE, PAINT_IMAGE, PAINT_WIDGET };
 
 typedef struct {
     uint8_t kind;
+    uint8_t frame;                      /* Nummer des Rahmens plus 1, oder 0: bewegt sich mit der Seite */
     uint16_t clip;                      /* Nummer des Ausschnitts plus 1, oder 0: keiner */
     int32_t index;
 } paint_t;
@@ -217,6 +248,9 @@ typedef struct {
     clip_t *clips;
     int clip_count, clip_cap;
     uint16_t paint_clip;                /* für den Seitenaufbau: gilt für alles, was jetzt angehängt wird */
+    uint8_t paint_frame;                /* ... ebenso der Rahmen */
+    frame_t *frames;
+    int frame_count, frame_cap;
     node_rect_t *rects;                 /* auf Wunsch: Lage jedes Elements, rects[Nummer - 1] */
     uint32_t rect_count;
     int width;                          /* so breit ist die Seite gesetzt (Pixel) */

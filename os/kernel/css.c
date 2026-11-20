@@ -108,6 +108,7 @@ enum { S_TAG, S_CLASS, S_ID, S_ROOT, S_ATTR,
        S_NTH,                           /* :nth-child(an+b) und Verwandte: die wievielte Stelle unter den Geschwistern */
        S_EMPTY, S_CHECKED, S_DISABLED, S_ENABLED,
        S_LANG,                          /* :lang(de) */
+       S_STATE,                         /* :hover, :focus ... - op ist CSS_STATE_... */
        S_NOT, S_IS };                   /* :not(...) - keine der Möglichkeiten; :is(...), :where(...) - eine davon */
 
 /* Vergleiche eines Attributs: vorhanden, gleich, Wort darin, Anfang bis "-", Anfang, Ende, enthält */
@@ -123,7 +124,7 @@ struct compound;
 
 typedef struct {
     uint8_t kind;
-    uint8_t op;                         /* S_ATTR: A_...; S_NTH: NTH_...; S_NOT, S_IS: Zahl der Möglichkeiten */
+    uint8_t op;                         /* S_ATTR: A_...; S_NTH: NTH_...; S_STATE: CSS_STATE_...; S_NOT, S_IS: Zahl der Möglichkeiten */
     bool fold;                          /* nur S_ATTR: Groß-/Kleinschreibung egal */
     uint16_t length, value_length;
     int16_t a, b;                       /* nur S_NTH: die Stellen a*n + b (n = 0, 1, 2 ...) */
@@ -148,6 +149,7 @@ typedef struct {
     int32_t next;                       /* nächste Regel im selben Fach */
     bool ua;                            /* eine Grundregel des Browsers, keine der Seite */
     uint8_t pseudo;                     /* gilt einem Scheinelement: 1 ::before, 2 ::after */
+    uint8_t states;                     /* fragt nach diesen Zuständen (Bit CSS_STATE_...): Maus, Fokus */
 } rule_t;
 
 typedef struct {
@@ -333,8 +335,10 @@ static const struct {
     { "linen", 0xFAF0E6 }, { "lavender", 0xE6E6FA }, { "midnightblue", 0x191970 },
 };
 
-bool css_color(const char *text, size_t length, uint32_t *rgb)
+/* Liest eine Farbe samt Deckkraft (0 durchsichtig ... 255 deckend). */
+static bool color_parse(const char *text, size_t length, uint32_t *rgb, uint8_t *opacity)
 {
+    *opacity = 255;
     trim(&text, &length);
     if (length == 0)
         return false;
@@ -350,12 +354,12 @@ bool css_color(const char *text, size_t length, uint32_t *rgb)
                 return false;
         }
         if (n <= 4) {
-            if (n == 4 && digits[3] < 2)
-                return false;           /* (fast) durchsichtig */
+            if (n == 4)
+                *opacity = (uint8_t)(digits[3] * 17);
             *rgb = (uint32_t)((digits[0] * 17) << 16 | (digits[1] * 17) << 8 | digits[2] * 17);
         } else {
-            if (n == 8 && digits[6] * 16 + digits[7] < 26)
-                return false;
+            if (n == 8)
+                *opacity = (uint8_t)(digits[6] * 16 + digits[7]);
             *rgb = (uint32_t)((digits[0] * 16 + digits[1]) << 16 |
                               (digits[2] * 16 + digits[3]) << 8 | (digits[4] * 16 + digits[5]));
         }
@@ -389,8 +393,8 @@ bool css_color(const char *text, size_t length, uint32_t *rgb)
         if (count < 3)
             return false;
         int64_t alpha = percent[3] ? values[3] / 100 : values[3];    /* Tausendstel */
-        if (count == 4 && alpha < 100)
-            return false;
+        if (count == 4)
+            *opacity = (uint8_t)(alpha <= 0 ? 0 : alpha >= 1000 ? 255 : alpha * 255 / 1000);
         if (is_hsl) {
             *rgb = from_hsl(values[0] / 1000, values[1] / 100, values[2] / 100);
         } else {
@@ -409,6 +413,18 @@ bool css_color(const char *text, size_t length, uint32_t *rgb)
         }
     }
     return false;
+}
+
+/* Eine Farbe, die auch zu sehen ist: (Fast) Durchsichtiges zählt nicht als Farbe. */
+bool css_color(const char *text, size_t length, uint32_t *rgb)
+{
+    uint8_t opacity;
+    return color_parse(text, length, rgb, &opacity) && opacity >= 26;
+}
+
+bool css_color_alpha(const char *text, size_t length, uint32_t *rgb, uint8_t *opacity)
+{
+    return color_parse(text, length, rgb, opacity) && *opacity >= 26;
 }
 
 /* Ersetzt var(--name, ersatz) durch den hinterlegten Wert; false, wenn nichts passt. */
@@ -482,10 +498,11 @@ static bool resolve_vars(const css_sheet_t *sheet, const char *text, size_t leng
 }
 
 /* Sucht in einer Kurzschreibweise ("background: #fff url(x) no-repeat") die Farbe. */
-static bool find_color(const char *text, size_t length, uint32_t *rgb, bool *has_image)
+static bool find_color(const char *text, size_t length, uint32_t *rgb, bool *has_image, uint8_t *opacity)
 {
     bool found = false;
     *has_image = false;
+    *opacity = 255;
     for (size_t i = 0; i < length;) {
         while (i < length && (space(text[i]) || text[i] == ','))
             i++;
@@ -507,8 +524,10 @@ static bool find_color(const char *text, size_t length, uint32_t *rgb, bool *has
             continue;
         }
         uint32_t color;
-        if (css_color(text + start, n, &color)) {
+        uint8_t one;
+        if (css_color_alpha(text + start, n, &color, &one)) {
             *rgb = color;
+            *opacity = one;
             found = true;
         }
     }
@@ -2226,9 +2245,11 @@ static void apply(const css_sheet_t *sheet, cascade_t *c, uint8_t property, cons
     case P_BACKGROUND:
     case P_BACKGROUND_COLOR: {
         bool image = false;
-        if (property == P_BACKGROUND_COLOR ? css_color(text, length, &color)
-                                           : find_color(text, length, &color, &image)) {
+        uint8_t opacity = 255;
+        if (property == P_BACKGROUND_COLOR ? css_color_alpha(text, length, &color, &opacity)
+                                           : find_color(text, length, &color, &image, &opacity)) {
             s->background = color;
+            s->background_alpha = opacity;
             s->background_clear = false;
             s->has |= CSS_BACKGROUND;
         } else if (word_is(text, length, "transparent") || word_is(text, length, "none") ||
@@ -2762,7 +2783,27 @@ static bool needs_tree(const compound_t *c)
     return false;
 }
 
-static bool compound_matches(const compound_t *c, const css_node_t *node)
+/* Fragt das Glied (auch in seinen Klammern) nach dem Zustand which? */
+static bool asks_state(const compound_t *c, int which)
+{
+    for (int i = 0; i < c->count; i++) {
+        const simple_t *s = &c->simples[i];
+        if (s->kind == S_STATE && s->op == which)
+            return true;
+        for (int k = 0; (s->kind == S_NOT || s->kind == S_IS) && k < s->op; k++) {
+            if (asks_state(&s->inner[k], which))
+                return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * Passt das Glied auf das Element? wild (CSS_STATE_... oder -1) nennt einen
+ * Zustand, der dabei nicht zählt: So lässt sich fragen, ob eine Regel bei
+ * diesem Element überhaupt auf den Mauszeiger achtet.
+ */
+static bool compound_test(const compound_t *c, const css_node_t *node, int wild)
 {
     const char *have;
     size_t n;
@@ -2823,17 +2864,23 @@ static bool compound_matches(const compound_t *c, const css_node_t *node)
                 return false;
             break;
         }
+        case S_STATE:
+            if (s->op != wild && (!node->tree || !node->tree->state || !node->tree->state(node, s->op)))
+                return false;
+            break;
         case S_NOT:
             for (int k = 0; k < s->op; k++) {
+                if (wild >= 0 && asks_state(&s->inner[k], wild))
+                    continue;           /* hängt am Zustand, der gerade nicht zählt */
                 /* "nicht das erste Kind" lässt sich ohne Wissen über die Geschwister nicht bejahen */
-                if ((!node->tree && needs_tree(&s->inner[k])) || compound_matches(&s->inner[k], node))
+                if ((!node->tree && needs_tree(&s->inner[k])) || compound_test(&s->inner[k], node, wild))
                     return false;
             }
             break;
         case S_IS: {
             bool any = false;
             for (int k = 0; k < s->op && !any; k++)
-                any = compound_matches(&s->inner[k], node);
+                any = compound_test(&s->inner[k], node, wild);
             if (!any)
                 return false;
             break;
@@ -2841,6 +2888,11 @@ static bool compound_matches(const compound_t *c, const css_node_t *node)
         }
     }
     return true;
+}
+
+static bool compound_matches(const compound_t *c, const css_node_t *node)
+{
+    return compound_test(c, node, -1);
 }
 
 /*
@@ -3321,7 +3373,7 @@ static int parse_pseudo(const char *text, size_t length, size_t *at, compound_t 
                         uint8_t *pseudo, int depth)
 {
     static const char *const never[] = {
-        "hover", "active", "focus", "focus-visible", "focus-within", "target", "target-within",
+        "active", "target", "target-within",
         "visited", "indeterminate", "invalid", "user-invalid", "out-of-range", "fullscreen", "modal",
         "popover-open", "picture-in-picture", "playing", "paused", "autofill", "-webkit-autofill",
         "-moz-focusring", "-moz-ui-invalid", "defined", "open", "current", "past", "future", NULL };
@@ -3405,6 +3457,15 @@ static int parse_pseudo(const char *text, size_t length, size_t *at, compound_t 
         }
         if (word_is(name, n, "scope"))
             return SEL_OK;              /* ohne Bezugselement: die ganze Seite */
+        /* Maus und Fokus: Wer den Stand kennt (das Abbild der Seite), gibt Auskunft */
+        int state = word_is(name, n, "hover") ? CSS_STATE_HOVER
+                  : word_is(name, n, "focus") || word_is(name, n, "focus-visible") ? CSS_STATE_FOCUS
+                  : word_is(name, n, "focus-within") ? CSS_STATE_FOCUS_WITHIN : -1;
+        if (state >= 0) {
+            s.kind = S_STATE;
+            s.op = (uint8_t)state;
+            return add_simple(c, s) ? SEL_OK : SEL_UNKNOWN;
+        }
         for (int k = 0; never[k]; k++) {
             if (word_is(name, n, never[k]))
                 return SEL_NEVER;
@@ -3708,6 +3769,13 @@ static void add_rule(css_sheet_t *sheet, const char *selectors, size_t selectors
         rule->decl_count = (uint32_t)ctx.count;
         rule->ua = sheet->adding_ua;
         rule->pseudo = pseudo;
+        rule->states = 0;
+        for (int k = 0; k < count; k++) {
+            for (int which = CSS_STATE_HOVER; which <= CSS_STATE_FOCUS_WITHIN; which++) {
+                if (asks_state(&copy[k], which))
+                    rule->states |= (uint8_t)(1u << which);
+            }
+        }
 
         /* Ins Fach des aussagekräftigsten Merkmals des letzten Glieds */
         const compound_t *subject = &copy[count - 1];
@@ -4046,6 +4114,39 @@ bool css_add(css_sheet_t *sheet, const char *text, size_t length)
     sheet->chunks = chunk;
     parse_rules(sheet, chunk->text, used, 0);
     return !sheet->failed;
+}
+
+int css_state_effect(const css_sheet_t *sheet, const css_node_t *node, int which)
+{
+    /* Festlegungen, die nichts verschieben: nur Farbe, Hintergrund, Striche */
+    static const uint8_t cosmetic[] = {
+        P_COLOR, P_BACKGROUND, P_BACKGROUND_COLOR, P_DECORATION, P_BORDER_COLOR, P_BORDER_TOP_COLOR,
+        P_BORDER_RIGHT_COLOR, P_BORDER_BOTTOM_COLOR, P_BORDER_LEFT_COLOR, P_BACKGROUND_IMAGE, P_BG_REPEAT,
+        P_BG_POSITION, P_BG_SIZE, P_RADIUS, P_MASK };
+    int effect = 0;
+    if (!sheet || !node || which < CSS_STATE_HOVER || which > CSS_STATE_FOCUS_WITHIN)
+        return 0;
+    for (int i = 0; i < sheet->rule_count && effect < 2; i++) {
+        const rule_t *rule = &sheet->rules[i];
+        if (!(rule->states & (1u << which)))
+            continue;
+        bool asked = false;
+        for (int k = 0; k < rule->compound_count && !asked; k++)
+            asked = asks_state(&rule->compounds[k], which) && compound_test(&rule->compounds[k], node, which);
+        if (!asked)
+            continue;
+        int level = 1;
+        for (uint32_t d = 0; d < rule->decl_count && level < 2; d++) {
+            bool plain = false;
+            for (unsigned c = 0; c < sizeof(cosmetic); c++)
+                plain = plain || sheet->decls[rule->first_decl + d].property == cosmetic[c];
+            if (!plain)
+                level = 2;
+        }
+        if (level > effect)
+            effect = level;
+    }
+    return effect;
 }
 
 int css_rule_count(const css_sheet_t *sheet)

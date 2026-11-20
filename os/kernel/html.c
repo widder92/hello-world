@@ -220,11 +220,32 @@ int page_add_box(page_t *page, const box_t *box)
     return page->box_count++;
 }
 
+int frame_shift(const frame_t *frames, int count, unsigned frame, int scroll_y)
+{
+    int shift = 0;
+    for (int depth = 0; frame > 0 && (int)frame <= count && depth < 8; depth++) {
+        const frame_t *f = &frames[frame - 1];
+        if (f->kind == FRAME_FIXED)
+            return shift + scroll_y;    /* steht im Fenster: Das Rollen der Seite hebt sich auf */
+        if (f->kind == FRAME_STICKY && f->parent == 0) {
+            /* wandert mit dem oberen Fensterrand - aber nicht aus seinem umgebenden Kasten hinaus */
+            int want = scroll_y + f->top - f->y, most = f->limit - (f->y + f->h);
+            if (want > most)
+                want = most;
+            if (want > 0)
+                shift += want;
+        }
+        frame = f->parent;
+    }
+    return shift;
+}
+
 bool page_add_paint(page_t *page, uint8_t kind, int index)
 {
     if (!ENSURE(page, page->paint, page->paint_count, page->paint_cap))
         return false;
     page->paint[page->paint_count].kind = kind;
+    page->paint[page->paint_count].frame = page->paint_frame;
     page->paint[page->paint_count].clip = page->paint_clip;
     page->paint[page->paint_count].index = index;
     page->paint_count++;
@@ -378,6 +399,7 @@ void page_free(page_t *page)
     kfree(page->boxes);
     kfree(page->paint);
     kfree(page->clips);
+    kfree(page->frames);
     kfree(page->rects);
     kfree(page->links);
     kfree(page->widgets);

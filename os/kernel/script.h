@@ -34,10 +34,14 @@ struct dom_doc;
 struct css_sheet;
 
 /* Wo die Elemente einer gesetzten Seite stehen */
+struct frame;                           /* html.h */
+
 typedef struct {
     struct node_rect *rects;            /* rects[Nummer des Elements - 1]; mit kmalloc angelegt */
     uint32_t count;
     int width, height;                  /* Maße der ganzen Seite in Pixeln */
+    struct frame *frames;               /* was am Fenster haftet (kmalloc), oder NULL */
+    int frame_count;
 } script_geometry_t;
 
 typedef struct {
@@ -108,8 +112,8 @@ void script_set_styles(script_t *s, const struct css_sheet *css);
 /*
  * Der Browser hat die Seite gerade selbst gesetzt (für die Anzeige): Die Lage
  * der Elemente gilt damit auch für die Skripte, und sie müssen nicht eigens
- * danach fragen. geometry->rects geht in den Besitz der Skripte über; ohne
- * rects (NULL) ist die Lage ab jetzt unbekannt.
+ * danach fragen. geometry->rects und ->frames gehen in den Besitz der Skripte
+ * über; ohne rects (NULL) ist die Lage ab jetzt unbekannt.
  */
 void script_set_geometry(script_t *s, script_geometry_t *geometry);
 
@@ -123,6 +127,24 @@ void script_set_geometry(script_t *s, script_geometry_t *geometry);
 bool script_view(script_t *s, int scroll_y);
 /* Das Fenster hat eine andere Größe bekommen: Die Skripte erfahren es ("resize"). */
 void script_resize(script_t *s, int width, int height);
+
+/*
+ * Der Mauszeiger steht jetzt über dem Element node (0: über keinem), an der
+ * Stelle (x, y) des sichtbaren Ausschnitts. Danach richten sich Regeln mit
+ * :hover; die Skripte erfahren den Wechsel (mouseover, mouseout, mouseenter,
+ * mouseleave).
+ */
+void script_pointer(script_t *s, uint32_t node, int x, int y);
+/*
+ * Der Zeiger hat sich über demselben Element bewegt (mousemove). Gerechnet
+ * wird nur, wenn ein Skript der Seite danach gefragt hat; liefert dann true.
+ */
+bool script_pointer_move(script_t *s, int x, int y);
+/*
+ * Das Feld, das gerade bedient wird (0: keines): für Regeln mit :focus und
+ * für document.activeElement. Ereignisse (focus, blur) meldet script_event.
+ */
+void script_focus(script_t *s, uint32_t node);
 
 /* Führt die Skripte der Seite aus und meldet ihr, dass sie geladen ist. */
 void script_boot(script_t *s);

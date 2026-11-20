@@ -57,6 +57,8 @@ void gfx_frame(surface_t *s, int x, int y, int w, int h, color_t color);
 void gfx_gradient(surface_t *s, int x, int y, int w, int h, color_t top,
                   color_t bottom);
 void gfx_darken(surface_t *s, int x, int y, int w, int h, int percent);
+/* Füllt durchscheinend: alpha 0 (nichts) bis 255 (deckend). */
+void gfx_fill_alpha(surface_t *s, int x, int y, int w, int h, color_t color, int alpha);
 void gfx_line(surface_t *s, int x0, int y0, int x1, int y1, int thickness,
               color_t color);
 void gfx_blit(surface_t *dst, int dx, int dy, const surface_t *src);

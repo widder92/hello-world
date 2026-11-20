@@ -191,6 +191,25 @@ typedef struct {
     bool script_reported;               /* "angehalten" ist schon gemeldet */
     bool close_wanted;
 
+    /*
+     * Das Abbild einer Seite ohne Skripte (mit Skripten gehört es ihnen): Es
+     * bleibt, solange die Seite gezeigt wird - der Seitenaufbau liest daraus,
+     * und es hält fest, worüber der Mauszeiger steht.
+     */
+    dom_doc *doc, *incoming_doc;
+    /* Der Mauszeiger über der Seite */
+    int mouse_x, mouse_y;
+    bool mouse_known;
+    uint32_t hover_node;                /* über diesem Element steht er für Seite und Skripte (0: keinem) */
+    uint32_t hover_wanted;              /* ... und über diesem wirklich; gilt, wenn er dort eine Weile bleibt */
+    uint64_t hover_since;
+    int hover_link;                     /* der Link unter dem Zeiger (für die Statuszeile), oder -1 */
+    int hover_scroll;                   /* bei diesem Rollstand wurde zuletzt nachgesehen */
+    uint64_t move_next;                 /* frühestens dann erfahren Skripte die nächste Bewegung */
+    bool restyle;                       /* Maus oder Fokus haben etwas geändert: die Seite neu setzen */
+    uint64_t layout_ms;                 /* so lange hat das Setzen der Seite zuletzt gedauert */
+    uint32_t layouts;                   /* zählt jedes Setzen */
+
     /* Meldung oder Frage eines Skripts (alert, confirm) */
     char *dialog;                       /* ihr Text, oder NULL */
     uint32_t dialog_number;             /* zählt die Meldungen: Das Fenster zeichnet nur bei einer neuen */
@@ -847,10 +866,46 @@ static void take_geometry(page_t *page, script_geometry_t *out)
     out->height = page->height;
     page->rects = NULL;
     page->rect_count = 0;
+    /* ... dazu eine Abschrift der Rahmen: Was am Fenster haftet, steht je nach Rollstand woanders */
+    out->frames = NULL;
+    out->frame_count = 0;
+    if (out->rects && page->frame_count > 0) {
+        out->frames = kmalloc((size_t)page->frame_count * sizeof(frame_t));
+        if (out->frames) {
+            memcpy(out->frames, page->frames, (size_t)page->frame_count * sizeof(frame_t));
+            out->frame_count = page->frame_count;
+        }
+    }
 }
 
+/* Eine Abschrift der Lage aller Elemente für die Skripte; die Seite behält ihre (für den Mauszeiger). */
+static void copy_geometry(const page_t *page, script_geometry_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (!page->rects || page->rect_count == 0)
+        return;
+    out->rects = kmalloc((size_t)page->rect_count * sizeof(node_rect_t));
+    if (!out->rects)
+        return;
+    memcpy(out->rects, page->rects, (size_t)page->rect_count * sizeof(node_rect_t));
+    out->count = page->rect_count;
+    out->width = page->width;
+    out->height = page->height;
+    if (page->frame_count > 0) {
+        out->frames = kmalloc((size_t)page->frame_count * sizeof(frame_t));
+        if (out->frames) {
+            memcpy(out->frames, page->frames, (size_t)page->frame_count * sizeof(frame_t));
+            out->frame_count = page->frame_count;
+        }
+    }
+}
+
+/*
+ * own: das Abbild einer Seite ohne Skripte, wenn der Aufrufer eines hat -
+ * sonst wird der Quelltext hier eigens gelesen.
+ */
 static page_t *layout_page(browser_t *b, const char *source, size_t len, const char *url,
-                           bool html, const css_sheet_t *css, script_t *script)
+                           bool html, const css_sheet_t *css, script_t *script, const dom_doc *own)
 {
     bool scripts = script != NULL;
     page_t *page;
@@ -864,18 +919,23 @@ static page_t *layout_page(browser_t *b, const char *source, size_t len, const c
     html_pictures_t pictures = picture_source(b);
     html_text_t text = page_text(b, css, scripts);
     if (!simple_wanted && font_available()) {
-        dom_doc *own = script ? NULL : dom_parse(source, len);
-        const dom_doc *doc = script ? script_document(script) : own;
+        dom_doc *parsed = script || own ? NULL : dom_parse(source, len);
+        const dom_doc *doc = script ? script_document(script) : own ? own : parsed;
         layout_options_t options = {
             .width = PAGE_W, .height = CONTENT_H, .base_url = url, .css = css, .text = &text,
-            .pictures = &pictures, .metrics = page_metrics, .scripts = scripts, .geometry = scripts,
+            .pictures = &pictures, .metrics = page_metrics, .scripts = scripts, .geometry = true,
         };
+        uint64_t began = time_ms();
         page = doc ? layout_document(doc, &options) : NULL;
-        dom_free(own);
+        b->layout_ms = time_ms() - began;
+        b->layouts++;
+        dom_free(parsed);
         if (page) {
             /* die Skripte erfahren gleich, wo alles steht - sie müssen dann nicht eigens danach fragen */
-            take_geometry(page, &geometry);
-            script_set_geometry(script, &geometry);
+            if (script) {
+                copy_geometry(page, &geometry);
+                script_set_geometry(script, &geometry);
+            }
             return page;
         }
     }
@@ -1398,10 +1458,12 @@ static int pictures_pending(browser_t *b, bool start)
 
 static void deliver_styled(browser_t *b, page_t *page, const char *url, char *source,
                            size_t len, bool html, int columns, css_sheet_t *css, script_t *script,
-                           style_cache_t *styles, uint64_t mark)
+                           style_cache_t *styles, uint64_t mark, dom_doc *doc)
 {
     while (b->incoming_ready && !b->closing)
         task_sleep(20);
+    dom_free(b->incoming_doc);
+    b->incoming_doc = doc;
     kfree(b->incoming_source);
     css_free(b->incoming_css);
     script_destroy(b->incoming_script);
@@ -1422,7 +1484,7 @@ static void deliver_styled(browser_t *b, page_t *page, const char *url, char *so
 static void deliver(browser_t *b, page_t *page, const char *url, char *source,
                     size_t len, bool html, int columns, css_sheet_t *css, script_t *script)
 {
-    deliver_styled(b, page, url, source, len, html, columns, css, script, NULL, 0);
+    deliver_styled(b, page, url, source, len, html, columns, css, script, NULL, 0, NULL);
 }
 
 /* Speichert etwas, das keine Webseite ist, bei den eigenen Dateien. */
@@ -1483,7 +1545,7 @@ static void worker(void *arg)
         /* "?weg=..." war ein Auftrag, keine Adresse: Die Seite heißt danach wieder wie üblich */
         if (starts_with(url, MARKS_PAGE))
             strlcpy(url, MARKS_PAGE, URL_SIZE);
-        page_t *page = text ? layout_page(b, text, len, url, !source, NULL, NULL) : NULL;
+        page_t *page = text ? layout_page(b, text, len, url, !source, NULL, NULL, NULL) : NULL;
         if (page) {
             deliver(b, page, url, text, len, !source, columns, NULL, NULL);
             set_status(b, false, "");
@@ -1659,8 +1721,11 @@ static void worker(void *arg)
             script_set_styles(script, css);
         }
         uint64_t style_state = html ? styles_mark(content, length, url) : 0;
-        page_t *page = layout_page(b, content, length, url, html, css, script);
+        /* ohne Skripte: das Abbild der Seite eigens lesen - es bleibt, solange sie gezeigt wird */
+        dom_doc *doc = html && !script && !simple_wanted ? dom_parse(content, length) : NULL;
+        page_t *page = layout_page(b, content, length, url, html, css, script, doc);
         if (!page) {
+            dom_free(doc);
             kfree(content);
             css_free(css);
             style_cache_free(styles);
@@ -1686,7 +1751,7 @@ static void worker(void *arg)
                        failed, skipped);
         else
             set_status(b, false, "");
-        deliver_styled(b, page, url, content, length, html, columns, css, script, styles, style_state);
+        deliver_styled(b, page, url, content, length, html, columns, css, script, styles, style_state, doc);
         break;
     }
 
@@ -1768,6 +1833,8 @@ static int same_place(const page_t *old, const page_t *fresh, int scroll);
  * weil Bilder angekommen sind. Was der Benutzer in Formularfelder eingetragen
  * hat, wandert in die neue Fassung mit, und er bleibt an derselben Stelle.
  */
+static int widget_by_node(const page_t *page, uint32_t node);
+
 static void relayout(browser_t *b, bool force)
 {
     page_t *old = b->page;
@@ -1787,7 +1854,7 @@ static void relayout(browser_t *b, bool force)
         }
     }
     page_t *fresh = layout_page(b, b->source, b->source_len, b->url, b->source_html, b->css,
-                                b->script);
+                                b->script, b->doc);
     if (!fresh)
         return;
 
@@ -1805,7 +1872,24 @@ static void relayout(browser_t *b, bool force)
             to->selected = from->selected;
     }
     if (!same) {
-        b->focus = -1;
+        /*
+         * Andere Felder als zuvor (ein Menü ist unter der Maus aufgeklappt):
+         * jedes über sein Element wiederfinden - mit dem, was darin steht.
+         */
+        uint32_t focus = b->focus >= 0 && b->focus < old->widget_count ? old->widgets[b->focus].node : 0;
+        for (int i = 0; i < old->widget_count; i++) {
+            const widget_t *from = &old->widgets[i];
+            int at = widget_by_node(fresh, from->node);
+            if (at < 0 || fresh->widgets[at].kind != from->kind)
+                continue;
+            widget_t *to = &fresh->widgets[at];
+            if (from->value)
+                widget_set_value(to, from->value, strlen(from->value));
+            to->checked = from->checked;
+            if (from->option_count == to->option_count)
+                to->selected = from->selected;
+        }
+        b->focus = widget_by_node(fresh, focus);
         b->overlay = OVERLAY_NONE;
     }
 
@@ -1940,7 +2024,7 @@ static void script_show(browser_t *b)
             b->style_mark = mark;
         }
     }
-    page_t *fresh = source ? layout_page(b, source, len, b->url, true, b->css, b->script) : NULL;
+    page_t *fresh = source ? layout_page(b, source, len, b->url, true, b->css, b->script, NULL) : NULL;
     if (!fresh) {
         kfree(source);
         return;
@@ -2028,6 +2112,8 @@ static void commit_field(browser_t *b)
 }
 
 /* Setzt die Schreibmarke in ein Feld (oder mit -1 in keines) und sagt es den Skripten. */
+static void focus_state(browser_t *b);
+
 static void set_focus(browser_t *b, int index)
 {
     page_t *page = b->page;
@@ -2039,6 +2125,7 @@ static void set_focus(browser_t *b, int index)
     }
     b->focus = index;
     b->field_changed = false;
+    focus_state(b);                     /* Regeln mit :focus richten sich danach */
     if (b->script && page && index >= 0 && index < page->widget_count)
         script_event(b->script, page->widgets[index].node, "focus", NULL);
 }
@@ -2054,6 +2141,12 @@ static void take_incoming(browser_t *b)
     script_destroy(b->script);
     b->script = b->incoming_script;
     b->incoming_script = NULL;
+    dom_free(b->doc);
+    b->doc = b->incoming_doc;
+    b->incoming_doc = NULL;
+    b->hover_node = b->hover_wanted = 0;        /* (die Nummern meinten Elemente der alten Seite) */
+    b->hover_link = -1;
+    b->restyle = false;
     b->script_next = 0;
     b->script_show_after = 0;
     b->field_changed = false;
@@ -2796,22 +2889,23 @@ static void draw_box(surface_t *s, const box_t *box, int x, int y)
         }
     } else if (box->background) {
         color_t color = box->background & 0xFFFFFF;
+        int alpha = box->alpha ? box->alpha : 255;      /* durchscheinend: Was dahinter liegt, schimmert durch */
         int r = box->radius;
         if (r > w / 2)
             r = w / 2;
         if (r > h / 2)
             r = h / 2;
         if (r < 2) {
-            gfx_fill(s, x, y, w, h, color);
+            gfx_fill_alpha(s, x, y, w, h, color, alpha);
         } else {
             /* runde Ecken: oben und unten Zeile für Zeile schmaler */
-            gfx_fill(s, x, y + r, w, h - 2 * r, color);
+            gfx_fill_alpha(s, x, y + r, w, h - 2 * r, color, alpha);
             for (int i = 0; i < r; i++) {
                 int dy = r - i, inset = r;
                 while (inset > 0 && (r - inset + 1) * (r - inset + 1) + dy * dy <= r * r)
                     inset--;
-                gfx_fill(s, x + inset, y + i, w - 2 * inset, 1, color);
-                gfx_fill(s, x + inset, y + h - 1 - i, w - 2 * inset, 1, color);
+                gfx_fill_alpha(s, x + inset, y + i, w - 2 * inset, 1, color, alpha);
+                gfx_fill_alpha(s, x + inset, y + h - 1 - i, w - 2 * inset, 1, color, alpha);
             }
         }
     }
@@ -2935,44 +3029,48 @@ static void draw_page(browser_t *b, surface_t *s)
     int active = 0;
     for (int i = 0; i < page->paint_count; i++) {
         const paint_t *item = &page->paint[i];
+        /* was am Fenster haftet, erscheint entsprechend tiefer als auf der Seite */
+        int shift = item->frame ? frame_shift(page->frames, page->frame_count, item->frame, b->scroll) : 0;
+        int base = CONTENT_Y - top + shift;
         if (item->clip != active) {
             /* was ein Kasten abschneidet, ist nur in seinem Ausschnitt zu sehen */
             rect_t r = view;
             active = item->clip;
             if (active > 0 && active <= page->clip_count) {
                 const clip_t *c = &page->clips[active - 1];
-                r = rect_intersect(view, rect_make(left + c->x, CONTENT_Y + c->y - top, c->w, c->h));
+                int moved = c->frame ? frame_shift(page->frames, page->frame_count, c->frame, b->scroll) : 0;
+                r = rect_intersect(view, rect_make(left + c->x, CONTENT_Y + c->y - top + moved, c->w, c->h));
             }
             gfx_set_clip(s, r);
         }
         switch (item->kind) {
         case PAINT_BOX: {
             const box_t *box = &page->boxes[item->index];
-            if (box->y < bottom && box->y + box->h > top) {
-                draw_box(s, box, left + box->x, CONTENT_Y + box->y - top);
+            if (box->y + shift < bottom && box->y + shift + box->h > top) {
+                draw_box(s, box, left + box->x, base + box->y);
                 if (box->picture)
-                    draw_backdrop(b, s, page, box, left + box->x, CONTENT_Y + box->y - top);
+                    draw_backdrop(b, s, page, box, left + box->x, base + box->y);
             }
             break;
         }
         case PAINT_LINE: {
             const line_t *line = &page->lines[item->index];
             /* etwas Luft: Unterlängen und hohe Stücke reichen über die Zeile hinaus */
-            if (line->y - 40 < bottom && line->y + line->height + 40 > top)
-                draw_line(b, s, item->index, CONTENT_Y + line->y - top);
+            if (line->y + shift - 40 < bottom && line->y + shift + line->height + 40 > top)
+                draw_line(b, s, item->index, base + line->y);
             break;
         }
         case PAINT_IMAGE: {
             const page_image_t *image = &page->images[item->index];
             int height = image->height > 0 ? image->height : ROW_H;
-            if (image->y < bottom && image->y + height > top)
-                draw_picture(b, s, image, left + image->x, CONTENT_Y + image->y - top);
+            if (image->y + shift < bottom && image->y + shift + height > top)
+                draw_picture(b, s, image, left + image->x, base + image->y);
             break;
         }
         case PAINT_WIDGET: {
             const widget_t *w = &page->widgets[item->index];
-            if (w->h > 0 && w->y < bottom && w->y + w->h > top)
-                draw_widget(b, s, item->index, left + w->x, CONTENT_Y + w->y - top);
+            if (w->h > 0 && w->y + shift < bottom && w->y + shift + w->h > top)
+                draw_widget(b, s, item->index, left + w->x, base + w->y);
             break;
         }
         }
@@ -3162,9 +3260,11 @@ static void draw(browser_t *b)
         const char *note = secure ? "verschlüsselt, Server geprüft"
                          : starts_with(b->url, "http://") ? "NICHT verschlüsselt" : "";
         int note_x = WIDTH - 10 - ui_text_width(note, false);
-        /* Der Titel der Seite; was nicht passt, wird abgeschnitten */
+        /* Der Titel der Seite - oder, über einem Link, wohin er führt; was nicht passt, wird abgeschnitten */
+        const char *shown = b->hover_link >= 0 && b->hover_link < b->page->link_count
+                                ? b->page->links[b->hover_link] : b->page->title ? b->page->title : "";
         gfx_set_clip(s, rect_make(10, STATUS_Y, note_x - 30, STATUS_H));
-        ui_text(s, 10, y, b->page->title ? b->page->title : "", C_TEXT, false);
+        ui_text(s, 10, y, shown, C_TEXT, false);
         gfx_reset_clip(s);
         ui_text(s, note_x, y, note, secure ? C_GOOD : C_ERROR, false);
     }
@@ -3509,7 +3609,8 @@ static void focus_next(browser_t *b, int step)
         if (page->widgets[index].h > 0) {
             set_focus(b, index);
             b->address_focus = false;
-            show_place(b, page->widgets[index].y, page->widgets[index].h);
+            if (!page->widgets[index].frame)    /* (was am Fenster haftet, ist ohnehin zu sehen) */
+                show_place(b, page->widgets[index].y, page->widgets[index].h);
             return;
         }
     }
@@ -3730,6 +3831,243 @@ static void scroll_to_mouse(browser_t *b, int y)
     clamp_scroll(b);
 }
 
+/* Was an einer Stelle des Fensters zuoberst liegt */
+typedef struct {
+    int kind;                           /* PAINT_... */
+    int index;                          /* das Feld, das Bild, die Zeile oder der Kasten */
+    uint32_t node;                      /* das Element dazu, oder 0 */
+    int link;                           /* der Link, in dem es steckt, oder -1 */
+} hit_t;
+
+/*
+ * Was liegt an dieser Stelle zuoberst? Die Teile der Seite von hinten nach
+ * vorn durchgehen - das zuletzt Gezeichnete liegt oben. (x, y) zählt im
+ * Fenster; false: dort ist nichts, das sich anklicken ließe.
+ */
+static bool page_hit(const browser_t *b, int x, int y, hit_t *hit)
+{
+    const page_t *page = b->page;
+    if (!page || y < CONTENT_Y || y >= CONTENT_Y + CONTENT_H || x < 0 || x >= SCROLL_X - 2)
+        return false;
+    int px = x - page_left(page), on_page = y - CONTENT_Y + b->scroll;
+    for (int i = page->paint_count - 1; i >= 0; i--) {
+        const paint_t *item = &page->paint[i];
+        /* was am Fenster haftet, steht gerade woanders, als seine Lage auf der Seite sagt */
+        int py = on_page - (item->frame ? frame_shift(page->frames, page->frame_count, item->frame, b->scroll) : 0);
+        if (item->clip > 0 && item->clip <= page->clip_count) {
+            /* abgeschnitten und hier nicht zu sehen: zählt nicht */
+            const clip_t *c = &page->clips[item->clip - 1];
+            int cy = on_page - (c->frame ? frame_shift(page->frames, page->frame_count, c->frame, b->scroll) : 0);
+            if (px < c->x || px >= c->x + c->w || cy < c->y || cy >= c->y + c->h)
+                continue;
+        }
+        hit->kind = item->kind;
+        hit->index = item->index;
+        hit->link = -1;
+        if (item->kind == PAINT_WIDGET) {
+            const widget_t *w = &page->widgets[item->index];
+            if (w->h > 0 && px >= w->x && px < w->x + w->w && py >= w->y && py < w->y + w->h) {
+                hit->node = w->node;
+                return true;
+            }
+        } else if (item->kind == PAINT_IMAGE) {
+            /* Bild in einem Link: ein Klick darauf folgt dem Link */
+            const page_image_t *image = &page->images[item->index];
+            int width = image->width > 120 || !page->rows ? image->width : 120;
+            int height = image->height > 0 ? image->height : ROW_H;
+            if (px >= image->x && px < image->x + width && py >= image->y && py < image->y + height) {
+                hit->node = image->node;
+                hit->link = image->link;
+                return true;
+            }
+        } else if (item->kind == PAINT_LINE) {
+            const line_t *l = &page->lines[item->index];
+            if (py < l->y || py >= l->y + l->height)
+                continue;
+            for (uint32_t k = 0; k < l->count; k++) {
+                const span_t *span = &page->spans[l->first + k];
+                if (px < span->column || px >= span->column + span->width)
+                    continue;
+                if (span->bytes == 0 || span->widget >= 0 || span->image >= 0)
+                    continue;
+                hit->node = span->node;
+                hit->link = span->link;
+                return true;
+            }
+        } else if (item->kind == PAINT_BOX) {
+            const box_t *box = &page->boxes[item->index];
+            if ((!box->node && box->link < 0) || px < box->x || px >= box->x + box->w ||
+                py < box->y || py >= box->y + box->h)
+                continue;
+            hit->node = box->node;
+            hit->link = box->link;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Das Abbild der gezeigten Seite: das der Skripte, wenn sie laufen, sonst das eigene (oder NULL) */
+static dom_doc *page_doc(const browser_t *b)
+{
+    return b->script ? (dom_doc *)script_document(b->script) : b->doc;
+}
+
+/*
+ * Das Element, über dem der Mauszeiger steht (seine Nummer; 0: keines).
+ * Text, Bilder und Felder nennen ihr Element selbst; in einem Kasten oder auf
+ * freier Fläche ist es das innerste Element, dessen Fläche die Stelle enthält.
+ */
+static uint32_t node_under(const browser_t *b, int x, int y, int *link)
+{
+    const page_t *page = b->page;
+    const dom_doc *doc = page_doc(b);
+    hit_t hit;
+    *link = -1;
+    if (!page || page->rows || !doc || b->overlay != OVERLAY_NONE || b->dialog || y < CONTENT_Y ||
+        y >= CONTENT_Y + CONTENT_H || x < 0 || x >= SCROLL_X - 2)
+        return 0;
+    const dom_node *n = NULL;
+    if (page_hit(b, x, y, &hit)) {
+        *link = hit.link;
+        n = dom_node_by_id(doc, hit.node);
+        if (hit.kind != PAINT_BOX && n)
+            return n->id;
+    }
+    if (!page->rects)
+        return n ? n->id : 0;
+    if (!n) {
+        for (n = doc->root ? doc->root->first : NULL; n && n->type != DOM_ELEMENT; n = n->next)
+            ;
+    }
+    int px = x - page_left(page), on_page = y - CONTENT_Y + b->scroll;
+    for (int depth = 0; n && depth < 300; depth++) {
+        const dom_node *inner = NULL;
+        for (const dom_node *c = n->first; c; c = c->next) {
+            if (c->type != DOM_ELEMENT || c->id < 1 || c->id > page->rect_count)
+                continue;
+            const node_rect_t *r = &page->rects[c->id - 1];
+            int py = on_page - (r->frame ? frame_shift(page->frames, page->frame_count, r->frame, b->scroll) : 0);
+            if (r->w > 0 && r->h > 0 && px >= r->x && px < r->x + r->w && py >= r->y && py < r->y + r->h)
+                inner = c;              /* (liegen mehrere übereinander, zählt das spätere) */
+        }
+        if (!inner)
+            break;
+        n = inner;
+    }
+    return n && n->type == DOM_ELEMENT ? n->id : 0;
+}
+
+#define HOVER_MS      70                /* so lange muss der Zeiger über einem Element bleiben, bis es gilt */
+#define HOVER_FAST_MS 150               /* dauert das Setzen der Seite länger, gibt es beim Überfahren nur das Nötige */
+
+/* Der Mauszeiger steht an dieser Stelle des Fensters: nachsehen, was darunter liegt. true: neu zeichnen */
+static bool pointer_seen(browser_t *b, int x, int y)
+{
+    int link, before = b->hover_link;
+    b->mouse_x = x;
+    b->mouse_y = y;
+    b->mouse_known = true;
+    b->hover_scroll = b->scroll;
+    uint32_t node = node_under(b, x, y, &link);
+    b->hover_link = link;
+    if (node != b->hover_wanted) {
+        b->hover_wanted = node;
+        b->hover_since = time_ms();
+    }
+    return link != before;
+}
+
+/* Die Seite sieht anders aus oder ist gerollt: Liegt jetzt etwas anderes unter dem Zeiger? */
+static void pointer_again(browser_t *b)
+{
+    b->hover_link = -1;
+    if (b->mouse_known)
+        pointer_seen(b, b->mouse_x, b->mouse_y);
+}
+
+/* Soll die Seite neu gesetzt werden, wenn sich ein Zustand mit dieser Wirkung ändert? */
+static void restyle_for(browser_t *b, int effect)
+{
+    /* Farben beim Überfahren nur, wenn das Setzen schnell geht; Auf- und Zuklappen immer */
+    if (effect >= 2 || (effect == 1 && b->layout_ms <= HOVER_FAST_MS))
+        b->restyle = true;
+}
+
+/* Die stärkste Wirkung, die der Zustand which bei node und allem darüber hat - soweit other nicht darin steckt */
+static int state_effect(const browser_t *b, const dom_node *node, const dom_node *other, int which)
+{
+    int effect = 0;
+    for (const dom_node *n = node; b->css && n && effect < 2; n = n->parent) {
+        if (n->type != DOM_ELEMENT || (other && dom_contains(n, other)))
+            continue;
+        int one = css_state_effect(b->css, &n->css, which);
+        if (one > effect)
+            effect = one;
+    }
+    return effect;
+}
+
+/*
+ * Der Zeiger steht seit einer Weile über einem anderen Element: Das gilt
+ * jetzt - für Regeln mit :hover (Menüs, die unter der Maus aufklappen) und
+ * für die Skripte der Seite (mouseover, mouseenter ...).
+ */
+static void hover_apply(browser_t *b)
+{
+    dom_doc *doc = page_doc(b);
+    uint32_t wanted = b->hover_wanted;
+    if (!doc || wanted == b->hover_node) {
+        b->hover_node = wanted;
+        return;
+    }
+    dom_node *old = dom_node_by_id(doc, b->hover_node), *now = dom_node_by_id(doc, wanted);
+    int effect = state_effect(b, old, now, CSS_STATE_HOVER), gained = state_effect(b, now, old, CSS_STATE_HOVER);
+    if (gained > effect)
+        effect = gained;
+    b->hover_node = wanted;
+    if (b->script) {
+        uint32_t layouts = b->layouts;
+        script_pointer(b->script, wanted, b->mouse_x - page_left(b->page), b->mouse_y - CONTENT_Y);
+        script_settle(b);               /* zeigen, was die Skripte daraufhin geändert haben */
+        if (b->layouts != layouts)
+            effect = 0;                 /* dabei ist die Seite schon neu gesetzt worden - mit dem neuen Zustand */
+    } else {
+        doc->hover = now && now->type == DOM_ELEMENT ? now : NULL;
+    }
+    restyle_for(b, effect);
+}
+
+/* Ein anderes Feld wird bedient (oder keines mehr): für Regeln mit :focus und :focus-within */
+static void focus_state(browser_t *b)
+{
+    dom_doc *doc = page_doc(b);
+    const page_t *page = b->page;
+    if (!doc || !page || page->rows)
+        return;
+    uint32_t id = b->focus >= 0 && b->focus < page->widget_count ? page->widgets[b->focus].node : 0;
+    dom_node *old = doc->focus, *now = dom_node_by_id(doc, id);
+    if (now && now->type != DOM_ELEMENT)
+        now = NULL;
+    if (old == now)
+        return;
+    int effect = 0;
+    if (b->css) {
+        int a = old ? css_state_effect(b->css, &old->css, CSS_STATE_FOCUS) : 0;
+        int c = now ? css_state_effect(b->css, &now->css, CSS_STATE_FOCUS) : 0;
+        int d = state_effect(b, old, now, CSS_STATE_FOCUS_WITHIN), e = state_effect(b, now, old, CSS_STATE_FOCUS_WITHIN);
+        effect = a > effect ? a : effect;
+        effect = c > effect ? c : effect;
+        effect = d > effect ? d : effect;
+        effect = e > effect ? e : effect;
+    }
+    if (b->script)
+        script_focus(b->script, id);
+    else
+        doc->focus = now;
+    restyle_for(b, effect);
+}
+
 static void mouse_pressed(browser_t *b, int x, int y)
 {
     page_t *page = b->page;
@@ -3785,65 +4123,26 @@ static void mouse_pressed(browser_t *b, int x, int y)
     } else if (page && x >= SCROLL_X - 2 && y >= CONTENT_Y && y < CONTENT_Y + CONTENT_H) {
         scroll_to_mouse(b, y);
     } else if (page && y >= CONTENT_Y && y < CONTENT_Y + CONTENT_H && !b->busy) {
-        /*
-         * Was liegt an dieser Stelle zuoberst? Die Teile der Seite von hinten
-         * nach vorn durchgehen - das zuletzt Gezeichnete liegt oben.
-         */
-        int px = x - page_left(page), py = y - CONTENT_Y + b->scroll;
+        hit_t hit;
         b->address_focus = false;
-        for (int i = page->paint_count - 1; i >= 0; i--) {
-            const paint_t *item = &page->paint[i];
-            if (item->clip > 0 && item->clip <= page->clip_count) {
-                /* abgeschnitten und hier nicht zu sehen: zählt nicht */
-                const clip_t *c = &page->clips[item->clip - 1];
-                if (px < c->x || px >= c->x + c->w || py < c->y || py >= c->y + c->h)
-                    continue;
-            }
-            if (item->kind == PAINT_WIDGET) {
-                const widget_t *w = &page->widgets[item->index];
-                if (w->h > 0 && px >= w->x && px < w->x + w->w && py >= w->y && py < w->y + w->h) {
-                    activate_widget(b, item->index);
-                    return;
-                }
-            } else if (item->kind == PAINT_IMAGE) {
-                /* Bild in einem Link: ein Klick darauf folgt dem Link */
-                const page_image_t *image = &page->images[item->index];
-                int width = image->width > 120 || !page->rows ? image->width : 120;
-                int height = image->height > 0 ? image->height : ROW_H;
-                if (px >= image->x && px < image->x + width && py >= image->y && py < image->y + height) {
-                    set_focus(b, -1);
-                    if (page_click(b, image->node) && image->link >= 0)
-                        follow_link(b, page->links[image->link]);
-                    return;
-                }
-            } else if (item->kind == PAINT_LINE) {
-                const line_t *l = &page->lines[item->index];
-                if (py < l->y || py >= l->y + l->height)
-                    continue;
-                for (uint32_t k = 0; k < l->count; k++) {
-                    const span_t *span = &page->spans[l->first + k];
-                    if (px < span->column || px >= span->column + span->width)
-                        continue;
-                    if (span->bytes == 0 || span->widget >= 0 || span->image >= 0)
-                        continue;
-                    /* Die Skripte der Seite erfahren von jedem Klick - und können ihn für sich behalten. */
-                    set_focus(b, -1);
-                    if (page_click(b, span->node) && span->link >= 0)
-                        follow_link(b, page->links[span->link]);
-                    return;
-                }
-            } else if (item->kind == PAINT_BOX) {
-                const box_t *box = &page->boxes[item->index];
-                if ((!box->node && box->link < 0) || px < box->x || px >= box->x + box->w ||
-                    py < box->y || py >= box->y + box->h)
-                    continue;
-                set_focus(b, -1);
-                if (page_click(b, box->node) && box->link >= 0)
-                    follow_link(b, page->links[box->link]);
+        /* wer klickt, steht hier - auch wenn der Zeiger gerade erst angekommen ist */
+        pointer_seen(b, x, y);
+        if (b->hover_wanted != b->hover_node) {
+            hover_apply(b);
+            page = b->page;             /* (die Skripte können die Seite dabei verändert haben) */
+            if (!page)
                 return;
-            }
         }
-        set_focus(b, -1);
+        if (!page_hit(b, x, y, &hit)) {
+            set_focus(b, -1);
+        } else if (hit.kind == PAINT_WIDGET) {
+            activate_widget(b, hit.index);
+        } else {
+            /* Die Skripte der Seite erfahren von jedem Klick - und können ihn für sich behalten. */
+            set_focus(b, -1);
+            if (page_click(b, hit.node) && hit.link >= 0)
+                follow_link(b, page->links[hit.link]);
+        }
     }
 }
 
@@ -3858,8 +4157,10 @@ void browser_app(void *arg)
                       (CONTENT_H - 42) / TEXTEDIT_LINE_H);
         b->window = window_create("Browser", WIDTH, HEIGHT);
     }
-    if (b && b->window)
+    if (b && b->window) {
         window_set_resizable(b->window, 480, 300);
+        window_track_pointer(b->window);        /* für Menüs unter dem Mauszeiger und das Ziel von Links */
+    }
     if (!b || !b->window) {
         kfree(b);
         kfree(start);
@@ -3941,6 +4242,27 @@ void browser_app(void *arg)
         }
 
         /*
+         * Der Mauszeiger: Ist die Seite unter ihm weggerollt, liegt etwas
+         * anderes darunter. Steht er eine Weile über einem anderen Element,
+         * gilt das - für Menüs, die unter der Maus aufklappen (:hover), und
+         * für die Skripte. Hat das etwas am Aussehen geändert, wird neu gesetzt.
+         */
+        if (b->page && !b->busy && !b->incoming_ready && !b->dialog) {
+            if (b->mouse_known && b->hover_scroll != b->scroll && pointer_seen(b, b->mouse_x, b->mouse_y))
+                redraw = true;
+            if (b->hover_wanted != b->hover_node && time_ms() - b->hover_since >= HOVER_MS) {
+                hover_apply(b);
+                redraw = true;
+            }
+            if (b->restyle && b->page && b->overlay == OVERLAY_NONE) {
+                b->restyle = false;
+                relayout(b, true);
+                pointer_again(b);       /* unter dem Zeiger kann jetzt etwas anderes liegen */
+                redraw = true;
+            }
+        }
+
+        /*
          * Bilder: Sind welche angekommen, die Seite neu setzen - aber nicht
          * bei jedem einzelnen, sonst springt sie ständig.
          */
@@ -3972,9 +4294,17 @@ void browser_app(void *arg)
             else if (due - now < patience)
                 patience = (uint32_t)(due - now);
         }
+        if (b->hover_wanted != b->hover_node || b->restyle) {
+            /* der Zeiger steht über etwas Neuem: rechtzeitig nachsehen, ob er dort geblieben ist */
+            uint64_t now = time_ms(), due = b->restyle ? now : b->hover_since + HOVER_MS;
+            if (due <= now)
+                patience = 10;
+            else if (due - now < patience)
+                patience = (uint32_t)(due - now);
+        }
         if (!window_get_event(b->window, &ev, patience))
             continue;
-        redraw = true;
+        redraw = ev.type != EV_MOUSE_MOVE;      /* (eine bloße Bewegung ändert am Bild meist nichts) */
         if (ev.type == EV_CLOSE)
             break;
         if (ev.type == EV_RESIZE && window_resize(b->window, ev.x, ev.y)) {
@@ -3999,8 +4329,22 @@ void browser_app(void *arg)
             dragging = ev.x >= SCROLL_X - 2 && b->overlay == OVERLAY_NONE;
             mouse_pressed(b, ev.x, ev.y);
             script_settle(b);
-        } else if (ev.type == EV_MOUSE_MOVE && dragging) {
-            scroll_to_mouse(b, ev.y);
+        } else if (ev.type == EV_MOUSE_MOVE) {
+            if (dragging) {
+                scroll_to_mouse(b, ev.y);
+                redraw = true;
+            }
+            if (pointer_seen(b, ev.x, ev.y))
+                redraw = true;          /* über einem anderen Link: Die Statuszeile zeigt sein Ziel */
+            /* Skripte, die der Bewegung folgen wollen, erfahren sie - aber nicht jeden Pixel einzeln */
+            if (b->script && !b->busy && !b->dialog && b->hover_wanted == b->hover_node && b->hover_node &&
+                time_ms() >= b->move_next) {
+                b->move_next = time_ms() + 50;
+                if (script_pointer_move(b->script, ev.x - page_left(b->page), ev.y - CONTENT_Y)) {
+                    script_settle(b);
+                    redraw = true;
+                }
+            }
         } else if (ev.type == EV_MOUSE_UP) {
             dragging = false;
         }
@@ -4015,6 +4359,8 @@ void browser_app(void *arg)
         picture_release(b, &b->pictures[i]);
     script_destroy(b->script);
     script_destroy(b->incoming_script);
+    dom_free(b->doc);
+    dom_free(b->incoming_doc);
     kfree(b->dialog);
     page_free(b->page);
     page_free(b->incoming);

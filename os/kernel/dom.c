@@ -112,6 +112,15 @@ static bool css_state(const css_node_t *css, int which)
             return dom_attr_get(n, "selected") != NULL;
         return n->checked >= 0 ? n->checked != 0 : dom_attr_get(n, "checked") != NULL;
     }
+    /* Maus und Fokus: Das Element selbst - oder (hover, focus-within) eines, das darin steckt */
+    const dom_doc *doc = n->doc;
+    if (which == CSS_STATE_FOCUS)
+        return doc->focus == n;
+    const dom_node *at = which == CSS_STATE_HOVER ? doc->hover : which == CSS_STATE_FOCUS_WITHIN ? doc->focus : NULL;
+    for (int depth = 0; at && depth < 10000; at = at->parent, depth++) {
+        if (at == n)
+            return true;
+    }
     return false;
 }
 

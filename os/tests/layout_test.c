@@ -675,6 +675,75 @@ static bool rect_is(const char *id, int x, int y, int w, int h)
     return ok;
 }
 
+/* Der Rahmen, in dem das Zeichenstück für diesen Kasten liegt (plus 1), oder -1 */
+static int frame_of_box(uint32_t rgb)
+{
+    const box_t *b = colored(rgb);
+    for (int i = 0; b && i < page->paint_count; i++) {
+        if (page->paint[i].kind == PAINT_BOX && &page->boxes[page->paint[i].index] == b)
+            return page->paint[i].frame;
+    }
+    return -1;
+}
+
+/* Am Fenster befestigt (fixed) und oben haftend (sticky) */
+static void test_frames(void)
+{
+    /* fixed: Lage im Fenster (hier 600 hoch), nicht auf der Seite; die Seite wird davon nicht länger */
+    lay("<body style='margin:0'><div id=k style='position:fixed;top:0;left:0;right:0;height:40px;background:#111111'>"
+        "<b style='position:absolute;right:5px;top:5px;background:#131313'>x</b>Kopf</div>"
+        "<div id=u style='position:fixed;bottom:0;right:10px;width:100px;height:30px;background:#121212'>unten</div>"
+        "<div style='height:2000px;background:#eeeeee'>Inhalt</div>", 400, false);
+    CHECK(page->frame_count == 2 && page->frames[0].kind == FRAME_FIXED && page->frames[1].kind == FRAME_FIXED);
+    CHECK(box_is(0x111111, 0, 0, 400, 40) && box_is(0x121212, 290, 570, 100, 30) && page->height == 2000);
+    CHECK(frame_of_box(0x111111) == 1 && frame_of_box(0x121212) == 2 && frame_of_box(0xEEEEEE) == 0);
+    CHECK(frame_of_box(0x131313) == 1);         /* frei Platziertes darin wandert mit */
+    CHECK(rect("k") && rect("k")->frame == 1 && rect("u")->frame == 2 && rect("u")->y == 570);
+    CHECK(frame_shift(page->frames, page->frame_count, 1, 700) == 700 &&
+          frame_shift(page->frames, page->frame_count, 0, 700) == 0);
+    /* gezeichnet wird das Befestigte über dem Inhalt */
+    int content = -1, bar = -1;
+    for (int i = 0; i < page->paint_count; i++) {
+        if (page->paint[i].kind != PAINT_BOX)
+            continue;
+        if (page->boxes[page->paint[i].index].background == (HTML_COLOR_SET | 0xEEEEEE))
+            content = i;
+        if (page->boxes[page->paint[i].index].background == (HTML_COLOR_SET | 0x111111))
+            bar = i;
+    }
+    CHECK(content >= 0 && bar > content);
+
+    /* sticky: rollt mit, bleibt 10 Pixel unter dem Fensterrand haften - bis sein Kasten zu Ende ist */
+    lay("<body style='margin:0'><div style='height:100px'></div><div id=c>"
+        "<div id=s style='position:sticky;top:10px;height:20px;background:#222222'>Leiste</div>"
+        "<div style='height:500px;background:#dddddd'></div></div><div style='height:1000px'></div>", 400, false);
+    CHECK(page->frame_count == 1 && page->frames[0].kind == FRAME_STICKY && page->frames[0].y == 100 &&
+          page->frames[0].h == 20 && page->frames[0].top == 10 && page->frames[0].limit == 620);
+    CHECK(box_is(0x222222, 0, 100, 400, 20) && frame_of_box(0x222222) == 1 && frame_of_box(0xDDDDDD) == 0);
+    CHECK(frame_shift(page->frames, 1, 1, 0) == 0 && frame_shift(page->frames, 1, 1, 50) == 0 &&
+          frame_shift(page->frames, 1, 1, 200) == 110 && frame_shift(page->frames, 1, 1, 5000) == 500);
+    CHECK(page->height == 1620 && rect("s")->frame == 1 && text_at("Leiste", 0, 100));
+
+    /* Kopfzellen einer Tabelle haften, solange die Tabelle zu sehen ist; ohne "top" haftet nichts */
+    lay("<body style='margin:0'><table cellspacing=0 cellpadding=0><tr><th id=h style='position:sticky;top:0;"
+        "background:#333333'>Kopf</th></tr><tr><td style='height:300px'>a</td></tr></table>"
+        "<p id=n style='position:sticky;margin:0;background:#444444'>ohne</p>", 400, false);
+    CHECK(page->frame_count == 1 && page->frames[0].limit >= 300 && frame_of_box(0x444444) == 0);
+    CHECK(frame_shift(page->frames, 1, 1, 150) == 150 && frame_shift(page->frames, 1, 1, 900) == page->frames[0].limit - page->frames[0].h);
+
+    /* ein Ausschnitt im Befestigten bewegt sich mit ihm */
+    lay("<body style='margin:0'><div style='position:fixed;top:20px;left:0;width:100px;height:30px;overflow:hidden'>"
+        "<div style='height:90px;background:#555555'>lang</div></div><div style='height:900px'></div>", 400, false);
+    const box_t *inner = colored(0x555555);
+    int clip = -1;
+    for (int i = 0; inner && i < page->paint_count; i++) {
+        if (page->paint[i].kind == PAINT_BOX && &page->boxes[page->paint[i].index] == inner)
+            clip = page->paint[i].clip;
+    }
+    CHECK(clip > 0 && page->clips[clip - 1].frame == 1 && page->clips[clip - 1].y == 20 && page->clips[clip - 1].h == 30);
+    done();
+}
+
 /* "inherit": Was schwächere Regeln für Schrift und Farbe festgelegt haben, gilt nicht mehr */
 static void test_inherit(void)
 {
@@ -769,6 +838,7 @@ int main(void)
     test_tables_and_positions();
     test_content();
     test_decoration();
+    test_frames();
     test_inherit();
     test_buttons();
     test_geometry();

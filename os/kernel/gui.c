@@ -58,6 +58,7 @@ struct window {
                                            wenn dessen Task endet */
 
     bool resizable;
+    bool track_pointer;                 /* will Bewegungen des Zeigers auch ohne gedrückte Taste erfahren */
     int min_width, min_height;
     surface_t *retired[RETIRED_MAX];    /* abgelöste Flächen; gibt der Compositor frei */
     bool maximized;
@@ -96,6 +97,7 @@ static int mouse_x, mouse_y, mouse_buttons;
 static window_t *drag_win;              /* Fenster wird gerade verschoben */
 static int drag_dx, drag_dy;
 static window_t *capture_win;           /* Fenster, in dem die Maus gedrückt wurde */
+static window_t *pointer_win;           /* Fenster, über dessen Inhalt der Zeiger zuletzt stand (und das es wissen will) */
 static window_t *resize_win;            /* Fenster, dessen Größe gerade gezogen wird */
 static int resize_w, resize_h;          /* gewünschte Inhaltsgröße */
 static int resize_dx, resize_dy;
@@ -242,6 +244,11 @@ static void add_dirty_outline(rect_t r)
     add_dirty(rect_make(r.x, r.y + r.h - 3, r.w, 3));
     add_dirty(rect_make(r.x, r.y, 3, r.h));
     add_dirty(rect_make(r.x + r.w - 3, r.y, 3, r.h));
+}
+
+void window_track_pointer(window_t *win)
+{
+    win->track_pointer = true;
 }
 
 void window_set_resizable(window_t *win, int min_width, int min_height)
@@ -870,6 +877,8 @@ static void remove_window(window_t *w)
         drag_win = NULL;
     if (capture_win == w)
         capture_win = NULL;
+    if (pointer_win == w)
+        pointer_win = NULL;
     if (resize_win == w) {
         add_dirty_outline(outline_rect());
         resize_win = NULL;
@@ -1071,6 +1080,20 @@ static void handle_mouse(int dx, int dy, int buttons)
         add_dirty(damage_rect(w));
     } else if (capture_win && (dx || dy)) {
         send_mouse(capture_win, EV_MOUSE_MOVE);
+    } else if (dx || dy) {
+        /* der bloße Zeiger: Das oberste Fenster darunter erfährt davon, wenn es das wünscht */
+        window_t *w = menu_open || rect_contains(taskbar_rect(), mouse_x, mouse_y) ? NULL
+                                                                                    : window_at(mouse_x, mouse_y);
+        if (w && (!w->track_pointer || !rect_contains(client_rect(w), mouse_x, mouse_y)))
+            w = NULL;
+        if (pointer_win && pointer_win != w) {
+            /* ein letztes Mal: Der Zeiger ist jetzt außerhalb (auch wenn ein anderes Fenster darüber liegt) */
+            event_t left = { .type = EV_MOUSE_MOVE, .x = -1, .y = -1, .buttons = mouse_buttons };
+            post_event(pointer_win, &left);
+        }
+        pointer_win = w;
+        if (w)
+            send_mouse(w, EV_MOUSE_MOVE);
     }
 
     bool was_down = old_buttons & MOUSE_LEFT;

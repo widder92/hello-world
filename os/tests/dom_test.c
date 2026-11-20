@@ -214,7 +214,24 @@ int main(void)
         hits += n->type == DOM_ELEMENT && css_selector_matches(sel, &n->css);
     check(sel && hits == 2, "Auswahl findet Elemente im Baum");
     css_selector_free(sel);
-    check(!css_selector_parse("a:hover", 7) && !css_selector_parse("", 0), "nicht prüfbare Auswahl wird abgelehnt");
+    check(!css_selector_parse("a:has(b)", 8) && !css_selector_parse("", 0), "nicht prüfbare Auswahl wird abgelehnt");
+    /* über welchem Element der Mauszeiger steht, trägt der Browser ins Abbild ein */
+    sel = css_selector_parse("ul:hover > li.neu:not(:hover), li:hover", 39);
+    dom_node *under = NULL;
+    for (dom_node *n = dom_next(doc->root, doc->root); n && !under; n = dom_next(doc->root, n)) {
+        const char *class = n->type == DOM_ELEMENT ? dom_attr_get(n, "class") : NULL;
+        if (class && strcmp(class, "neu") == 0)
+            under = n;
+    }
+    check(sel && under && !css_selector_matches(sel, &under->css), "ohne Maus trifft :hover nicht zu");
+    if (under) {
+        doc->hover = under;
+        check(css_selector_matches(sel, &under->css), ":hover: das Element unter der Maus");
+        doc->hover = under->parent;
+        check(css_selector_matches(sel, &under->css), ":hover gilt auch dem, worin der Zeiger steckt");
+        doc->hover = NULL;
+    }
+    css_selector_free(sel);
     check(dom_find_id(doc->root, "haupt") == body && !dom_find_id(doc->root, "fehlt"), "Suche nach id");
 
     /* Formularstand in der Anzeige */

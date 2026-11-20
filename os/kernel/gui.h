@@ -93,6 +93,14 @@ void window_keep(window_t *win);
 void window_set_resizable(window_t *win, int min_width, int min_height);
 surface_t *window_resize(window_t *win, int width, int height);
 
+/*
+ * Den Mauszeiger verfolgen: Danach bekommt das Fenster EV_MOUSE_MOVE auch,
+ * wenn keine Taste gedrückt ist - solange der Zeiger über seinem Inhalt
+ * steht, und ein letztes Mal, wenn er ihn verlässt (dann mit einer Lage
+ * außerhalb). Ohne das kommen Bewegungen nur bei gedrückter Taste an.
+ */
+void window_track_pointer(window_t *win);
+
 /* Meldet einen geänderten Bereich des Inhalts (Koordinaten im Fenster). */
 void window_invalidate(window_t *win, int x, int y, int w, int h);
 

@@ -31,7 +31,10 @@ struct css_node;
 
 /* Zustände eines Elements, die nicht aus seinen Attributen hervorgehen */
 enum { CSS_STATE_EMPTY,                 /* ohne Inhalt (:empty) */
-       CSS_STATE_CHECKED };             /* jetzt angekreuzt bzw. gewählt (:checked) */
+       CSS_STATE_CHECKED,               /* jetzt angekreuzt bzw. gewählt (:checked) */
+       CSS_STATE_HOVER,                 /* der Mauszeiger steht darüber - oder über etwas darin (:hover) */
+       CSS_STATE_FOCUS,                 /* das Feld, in das gerade getippt wird (:focus, :focus-visible) */
+       CSS_STATE_FOCUS_WITHIN };        /* ... oder es steckt darin (:focus-within) */
 
 /*
  * Auskunft über die Umgebung eines Elements. Wer den ganzen Baum kennt (dom.c),
@@ -136,6 +139,7 @@ typedef struct {
     bool color_inherited;               /* "color: inherit": ausdrücklich die Farbe der Umgebung (auch bei Links) */
     uint32_t background;                /* 0x00RRGGBB */
     bool background_clear;              /* ausdrücklich kein Hintergrund */
+    uint8_t background_alpha;           /* seine Deckkraft: 26 ... 255 (deckend); 0: nicht angegeben, also deckend */
     bool bold, italic, underline, hidden, list_plain;
     uint8_t display, align;
     uint8_t float_side;                 /* neben dem Text: CSS_SIDE_LEFT/RIGHT, oder NONE */
@@ -260,9 +264,19 @@ bool css_length(const css_sheet_t *sheet, const char *text, size_t length, css_l
 
 /* Liest eine Farbangabe; false bei "transparent" oder Unverständlichem. */
 bool css_color(const char *text, size_t length, uint32_t *rgb);
+/* ... dasselbe mit der Deckkraft der Farbe: 26 (kaum zu sehen) bis 255 (deckend) */
+bool css_color_alpha(const char *text, size_t length, uint32_t *rgb, uint8_t *opacity);
 
 /* Anzahl der eingelesenen Regeln (für Meldungen und Tests) */
 int css_rule_count(const css_sheet_t *sheet);
+
+/*
+ * Was ändert sich am Aussehen der Seite, wenn dieses Element den Zustand
+ * which (CSS_STATE_HOVER ...) bekommt oder verliert? 0: nichts - keine Regel
+ * fragt bei ihm danach; 1: nur Farben, Hintergründe, Unterstreichung; 2: auch
+ * Lage, Größe oder ob etwas zu sehen ist.
+ */
+int css_state_effect(const css_sheet_t *sheet, const css_node_t *node, int which);
 
 /*
  * Eine einzelne Auswahl ("ul.menu > li, #kopf") zum Prüfen von Elementen -

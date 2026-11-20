@@ -72,6 +72,7 @@ struct script {
     uint64_t geo_max_ms;
     int scroll_y;                       /* diese Höhe der Seite steht oben in der Anzeige */
     bool watching;                      /* ein Skript beobachtet, was ins Bild kommt */
+    bool moves_wanted;                  /* ein Skript will wissen, wenn sich der Mauszeiger bewegt */
     uint32_t seen_version;              /* Stand des Abbilds, als die Beobachter zuletzt prüften */
     bool seen_any;
 };
@@ -490,10 +491,12 @@ static bool geometry(js_state *J, script_t *s)
         s->boot_until += waited;
     if (!ok || !fresh.rects) {
         kfree(fresh.rects);
+        kfree(fresh.frames);
         s->geo_max_runs = 0;            /* es geht nicht: in diesem Lauf nicht noch einmal versuchen */
         return false;
     }
     kfree(s->geo.rects);
+    kfree(s->geo.frames);
     s->geo = fresh;
     s->geo_known = true;
     s->geo_stale = false;
@@ -510,7 +513,7 @@ static bool node_shown(const script_t *s, const dom_node *n);
  */
 static int node_place(js_state *J, script_t *s, const dom_node *n, node_rect_t *out)
 {
-    static const node_rect_t assumed = { 0, 0, 100, 20, { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, false };
+    static const node_rect_t assumed = { 0, 0, 100, 20, { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, false, 0 };
     bool fresh = geometry(J, s);
     if (!s->geo_known)
         return -1;
@@ -521,12 +524,15 @@ static int node_place(js_state *J, script_t *s, const dom_node *n, node_rect_t *
         if (!r || r->w < 0)
             return 0;
         *out = *r;
-        return 1;
+    } else {
+        /* veralteter Stand: Ob etwas zu sehen ist, sagt die Gestaltung - die Maße sind die von vorhin */
+        if (!node_shown(s, n))
+            return 0;
+        *out = r && r->w >= 0 ? *r : assumed;
     }
-    /* veralteter Stand: Ob etwas zu sehen ist, sagt die Gestaltung - die Maße sind die von vorhin */
-    if (!node_shown(s, n))
-        return 0;
-    *out = r && r->w >= 0 ? *r : assumed;
+    /* was am Fenster haftet, steht je nach Rollstand tiefer auf der Seite */
+    if (out->frame)
+        out->y += frame_shift(s->geo.frames, s->geo.frame_count, out->frame, s->scroll_y);
     return 1;
 }
 
@@ -741,6 +747,7 @@ enum {
     D_VALUE, D_SETVALUE, D_CHECKED, D_SETCHECKED, D_SELECTED, D_SETSELECTED, D_STYLE, D_DATASET,
     D_URL, D_RESOLVE, D_WISH, D_ALERT, D_CONFIRM, D_WRITE, D_SCRIPT, D_SIZE, D_PROTOS, D_DISPATCHER,
     D_SHOWN, D_COMPUTED, D_REQUEST, D_RECT, D_PAGE, D_SCROLL, D_WATCH, D_VERSION, D_ANCHOR, D_AT,
+    D_WANTS, D_FOCUSED,
 };
 
 static bool lower_name(js_state *J, int i, char *out, size_t size)
@@ -1395,7 +1402,7 @@ static bool dom_fn(js_state *J, int argc)
     case D_DOC: case D_EL: case D_TEXTNODE: case D_COMMENT: case D_FRAG: case D_PARSE: case D_URL:
     case D_RESOLVE: case D_WISH: case D_ALERT: case D_CONFIRM: case D_WRITE: case D_SCRIPT:
     case D_SIZE: case D_PROTOS: case D_DISPATCHER: case D_REQUEST: case D_PAGE: case D_SCROLL:
-    case D_WATCH: case D_VERSION: case D_AT:
+    case D_WATCH: case D_VERSION: case D_AT: case D_WANTS: case D_FOCUSED:
         break;
     default:
         n = need_node(J, 0);
@@ -1737,8 +1744,10 @@ static bool dom_fn(js_state *J, int argc)
         int64_t best_area = 0;
         for (uint32_t i = 0; s->geo_known && i < s->geo.count && i < doc->count; i++) {
             const node_rect_t *r = &s->geo.rects[i];
-            if (r->w <= 0 || r->h <= 0 || x < r->x || y < r->y || x >= (double)r->x + r->w ||
-                y >= (double)r->y + r->h)
+            double ry = r->y;
+            if (r->frame && r->w > 0)
+                ry += frame_shift(s->geo.frames, s->geo.frame_count, r->frame, s->scroll_y);
+            if (r->w <= 0 || r->h <= 0 || x < r->x || y < ry || x >= (double)r->x + r->w || y >= ry + r->h)
                 continue;
             int64_t area = (int64_t)r->w * r->h;
             if (!best || area <= best_area) {
@@ -1748,6 +1757,11 @@ static bool dom_fn(js_state *J, int argc)
         }
         return best ? push_node(J, best) : js_push(J, js_null());
     }
+    case D_WANTS:                       /* ein Skript hört auf Bewegungen des Mauszeigers */
+        s->moves_wanted = true;
+        return js_push(J, js_undef());
+    case D_FOCUSED:                     /* das Feld, das gerade bedient wird, oder null */
+        return doc->focus ? push_node(J, doc->focus) : js_push(J, js_null());
     case D_WATCH:
         s->watching = argc > 0 && js_truthy(js_arg(J, 0));
         return js_push(J, js_undef());
@@ -1881,7 +1895,7 @@ static const struct {
     { "protos", 1, D_PROTOS }, { "dispatcher", 1, D_DISPATCHER }, { "shown", 1, D_SHOWN },
     { "computed", 1, D_COMPUTED }, { "request", 6, D_REQUEST }, { "rect", 1, D_RECT },
     { "page", 0, D_PAGE }, { "scroll", 1, D_SCROLL }, { "watch", 1, D_WATCH }, { "version", 0, D_VERSION },
-    { "anchor", 1, D_ANCHOR }, { "at", 2, D_AT },
+    { "anchor", 1, D_ANCHOR }, { "at", 2, D_AT }, { "wants", 1, D_WANTS }, { "focused", 0, D_FOCUSED },
 };
 
 /* --- Anlegen ------------------------------------------------------------------------------------- */
@@ -1973,6 +1987,7 @@ void script_destroy(script_t *s)
     kfree(s->stack);
     kfree(s->done);
     kfree(s->geo.rects);
+    kfree(s->geo.frames);
     kfree(s);
 }
 
@@ -2336,7 +2351,7 @@ typedef struct {
     int64_t wait;
 } call_t;
 
-enum { OP_BOOT, OP_CLICK, OP_SUBMIT, OP_FIELD, OP_TICK, OP_EVENT, OP_EVAL, OP_VIEW };
+enum { OP_BOOT, OP_CLICK, OP_SUBMIT, OP_FIELD, OP_TICK, OP_EVENT, OP_EVAL, OP_VIEW, OP_POINTER };
 
 static void entry(void *arg)
 {
@@ -2412,6 +2427,15 @@ static void entry(void *arg)
             js_run(J, c->value, strlen(c->value), "javascript:", s->host.budget_ms ? s->host.budget_ms : EVENT_MS);
         run_scripts(s);
         break;
+    case OP_POINTER: {
+        /* der Mauszeiger steht über einem anderen Element: n ist das neue (oder NULL) */
+        dom_node *old = s->doc->hover;
+        s->doc->hover = n && n->type == DOM_ELEMENT ? n : NULL;
+        if (old != s->doc->hover || c->finished)
+            fire(s, s->doc->hover, c->finished ? "mousemove" : "pointer", old, c->value);
+        run_scripts(s);
+        break;
+    }
     case OP_VIEW:
         /* der Ausschnitt hat sich verschoben, oder die Seite sieht anders aus als bei der letzten Prüfung */
         fire(s, NULL, "view", NULL, c->type ? c->type : c->finished ? "scroll" : NULL);
@@ -2489,11 +2513,16 @@ void script_set_geometry(script_t *s, script_geometry_t *geometry)
 {
     if (!s) {
         kfree(geometry->rects);
+        kfree(geometry->frames);
         geometry->rects = NULL;
+        geometry->frames = NULL;
         return;
     }
     kfree(s->geo.rects);
+    kfree(s->geo.frames);
     if (!geometry->rects) {
+        kfree(geometry->frames);
+        geometry->frames = NULL;
         memset(&s->geo, 0, sizeof(s->geo));
         s->geo_known = false;
         return;
@@ -2504,6 +2533,47 @@ void script_set_geometry(script_t *s, script_geometry_t *geometry)
     s->geo_version = s->doc->version;
     s->seen_any = false;                /* neu gesetzt (auch: Bilder sind angekommen): Beobachter prüfen erneut */
     geometry->rects = NULL;
+    geometry->frames = NULL;
+}
+
+void script_pointer(script_t *s, uint32_t node, int x, int y)
+{
+    char where[40];
+    if (!s || !s->J)
+        return;
+    if (js_dead(s->J)) {                /* die Skripte stehen: Die Gestaltung richtet sich trotzdem nach der Maus */
+        dom_node *n = dom_node_by_id(s->doc, node);
+        s->doc->hover = n && n->type == DOM_ELEMENT ? n : NULL;
+        return;
+    }
+    ksnprintf(where, sizeof(where), "%d,%d", x, y);
+    call_t c = { .op = OP_POINTER, .node = node, .value = where };
+    run(s, &c);
+}
+
+bool script_pointer_move(script_t *s, int x, int y)
+{
+    static const char *const names[] = { "onmousemove", NULL };
+    char where[40];
+    if (!s || !s->J || js_dead(s->J) || !s->doc->hover)
+        return false;
+    bool wanted = s->moves_wanted;
+    for (const dom_node *n = s->doc->hover; n && !wanted; n = n->parent)
+        wanted = n->type == DOM_ELEMENT && dom_attr_get(n, names[0]) != NULL;
+    if (!wanted)
+        return false;
+    ksnprintf(where, sizeof(where), "%d,%d", x, y);
+    call_t c = { .op = OP_POINTER, .node = s->doc->hover->id, .value = where, .finished = true };
+    run(s, &c);
+    return true;
+}
+
+void script_focus(script_t *s, uint32_t node)
+{
+    if (!s)
+        return;
+    dom_node *n = dom_node_by_id(s->doc, node);
+    s->doc->focus = n && n->type == DOM_ELEMENT ? n : NULL;
 }
 
 void script_resize(script_t *s, int width, int height)

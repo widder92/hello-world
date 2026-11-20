@@ -24,6 +24,7 @@
         if (typeof fn !== 'function' && !(fn && typeof fn.handleEvent === 'function')) return;
         if (!this.__l) hide(this, '__l', {});
         var list = this.__l[type] || (this.__l[type] = []);
+        if (type === 'mousemove' || type === 'pointermove') dom.wants(1);     /* der Browser meldet Bewegungen nur, wenn jemand zuhört */
         for (var i = 0; i < list.length; i++) if (list[i].fn === fn) return;
         list.push({ fn: fn, once: !!(options && typeof options === 'object' && options.once) });
     };
@@ -710,7 +711,7 @@
     });
     accessor(D, 'currentScript', function () { return dom.script(); });
     accessor(D, 'defaultView', function () { return window; });
-    accessor(D, 'activeElement', function () { return this.body; });
+    accessor(D, 'activeElement', function () { return dom.focused() || this.body; });
     accessor(D, 'URL', function () { return dom.url(); });
     accessor(D, 'documentURI', function () { return dom.url(); });
     accessor(D, 'baseURI', function () { return dom.url(); });
@@ -1345,15 +1346,49 @@
         e.isTrusted = true;
         return e;
     }
+    /* Wo der Mauszeiger steht (im sichtbaren Ausschnitt) - der Browser meldet es mit jedem Wechsel */
+    var pointerX = 0, pointerY = 0;
+    function mouseEvent(type, bubbles, related) {
+        var e = new MouseEvent(type, { bubbles: bubbles, cancelable: bubbles, clientX: pointerX, clientY: pointerY,
+                                       pageX: pointerX, pageY: pointerY + dom.scroll(), screenX: pointerX,
+                                       screenY: pointerY, offsetX: 0, offsetY: 0, relatedTarget: related || null,
+                                       view: window });
+        e.isTrusted = true;
+        return e;
+    }
+    function ancestors(node) {
+        var list = [];
+        for (var n = node, guard = 0; n && dom.type(n) === 1 && guard < 2000; n = dom.parent(n), guard++) list.push(n);
+        return list;
+    }
+    /*
+     * Der Zeiger ist von einem Element auf ein anderes gewandert: mouseout und mouseover steigen
+     * auf wie ein Klick; mouseleave und mouseenter gelten je Element, das wirklich verlassen
+     * bzw. betreten wurde (nicht, wenn der Zeiger nur in ein Kind wechselt).
+     */
+    function pointerChanged(now, before) {
+        var left = before ? ancestors(before) : [], entered = now ? ancestors(now) : [];
+        if (before) {
+            dispatch(before, mouseEvent('pointerout', true, now));
+            dispatch(before, mouseEvent('mouseout', true, now));
+            left.forEach(function (el) {
+                if (entered.indexOf(el) < 0) { dispatch(el, mouseEvent('pointerleave', false, now)); dispatch(el, mouseEvent('mouseleave', false, now)); }
+            });
+        }
+        if (now) {
+            dispatch(now, mouseEvent('pointerover', true, before));
+            dispatch(now, mouseEvent('mouseover', true, before));
+            entered.reverse().forEach(function (el) {
+                if (left.indexOf(el) < 0) { dispatch(el, mouseEvent('pointerenter', false, before)); dispatch(el, mouseEvent('mouseenter', false, before)); }
+            });
+        }
+    }
     /* Ein Klick des Benutzers; true: Der Browser soll tun, was der Klick sonst bewirkt (Link, Absenden). */
     function userClick(node) {
-        ['mousedown', 'mouseup'].forEach(function (type) {
-            var e = new MouseEvent(type, { bubbles: true, cancelable: true });
-            e.isTrusted = true;
-            dispatch(node, e);
+        ['pointerdown', 'mousedown', 'pointerup', 'mouseup'].forEach(function (type) {
+            dispatch(node, mouseEvent(type, true, null));
         });
-        var click = new MouseEvent('click', { bubbles: true, cancelable: true });
-        click.isTrusted = true;
+        var click = mouseEvent('click', true, null);
         var name = dom.name(node), kind = name === 'input' || name === 'button' ? inputType(node) : '';
         if (dom.type(node) === 1 && dom.attr(node, 'disabled') !== null && (name === 'input' || name === 'button')) return false;
         if (name === 'input' && (kind === 'checkbox' || kind === 'radio')) {
@@ -1407,6 +1442,13 @@
             }
             if (info === 'scroll') fire(document, 'scroll');
             lookAround();
+            return true;
+        }
+        if (type === 'pointer' || type === 'mousemove') {
+            var at = String(info || '').split(',');
+            pointerX = +at[0] || 0; pointerY = +at[1] || 0;
+            if (type === 'pointer') pointerChanged(node, detail);
+            else if (node) { dispatch(node, mouseEvent('pointermove', true, null)); dispatch(node, mouseEvent('mousemove', true, null)); }
             return true;
         }
         if (type === 'click') return userClick(node);

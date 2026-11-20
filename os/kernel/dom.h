@@ -55,6 +55,11 @@ struct dom_doc {
     size_t bytes;
     bool dirty;                         /* seit dem letzten dom_serialize() geändert */
     uint32_t version;                   /* zählt jede Änderung: So lässt sich erkennen, ob etwas noch gilt */
+    /*
+     * Maus und Fokus - der Browser trägt ein, worüber der Mauszeiger steht und
+     * welches Feld gerade bedient wird; danach fragen Regeln mit :hover und :focus.
+     */
+    struct dom_node *hover, *focus;
     bool failed;                        /* eine Grenze wurde erreicht */
 };
 

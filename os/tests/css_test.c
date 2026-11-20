@@ -87,8 +87,8 @@ static void test_selectors(void)
         "span { color: #111 } span.x { color: #222 } div span.x { color: #333 }\n";
     css_sheet_t *sheet = css_create(1000);
     CHECK(sheet && css_add(sheet, text, sizeof(text) - 1));
-    /* die drei Regeln mit Zuständen, die es hier nie gibt, und fremden Scheinelementen fallen weg */
-    CHECK(css_rule_count(sheet) == 19);
+    /* die zwei Regeln mit einem Zustand, den es hier nie gibt (:visited), und einem fremden Scheinelement fallen weg */
+    CHECK(css_rule_count(sheet) == 20);
 
     css_node_t html = node("html", NULL, NULL, NULL);
     css_node_t body = node("BODY", NULL, NULL, &html);
@@ -405,9 +405,21 @@ static const css_node_t *kid_sibling(const css_node_t *n, int direction)
     return NULL;
 }
 
+static const css_node_t *kid_hover, *kid_focus;     /* worüber die Maus steht, was den Fokus hat */
+
 static bool kid_state(const css_node_t *n, int which)
 {
-    return which == CSS_STATE_EMPTY ? n == &kids[3] : n == &kids[9];
+    if (which == CSS_STATE_EMPTY)
+        return n == &kids[3];
+    if (which == CSS_STATE_CHECKED)
+        return n == &kids[9];
+    if (which == CSS_STATE_FOCUS)
+        return n == kid_focus;
+    for (const css_node_t *at = which == CSS_STATE_HOVER ? kid_hover : kid_focus; at; at = at->parent) {
+        if (at == n)
+            return true;
+    }
+    return false;
 }
 
 static const css_tree_t kid_tree = { kid_sibling, kid_state };
@@ -483,6 +495,45 @@ static void test_structure(void)
     css_node_t alone = node("li", NULL, NULL, &ul);
     css_style_t a = match(sheet, &alone, NULL);
     CHECK(!(a.has & CSS_COLOR) && !a.bold && !(a.has & CSS_ALIGN) && !(a.has & CSS_DISPLAY));
+    css_free(sheet);
+
+    /* Maus und Fokus: Die Regeln gelten, sobald das Abbild der Seite den Zustand meldet */
+    static const char states[] =
+        "li:hover { color: #0c0c0c } ul:hover > li.b { display: none } a:hover, li.a:focus { text-decoration: underline }\n"
+        "li:not(:hover) { font-style: italic } ul:focus-within li { font-weight: bold } input:focus { color: #0d0d0d }\n"
+        "li:focus-visible { background-color: #0e0e0e } li:active { color: #f00 } p:hover > b { width: 5px }\n";
+    sheet = css_create(1000);
+    CHECK(sheet && css_add(sheet, states, sizeof(states) - 1) && css_rule_count(sheet) == 9);
+    for (int i = 0; i < kid_count; i++)
+        kids[i].tree = &kid_tree;
+    ul.tree = &kid_tree;
+    kid_hover = kid_focus = NULL;
+    css_style_t quiet = match(sheet, &kids[1], NULL);
+    CHECK(!(quiet.has & CSS_COLOR) && quiet.italic && !quiet.bold && !(match(sheet, &kids[4], NULL).has & CSS_DISPLAY));
+    kid_hover = &kids[1];
+    css_style_t over = match(sheet, &kids[1], NULL), other = match(sheet, &kids[0], NULL);
+    CHECK(over.color == 0x0C0C0C && !over.italic && !(other.has & CSS_COLOR) && other.italic);
+    CHECK(match(sheet, &kids[4], NULL).display == CSS_NONE);    /* die Liste gilt als überfahren, wenn es ein Punkt darin ist */
+    kid_focus = &kids[1];
+    over = match(sheet, &kids[1], NULL);
+    CHECK(over.underline && over.bold && (over.has & CSS_BACKGROUND) && match(sheet, &kids[0], NULL).bold);
+    kid_focus = &kids[9];
+    CHECK(match(sheet, &kids[9], NULL).color == 0x0D0D0D && !match(sheet, &kids[8], NULL).color &&
+          !match(sheet, &kids[1], NULL).bold);
+    /* ändert sich etwas, wenn die Maus kommt oder geht? 0 nein, 1 nur Farben, 2 auch die Anordnung */
+    css_node_t link = node("a", NULL, NULL, &body), bold = node("b", NULL, NULL, &kids[6]);
+    link.tree = bold.tree = &kid_tree;
+    CHECK(css_state_effect(sheet, &kids[0], CSS_STATE_HOVER) == 2 &&    /* (kursiv ändert die Breite) */
+          css_state_effect(sheet, &link, CSS_STATE_HOVER) == 1 &&
+          css_state_effect(sheet, &ul, CSS_STATE_HOVER) == 2 &&
+          css_state_effect(sheet, &kids[6], CSS_STATE_HOVER) == 2 &&
+          css_state_effect(sheet, &bold, CSS_STATE_HOVER) == 0 &&
+          css_state_effect(sheet, &kids[10], CSS_STATE_HOVER) == 0);
+    CHECK(css_state_effect(sheet, &kids[9], CSS_STATE_FOCUS) == 1 &&
+          css_state_effect(sheet, &kids[1], CSS_STATE_FOCUS) == 1 &&
+          css_state_effect(sheet, &ul, CSS_STATE_FOCUS_WITHIN) == 2 &&
+          css_state_effect(sheet, &kids[6], CSS_STATE_FOCUS) == 0 && css_state_effect(NULL, &link, CSS_STATE_HOVER) == 0);
+    kid_hover = kid_focus = NULL;
     css_free(sheet);
 
     /* dieselben Mittel in querySelector */

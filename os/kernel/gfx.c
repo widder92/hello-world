@@ -131,6 +131,22 @@ void gfx_darken(surface_t *s, int x, int y, int w, int h, int percent)
     }
 }
 
+void gfx_fill_alpha(surface_t *s, int x, int y, int w, int h, color_t color, int alpha)
+{
+    if (alpha >= 255) {
+        gfx_fill(s, x, y, w, h, color);
+        return;
+    }
+    if (alpha <= 0)
+        return;
+    rect_t r = rect_intersect(rect_make(x, y, w, h), s->clip);
+    for (int yy = r.y; yy < r.y + r.h; yy++) {
+        uint32_t *p = row(s, yy) + r.x;
+        for (int i = 0; i < r.w; i++)
+            p[i] = blend(p[i], color, (unsigned)alpha);
+    }
+}
+
 void gfx_line(surface_t *s, int x0, int y0, int x1, int y1, int thickness,
               color_t color)
 {

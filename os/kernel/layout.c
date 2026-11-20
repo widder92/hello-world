@@ -95,6 +95,7 @@ typedef struct style {
     uint8_t display, position, float_side, clear, box_sizing, overflow, valign;
     bool has_before, has_after;         /* es gibt Scheinelemente (::before, ::after) */
     bool background_set, z_set;
+    uint8_t background_alpha;           /* Deckkraft des Hintergrunds (0 und 255: deckend) */
     backdrop_t *backdrop;
     uint32_t background;
     uint8_t border[4];                  /* Breite des Rahmens in Pixeln: oben, rechts, unten, links */
@@ -121,7 +122,8 @@ enum { F_ATOMIC = 1,                    /* steht als Ganzes in einer Textzeile (
        F_OWN_TEXT = 512,                /* der Text gehört dem Vorrat, nicht dem Abbild */
        F_RELATIVE = 1024,
        F_LAYER = 2048,                  /* wird mit den frei platzierten Kästen gezeichnet (eigene Ebene) */
-       F_PSEUDO = 4096 };               /* Zusatz vor oder nach einem Element (::before, ::after) */
+       F_PSEUDO = 4096,                 /* Zusatz vor oder nach einem Element (::before, ::after) */
+       F_STICKY = 8192 };               /* position: sticky - bleibt beim Rollen am oberen Fensterrand haften */
 
 typedef struct piece {
     struct piece *next;
@@ -155,6 +157,7 @@ typedef struct lbox {
     uint8_t kind, inner;
     uint16_t flags;
     uint16_t clip, clip_kids;           /* Ausschnitt (Nummer plus 1), der für den Kasten gilt und für seinen Inhalt */
+    uint8_t frame;                      /* der Rahmen (plus 1), mit dem sich der Kasten beim Rollen bewegt, oder 0 */
     uint32_t seq;                       /* laufende Nummer: die Reihenfolge in der Seite */
     int16_t image, widget;              /* Bild bzw. Feld der Seite, oder -1 */
     int32_t ordinal;                    /* Nummer eines Listenpunkts */
@@ -213,7 +216,6 @@ typedef struct {
     int boxes;
     char base[URL_SIZE];
     lbox_t *root;
-    lbox_t *fixed_owner;                /* der Kasten der ganzen Seite: nach ihm richtet sich position: fixed */
     uint32_t canvas;                    /* Hintergrund der ganzen Seite */
     bool canvas_set;
     int form;                           /* Formular, in dem gerade gebaut wird, oder -1 */
@@ -733,9 +735,11 @@ static style_t *make_style(lay_t *L, const css_style_t *css, const style_t *ps, 
         st->color = 0;
         st->text |= STYLE_LINK;
     }
+    st->background_alpha = 0;
     if (cs.has & CSS_BACKGROUND) {
         st->background_set = true;
         st->background = cs.background;
+        st->background_alpha = cs.background_alpha;
     } else if (cs.gradient_set) {
         st->background_set = true;      /* Farbverlauf: ersatzweise seine erste Farbe */
         st->background = cs.gradient_color;
@@ -743,7 +747,16 @@ static style_t *make_style(lay_t *L, const css_style_t *css, const style_t *ps, 
     if (cs.masked == CSS_YES)
         st->background_set = false;     /* ein Symbol, das nur durch eine Maske zu sehen wäre: nichts zeichnen */
     if (st->background_set) {
-        st->back = st->background;
+        uint8_t a = st->background_alpha;
+        if (a > 0 && a < 255) {
+            /* durchscheinend: Für die Lesbarkeit zählt die Mischung mit dem, was dahinter liegt */
+            uint32_t under = ps ? ps->back : st->back, mixed = 0;
+            for (int shift = 0; shift <= 16; shift += 8)
+                mixed |= ((((st->background >> shift) & 0xFF) * a + ((under >> shift) & 0xFF) * (255 - a)) / 255) << shift;
+            st->back = mixed;
+        } else {
+            st->back = st->background;
+        }
         st->trust_colors = false;
     }
     if (cs.masked != CSS_YES && (cs.background_url || (cs.gradient_set && cs.gradient_end != cs.gradient_color))) {
@@ -1606,6 +1619,8 @@ static lbox_t *element_box(lay_t *L, const dom_node *e, style_t *st)
         b->flags |= F_ATOMIC | F_ROOT;
     if (st->position == CSS_POS_RELATIVE)
         b->flags |= F_RELATIVE;
+    if (st->position == CSS_POS_STICKY && b->kind == K_BLOCK && !absolute)
+        b->flags |= F_STICKY;
     if (b->kind == K_BLOCK && (b->inner != IN_FLOW || st->overflow != CSS_OV_VISIBLE ||
                                d == CSS_D_TABLE_CELL || d == CSS_D_TABLE_CAPTION || d == CSS_D_FLOW_ROOT))
         b->flags |= F_ROOT;
@@ -3148,10 +3163,16 @@ static void layout_block(lay_t *L, lbox_t *b, int width, floats_t *fc, int fx, i
 
 static void layout_abs(lay_t *L, lbox_t *owner)
 {
-    /* Bezug ist die Innenkante des Rahmens */
-    int pw = owner->w - owner->bor[1] - owner->bor[3], ph = owner->h - owner->bor[0] - owner->bor[2];
     for (lbox_t *a = owner->abs_list; a && !L->failed; a = a->abs_next) {
         const style_t *st = a->st;
+        /*
+         * Bezug ist die Innenkante des Rahmens - bei "position: fixed" das
+         * Fenster: Solche Kästen stehen dort fest, wie weit die Seite auch rollt.
+         */
+        bool fixed = (a->flags & F_FIXED) != 0;
+        int pw = fixed ? L->opt->width : owner->w - owner->bor[1] - owner->bor[3];
+        int ph = fixed ? (L->opt->height > 0 ? L->opt->height : 600) : owner->h - owner->bor[0] - owner->bor[2];
+        int ox = fixed ? 0 : owner->bor[3], oy = fixed ? 0 : owner->bor[0];
         resolve_edges(a, pw);
         bool has_left = len_set(st->inset[3], pw), has_right = len_set(st->inset[1], pw);
         bool has_top = len_set(st->inset[0], ph), has_bottom = len_set(st->inset[2], ph);
@@ -3182,16 +3203,14 @@ static void layout_abs(lay_t *L, lbox_t *owner)
             sx -= owner->x;
             sy -= owner->y;
         }
-        if (a->flags & F_FIXED) {
-            /* am Fenster befestigt: oben steht es am Seitenanfang, unten am Seitenende */
-            sx = owner->bor[3];
-            sy = has_bottom && !has_top ? ph : 0;
+        if (fixed) {                    /* (die Seite beginnt um ihren Außenabstand versetzt) */
+            sx += owner->margin[3];
+            sy += owner->margin[0];
         }
-        a->x = has_left ? owner->bor[3] + left + a->margin[3]
-             : has_right ? owner->bor[3] + pw - right - a->margin[1] - a->w : sx + a->margin[3];
-        a->y = has_top ? owner->bor[0] + top + a->margin[0]
-             : (a->flags & F_FIXED) ? sy + a->margin[0]
-             : has_bottom ? owner->bor[0] + ph - bottom - a->margin[2] - a->h : sy + a->margin[0];
+        a->x = has_left ? ox + left + a->margin[3]
+             : has_right ? ox + pw - right - a->margin[1] - a->w : sx + a->margin[3];
+        a->y = has_top ? oy + top + a->margin[0]
+             : has_bottom ? oy + ph - bottom - a->margin[2] - a->h : sy + a->margin[0];
     }
 }
 
@@ -4018,22 +4037,33 @@ static int layout_table(lay_t *L, lbox_t *b, int cw)
 
 /* --- Lage auf der Seite ------------------------------------------------------------------------ */
 
-static void finalize(lay_t *L, lbox_t *b, int ax, int ay, int depth, uint16_t clip);
+static void finalize(lay_t *L, lbox_t *b, int ax, int ay, int depth, uint16_t clip, uint8_t frame);
 
-static void finalize_children(lay_t *L, lbox_t *parent, int ax, int ay, int depth, uint16_t clip)
+/* Frei platzierte Kästen stehen, wo ihr Bezugskasten es sagt - die am Fenster befestigten dort. */
+static void finalize_abs(lay_t *L, lbox_t *owner, int ax, int ay, int depth, uint16_t clip, uint8_t frame)
+{
+    for (lbox_t *a = owner->abs_list; a; a = a->abs_next) {
+        if (a->flags & F_FIXED)
+            finalize(L, a, a->x, a->y, depth + 1, 0, 0);
+        else
+            finalize(L, a, ax + a->x, ay + a->y, depth + 1, clip, frame);
+    }
+}
+
+static void finalize_children(lay_t *L, lbox_t *parent, int ax, int ay, int depth, uint16_t clip, uint8_t frame)
 {
     for (lbox_t *c = parent->first; c; c = c->next) {
         if (c->flags & F_ABS)
             continue;                   /* steht, wo sein Bezugskasten es sagt */
         if (c->kind == K_BLOCK) {
-            finalize(L, c, ax + c->x, ay + c->y, depth + 1, clip);
+            finalize(L, c, ax + c->x, ay + c->y, depth + 1, clip, frame);
         } else if (c->kind == K_INLINE) {
             c->ax = ax;
             c->ay = ay;
-            finalize_children(L, c, ax, ay, depth + 1, clip);
+            c->frame = frame;
+            finalize_children(L, c, ax, ay, depth + 1, clip, frame);
             /* frei Platziertes, das sich nach diesem Element im Text richtet */
-            for (lbox_t *a = c->abs_list; a; a = a->abs_next)
-                finalize(L, a, ax + c->x + a->x, ay + c->y + a->y, depth + 1, clip);
+            finalize_abs(L, c, ax + c->x, ay + c->y, depth, clip, frame);
         }
     }
 }
@@ -4042,10 +4072,11 @@ static void finalize_children(lay_t *L, lbox_t *parent, int ax, int ay, int dept
  * Ein neuer Ausschnitt: die Fläche (x, y, w, h), soweit sie im Ausschnitt
  * outer liegt (0: unbegrenzt). Liefert seine Nummer plus 1.
  */
-static uint16_t new_clip(lay_t *L, uint16_t outer, int x, int y, int w, int h)
+static uint16_t new_clip(lay_t *L, uint16_t outer, int x, int y, int w, int h, uint8_t frame)
 {
     page_t *page = L->page;
-    if (outer && outer <= page->clip_count) {
+    /* (ein Ausschnitt, der sich anders bewegt, lässt sich nicht im Voraus verrechnen) */
+    if (outer && outer <= page->clip_count && page->clips[outer - 1].frame == frame) {
         const clip_t *o = &page->clips[outer - 1];
         int right = min_int(x + w, o->x + o->w), bottom = min_int(y + h, o->y + o->h);
         x = max_int(x, o->x);
@@ -4060,10 +4091,25 @@ static uint16_t new_clip(lay_t *L, uint16_t outer, int x, int y, int w, int h)
     c->y = y;
     c->w = max_int(w, 0);
     c->h = max_int(h, 0);
+    c->frame = frame;
     return (uint16_t)(++page->clip_count);
 }
 
-static void finalize(lay_t *L, lbox_t *b, int ax, int ay, int depth, uint16_t clip)
+/* Ein neuer Rahmen (Nummer plus 1); 0, wenn es schon zu viele sind. */
+static uint8_t new_frame(lay_t *L, uint8_t kind, uint8_t parent, const lbox_t *b)
+{
+    page_t *page = L->page;
+    if (page->frame_count >= FRAMES_MAX || !GROW(L, page->frames, page->frame_count, page->frame_cap))
+        return 0;
+    frame_t *f = &page->frames[page->frame_count];
+    memset(f, 0, sizeof(*f));
+    f->kind = kind;
+    f->parent = parent;
+    f->node = b->node && !(b->flags & (F_PSEUDO | F_ANON)) ? b->node->id : 0;
+    return (uint8_t)(++page->frame_count);
+}
+
+static void finalize(lay_t *L, lbox_t *b, int ax, int ay, int depth, uint16_t clip, uint8_t frame)
 {
     const style_t *st = b->st;
     if (depth > DEPTH_MAX * 4)
@@ -4077,23 +4123,63 @@ static void finalize(lay_t *L, lbox_t *b, int ax, int ay, int depth, uint16_t cl
     }
     b->ax = ax;
     b->ay = ay;
+    if (b->flags & F_FIXED) {
+        /* am Fenster befestigt: Seine Lage zählt im Fenster, und nichts schneidet es ab */
+        uint8_t own = new_frame(L, FRAME_FIXED, 0, b);
+        if (own) {
+            frame = own;
+            clip = 0;
+        }
+    } else if ((b->flags & F_STICKY) && b->parent && len_fixed(st->inset[0]) && b != L->root) {
+        /*
+         * Haftet oben: Der Kasten rollt mit, bleibt aber am Fensterrand
+         * stehen - bis sein umgebender Kasten (bei Tabellenzellen: die
+         * Tabelle) nach oben aus dem Bild gerollt ist.
+         */
+        const lbox_t *around = b->parent;
+        while (around->parent && (table_part(around) || around->kind != K_BLOCK))
+            around = around->parent;
+        uint8_t own = new_frame(L, FRAME_STICKY, frame, b);
+        if (own) {
+            frame_t *f = &L->page->frames[own - 1];
+            f->y = ay;
+            f->h = b->h;
+            f->top = st->inset[0].px;
+            f->limit = around->ay + around->h - around->bor[2] - around->pad[2];
+            frame = own;
+            add_layer(L, b);            /* gezeichnet wird er über dem, was unter ihm durchrollt */
+        }
+    }
+    b->frame = frame;
     b->clip = b->clip_kids = clip;
     /* was übersteht, wird abgeschnitten: Der Inhalt ist nur innerhalb des Rahmens zu sehen */
     if (st->overflow == CSS_OV_HIDDEN && !(b->flags & F_REPLACED) && b != L->root)
         b->clip_kids = new_clip(L, clip, ax + b->bor[3], ay + b->bor[0], b->w - b->bor[1] - b->bor[3],
-                                b->h - b->bor[0] - b->bor[2]);
+                                b->h - b->bor[0] - b->bor[2], frame);
     /* verschoben und mit eigener Ebene: wird wie ein frei platzierter Kasten gezeichnet */
     if ((b->flags & F_RELATIVE) && st->z_set && b != L->root)
         add_layer(L, b);
-    finalize_children(L, b, ax, ay, depth, b->clip_kids);
-    for (lbox_t *a = b->abs_list; a; a = a->abs_next)
-        finalize(L, a, ax + a->x, ay + a->y, depth + 1, b->clip_kids);
+    finalize_children(L, b, ax, ay, depth, b->clip_kids, frame);
+    finalize_abs(L, b, ax, ay, depth, b->clip_kids, frame);
+}
+
+/* Liegt der Rahmen (oder einer, in dem er steckt) fest im Fenster? */
+static bool frame_is_fixed(const page_t *page, unsigned frame)
+{
+    for (int depth = 0; frame > 0 && (int)frame <= page->frame_count && depth < 8; depth++) {
+        if (page->frames[frame - 1].kind == FRAME_FIXED)
+            return true;
+        frame = page->frames[frame - 1].parent;
+    }
+    return false;
 }
 
 /* Die Seite reicht mindestens bis hierher - soweit es nicht abgeschnitten ist. */
 static void reach(lay_t *L, int bottom)
 {
     const page_t *page = L->page;
+    if (frame_is_fixed(page, page->paint_frame))
+        return;                         /* was am Fenster hängt, macht die Seite nicht länger */
     if (page->paint_clip && page->paint_clip <= page->clip_count) {
         const clip_t *c = &page->clips[page->paint_clip - 1];
         bottom = min_int(bottom, c->y + c->h);
@@ -4132,6 +4218,7 @@ static void place_box(lay_t *L, const lbox_t *b)
         r->border[i] = b->bor[i];
     }
     r->in_text = false;
+    r->frame = b->frame;
     L->placed[b->node->id - 1] = PLACED_BOX;
 }
 
@@ -4151,6 +4238,7 @@ static void place_piece(lay_t *L, const dom_node *n, int x, int y, int w, int h)
             r->w = max_int(w, 0);
             r->h = max_int(h, 0);
             r->in_text = true;
+            r->frame = L->page->paint_frame;
             *state = PLACED_TEXT;
         } else {
             int right = max_int(r->x + r->w, x + w), bottom = max_int(r->y + r->h, y + h);
@@ -4172,6 +4260,7 @@ static void place_start(lay_t *L, const lbox_t *b)
     r->y = b->ay + b->static_y;
     r->w = r->h = 0;
     r->in_text = true;
+    r->frame = b->frame;
     L->placed[b->node->id - 1] = PLACED_START;
 }
 
@@ -4207,6 +4296,7 @@ static void emit_decoration(lay_t *L, const style_t *st, const dom_node *node, i
     box.w = w;
     box.h = h;
     box.background = st->background_set ? HTML_COLOR_SET | st->background : 0;
+    box.alpha = st->background_set ? st->background_alpha : 0;
     for (int i = 0; i < 4; i++) {
         bool shown = st->border_style[i] && border[i] && !(i == 3 && !left_end) && !(i == 1 && !right_end);
         box.border[i] = shown ? border[i] : 0;
@@ -4443,10 +4533,13 @@ static void emit_box(lay_t *L, lbox_t *b, int depth)
     if (depth > DEPTH_MAX * 4)
         return;
     uint16_t outer = page->paint_clip;
+    uint8_t outer_frame = page->paint_frame;
     page->paint_clip = b->clip;
+    page->paint_frame = b->frame;
     reach(L, b->ay + b->h);
     emit_inside(L, b, depth);
     page->paint_clip = outer;
+    page->paint_frame = outer_frame;
 }
 
 static void emit_inside(lay_t *L, lbox_t *b, int depth)
@@ -4463,6 +4556,7 @@ static void emit_inside(lay_t *L, lbox_t *b, int depth)
         w->w = b->w;
         w->h = st->invisible ? 0 : b->h;
         w->radius = st->radius == 255 ? (uint8_t)min_int(b->h / 2, 250) : st->radius;
+        w->frame = b->frame;
     }
     if (b->widget >= 0 && !boxed) {
         widget_t *w = &page->widgets[b->widget];
@@ -4611,7 +4705,7 @@ static void run(void *arg)
 
     resolve_edges(root, opt->width);
     layout_block(L, root, max_int(opt->width - root->margin[1] - root->margin[3], 50), NULL, 0, 0);
-    finalize(L, root, root->margin[3], root->margin[0], 0, 0);
+    finalize(L, root, root->margin[3], root->margin[0], 0, 0, 0);
     emit_box(L, root, 0);
     emit_layers(L, false);
 
